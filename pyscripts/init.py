@@ -13,6 +13,7 @@ os.mkdir('./sources/data')
 os.mkdir('./sources/data/en')
 os.mkdir('./sources/visual')
 os.mkdir('./sources/visual/en')
+os.mkdir('./upload-temp')
 
 sources = []
 game = {
