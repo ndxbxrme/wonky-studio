@@ -6,6 +6,8 @@
   "scripts": {
     "start": "waitress-serve --host=0.0.0.0 --port=4240 app:app",
     "startdev": "waitress-serve --host=0.0.0.0 --port=4004 app:app",
+    "make-environment": "conda create --name wonkyenv --file environment.txt",
+    "activate-environment": "conda activate wonkyenv",
     "test": "echo \"Error: no test specified\" && exit 1"
   },
   "keywords": [],
