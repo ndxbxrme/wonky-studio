@@ -1,0 +1,198 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+  <meta charset="UTF-8">
+  <meta http-equiv="X-UA-Compatible" content="IE=edge">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Wonky Studio</title>
+  <link rel="stylesheet" href="./index.css" />
+</head>
+
+<body>
+  <div class="heading">
+    <h2>Wonky Studio</h2>
+  </div>
+  <div class="main-nav">
+    <a href="javascript:void(0)" onclick="app.setState('script')">Script</a> -
+    <a href="javascript:void(0)" onclick="app.setState('transcript')">Transcript</a> -
+    <a href="javascript:void(0)" onclick="app.setState('Music')">Music</a> -
+    <a href="javascript:void(0)" onclick="app.setState('Sfx')">Sfx</a> -
+    <a href="javascript:void(0)" onclick="app.setState('Animations')">Animations</a> -
+    <a href="javascript:void(0)" onclick="app.setState('Rooms')">Rooms</a> -
+    <a href="javascript:void(0)" onclick="app.setState('Objects')">Objects</a> -
+    <a href="javascript:void(0)" onclick="app.setState('Variables')">Variables</a> -
+    <a href="javascript:void(0)" onclick="app.setState('Scripts')">Scripts</a>
+  </div>
+  <div class="toolbar">Toolbar</div>
+  <div class="body"></div>
+  <div class="script-modal-bg modal-bg hidden"></div>
+  <div class="script-modal modal hidden"></div>
+  <div class="waveform-bg modal-bg hidden"></div>
+  <div class="waveform-modal modal hidden">
+    <div class="waveform-editor-container">waveform editor</div>
+    <div class="waveform-editor-zoom">
+      <div>
+        <input type="button" onclick="app.editor.play()" value="Play" />
+      </div>
+      <div>
+        <input type="button" onclick="app.editor.zoomOut()" value="Zoom out" />
+        <input type="button" onclick="app.editor.zoomIn()" value="Zoom in" />
+      </div>
+    </div>
+    <div class="waveform-editor-subtitle">
+      <label>Subtitle</label>
+      <input type="text" onchange="app.updateSubtitle(this.value)" />
+    </div>
+    <div class="waveform-editor-controls">
+      <input type="button" onclick="app.saveOccAudio()" value="Save" />
+      <input type="button" onclick="app.ok()" value="Cancel" />
+    </div>
+  </div>
+  <div class="upload-details-bg modal-bg hidden">
+    <div class="upload-details-modal modal hidden">
+      <div class="upload-new">
+        <div class="upload-audio form-item">
+          <label>Audio type</label>
+          <select name="audio-type">
+            <option>---</option>
+            <option>Speech</option>
+            <option>Sfx</option>
+            <option>Music</option>
+          </select>
+        </div>
+        <div class="upload-image form-item">
+          <label>Graphic type</label>
+          <select name="image-type">
+            <option>---</option>
+            <option>Static</option>
+            <option>Animation</option>
+          </select>
+        </div>
+        <div class="upload-room">
+          <div class="upload-room-existing form-item">
+            <div class="flex-row">
+              <label>Room</label>
+              <input type="button" onclick="app.newRoom()" value="New room" />
+            </div>
+            <select name="room" onchange="app.refreshUploadSelects(this.value)">
+              <option>---</option>
+            </select>
+          </div>
+        </div>
+        <div class="upload-object">
+          <div class="upload-object-existing form-item">
+            <div class="flex-row">
+              <label>Object</label>
+              <input type="button" onclick="app.newObject()" value="New object" />
+            </div>
+            <select name="object" onchange="app.refreshUploadSelects(this.value)">
+              <option>---</option>
+            </select>
+          </div>
+        </div>
+        <div class="upload-state">
+          <div class="upload-state-existing form-item">
+            <div class="flex-row">
+              <label>State</label>
+              <input type="button" onclick="app.newState()" value="New state" />
+            </div>
+            <select name="state" onchange="app.refreshUploadSelects(this.value)">
+              <option>---</option>
+            </select>
+          </div>
+        </div>
+      </div>
+      <div class="upload-existing">
+        <div class="form-item">
+          <div class="flex-row">
+            <label>Choose</label>
+            <input type="button" onclick="app.addToExisting(true)" value="Back" />
+          </div>
+          <select name="name" onchange="app.nameChange(this.value)">
+            <option>---</option>
+          </select>
+        </div>
+      </div>
+      <div class="modal-controls">
+        <input type="button" onclick="app.saveUploadDetails()" value="Save" />
+        <input type="button" onclick="app.closeModal()" value="Cancel" />
+      </div>
+    </div>
+  </div>
+  <div class="new-thing-bg modal-bg hidden">
+    <div class="new-thing-modal modal hidden">
+      <h3>New thing</h3>
+      <div class="form-item">
+        <label>Name</label>
+        <input type="text" />
+      </div>
+      <div class="modal-controls">
+        <input type="button" onclick="app.newThingOk()" value="OK" />
+        <input type="button" onclick="app.closeModal()" value="Cancel" />
+      </div>
+    </div>
+  </div>
+  <div class="masking-bg modal-bg hidden">
+    <div class="masking-modal modal hidden">
+      <h3>Masking</h3>
+      <p>Draw a box around the bit you are interested in then click <strong>Segment All</strong> to generate masks.</p>
+      <div class="masking-controls margin-bottom">
+        <div class="left">
+          <input type="button" onclick="app.prevMaskingImage()" value="Prev" />
+          <input type="button" onclick="app.nextMaskingImage()" value="Next" />
+        </div>
+        <div class="middle">
+          <div class="flex-col">
+            <label for="expand">Expand</label>
+            <input id="expand" type="range" name="expand" min="0" max="50" step="1" value="30" />
+          </div>
+          <div class="flex-col">
+            <label for="blur">Blur</label>
+            <input id="blur" type="range" name="blur" min="3" max="61" step="2" value="41" />
+          </div>
+          <div class="flex-col">
+            <label for="fillHoles">Fill holes</label>
+            <input id="fillHoles" type="checkbox" name="fillHoles" checked />
+          </div>
+          <input type="button" onclick="app.segmentAll()" value="Segment All" />
+        </div>
+        <div class="right">
+          <input type="button" onclick="app.saveMasking()" value="Save masks" />
+        </div>
+      </div>
+      <canvas onmousedown="app.maskingCanvasMouseDown()" onmouseup="app.maskingCanvasMouseUp()"
+        onmouseout="app.maskingCanvasMouseOut()" onmousemove="app.maskingCanvasMouseMove()"></canvas>
+      <div class="masking-layers">
+
+      </div>
+      <div class="masking-controls">
+        <input type="button" onclick="app.clearMask()" value="Clear mask" />
+        <input type="button" onclick="app.copyMaskBoxToPrevious()" value="Copy to previous frames" />
+        <input type="button" onclick="app.copyMaskBoxToFollowing()" value="Copy to following frames" />
+      </div>
+    </div>
+  </div>
+  <div class="upload-feedback-bg modal-bg hidden">
+    <div class="upload-feedback-modal modal block-esc hidden">
+      <h4 class="feedback-text">Uploading</h4>
+      <div class="progress-bar-container">
+        <div class="progress-bar" style="width: 0%"></div>
+      </div>
+    </div>
+  </div>
+  <svg width="0" height="0" style="position:absolute;z-index:-1;">
+    <defs>
+      <filter id="remove-alpha" x="0" y="0" width="100%" height="100%">
+        <feTurbulence type="turbulence" baseFrequency="0.05" numOctaves="2" result="turbulence" />
+        <feDisplacementMap id="dm" in2="turbulence" in="SourceGraphic" scale="5" xChannelSelector="R"
+          yChannelSelector="G" />
+      </filter>
+    </defs>
+  </svg>
+  <script type="module" src="./jscripts/index.js">
+
+  </script>
+</body>
+
+</html>

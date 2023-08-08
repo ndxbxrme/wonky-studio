@@ -1,0 +1,12 @@
+node_modules
+.ipynb_checkpoints
+__pycache__
+rendered
+sources
+upload-temp
+edited_waveform.wav
+indexes.txt
+notes.txt
+package-lock.json
+sam_vit_h_4b8939.pth
+Untitled.ipynb
