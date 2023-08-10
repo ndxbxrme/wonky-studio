@@ -9,7 +9,7 @@
   <link rel="stylesheet" href="./index.css" />
 </head>
 
-<body>
+<body onclick="app.closePopupMenu()">
   <div class="heading">
     <h2>Wonky Studio</h2>
   </div>
@@ -68,6 +68,10 @@
             <option>Static</option>
             <option>Animation</option>
           </select>
+        </div>
+        <div class="upload-audio-name form-item hidden">
+          <label>Name</label>
+          <input type="text" />
         </div>
         <div class="upload-room">
           <div class="upload-room-existing form-item">
@@ -142,7 +146,7 @@
           <input type="button" onclick="app.prevMaskingImage()" value="Prev" />
           <input type="button" onclick="app.nextMaskingImage()" value="Next" />
         </div>
-        <div class="middle">
+        <div class="middle segment-settings">
           <div class="flex-col">
             <label for="expand">Expand</label>
             <input id="expand" type="range" name="expand" min="0" max="50" step="1" value="30" />
@@ -155,21 +159,36 @@
             <label for="fillHoles">Fill holes</label>
             <input id="fillHoles" type="checkbox" name="fillHoles" checked />
           </div>
-          <input type="button" onclick="app.segmentAll()" value="Segment All" />
+        </div>
+        <div class="middle draw-settings hidden">
+          <div class="flex-col">
+            <label for="brushsize">Brush size</label>
+            <input id="brushsize" type="range" name="brushsize" min="1" max="200" value="32" onchange="app.makeBrush(+this.value, +this.value)" />
+          </div>
         </div>
         <div class="right">
+          <input type="button" id="segment-all-button" onclick="app.segmentAll()" value="Segment All" />
+          <input type="button" id="draw-button" onclick="app.drawMask()" value="Draw" />
           <input type="button" onclick="app.saveMasking()" value="Save masks" />
         </div>
       </div>
-      <canvas onmousedown="app.maskingCanvasMouseDown()" onmouseup="app.maskingCanvasMouseUp()"
-        onmouseout="app.maskingCanvasMouseOut()" onmousemove="app.maskingCanvasMouseMove()"></canvas>
+      <canvas class="masking-canvas" onmousedown="app.maskingCanvasMouseDown()" onmouseup="app.maskingCanvasMouseUp()"
+        onmouseout="app.maskingCanvasMouseOut()" onmousemove="app.maskingCanvasMouseMove()" oncontextmenu="event.preventDefault()"></canvas>
       <div class="masking-layers">
 
       </div>
       <div class="masking-controls">
-        <input type="button" onclick="app.clearMask()" value="Clear mask" />
-        <input type="button" onclick="app.copyMaskBoxToPrevious()" value="Copy to previous frames" />
-        <input type="button" onclick="app.copyMaskBoxToFollowing()" value="Copy to following frames" />
+        <div class="left">
+          <input type="button" onclick="app.clearMask()" value="Clear mask" />
+          <div class="flex-col">
+            <label for="brushsize">Show mask</label>
+            <input id="showmask" type="checkbox" onchange="app.draw()" />
+          </div>
+        </div>
+        <div class="right">
+          <input type="button" class="copy-button" onclick="app.copyMaskBoxToPrevious()" value="Copy to previous frames" />
+          <input type="button" class="copy-button" onclick="app.copyMaskBoxToFollowing()" value="Copy to following frames" />
+        </div>
       </div>
     </div>
   </div>

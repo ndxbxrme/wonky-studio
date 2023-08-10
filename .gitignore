@@ -10,3 +10,5 @@ notes.txt
 package-lock.json
 sam_vit_h_4b8939.pth
 Untitled.ipynb
+tacotron/*.wav
+tacotron/*.txt

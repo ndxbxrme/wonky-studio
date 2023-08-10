@@ -20,6 +20,7 @@ class App {
         occ.text = occ.text[0].toUpperCase() + occ.text.slice(1);
       })
     });
+    console.log('script', this.script);
     this.words = await this.loadData('words');
     this.timeRanges = await this.loadData('time-ranges');
     this.sources = await this.loadSources();
@@ -28,6 +29,8 @@ class App {
     this.audioFiles = Array.from(this.audioFiles);
     this.loadState();
     this.wordRange = [];
+    this.maskCanvas = document.createElement('canvas');
+    this.maskCtx = this.maskCanvas.getContext('2d');
     window.addEventListener('popstate', this.loadState.bind(this));
     document.addEventListener('keyup', this.keyup.bind(this));
     document.body.addEventListener('drop', async (event) => {
@@ -199,6 +202,7 @@ class App {
     uploadDetailsModal.querySelector('.upload-state-existing').classList[selectedObject ? 'remove' : 'add']('hidden');
   }
   openUploadDetails(id, type, roomName, objectName, stateName, noImages) {
+    document.querySelector('.upload-audio-name').classList.add('hidden');
     const components = {};
     components.uploadDetailsBg = document.querySelector('.upload-details-bg');
     components.uploadDetailsModal = document.querySelector('.upload-details-modal');
@@ -213,73 +217,92 @@ class App {
     Array.from(components.uploadDetailsModal.querySelectorAll('input[type=text], select')).forEach(component => (component.value = null));
     [components.uploadDetailsBg, components.uploadDetailsModal, components.uploadNewRow, components.roomExistingRow].forEach(component => component.classList.remove('hidden'));
     components[type + 'Row'].classList.remove('hidden');
-    this.refreshUploadSelects();
-    if(roomName) {
-      document.querySelector('.upload-room select').value = roomName;
-      this.refreshUploadSelects();
-      if(objectName) {
-        document.querySelector('.upload-object select').value = objectName;
-        this.refreshUploadSelects();
-        if(stateName) {
-          document.querySelector('.upload-state select').value = stateName;
-          this.refreshUploadSelects();
-        }
-      }
-    }
     if(type==='image') {
-      document.querySelector('.upload-image select').value = (noImages && (noImages > 1)) ? 'Animation' : 'Static';
-    }
-    this.newRoom = () => {
-      this.openNewThing('room', this.game.rooms, (name) => ({ name, objects: [] }));
-    }
-    this.newObject = () => {
-      const selectedRoomName = document.querySelector('.upload-room select').value;
-      const selectedRoom = this.game.rooms.find(room => room.name === selectedRoomName);
-      if (selectedRoom) {
-        this.openNewThing('object', selectedRoom.objects, (name) => ({ name, states: [] }));
-      }
-    }
-    this.newState = () => {
-      const selectedRoomName = document.querySelector('.upload-room select').value;
-      const selectedRoom = this.game.rooms.find(room => room.name === selectedRoomName);
-      if (selectedRoom) {
-        const selectedObjectName = document.querySelector('.upload-object select').value;
-        const selectedObject = selectedRoom.objects.find(object => object.name === selectedObjectName);
-        if (selectedObject) {
-          this.openNewThing('state', selectedObject.states, (name) => ({ name, sources: [] }));
+      this.refreshUploadSelects();
+      if(roomName) {
+        document.querySelector('.upload-room select').value = roomName;
+        this.refreshUploadSelects();
+        if(objectName) {
+          document.querySelector('.upload-object select').value = objectName;
+          this.refreshUploadSelects();
+          if(stateName) {
+            document.querySelector('.upload-state select').value = stateName;
+            this.refreshUploadSelects();
+          }
         }
       }
-    }
-    this.saveUploadDetails = () => {
-      const selectedRoomName = document.querySelector('.upload-room select').value;
-      const selectedRoom = this.game.rooms.find(room => room.name === selectedRoomName);
-      if (selectedRoom) {
-        const selectedObjectName = document.querySelector('.upload-object select').value;
-        const selectedObject = selectedRoom.objects.find(object => object.name === selectedObjectName);
-        if (selectedObject) {
-          const selectedStateName = document.querySelector('.upload-state select').value;
-          const selectedState = selectedObject.states.find(state => state.name === selectedStateName);
-          if (selectedState) {
-            const selectedType = document.querySelector(`.upload-${type} select`).value;
-            if (selectedType && (selectedType !== '---')) {
-              selectedState.sources.push({
-                type, id,
-                subtype: selectedType
-              });
-              this.saveGame();
-              components.uploadDetailsBg.classList.add('hidden');
-              components.uploadDetailsModal.classList.add('hidden');
-              if (type === 'image') {
-                //open masking
-                this.openMaskingModal(id);
+      if(type==='image') {
+        document.querySelector('.upload-image select').value = (noImages && (noImages > 1)) ? 'Animation' : 'Static';
+      }
+      this.newRoom = () => {
+        this.openNewThing('room', this.game.rooms, (name) => ({ name, objects: [] }));
+      }
+      this.newObject = () => {
+        const selectedRoomName = document.querySelector('.upload-room select').value;
+        const selectedRoom = this.game.rooms.find(room => room.name === selectedRoomName);
+        if (selectedRoom) {
+          this.openNewThing('object', selectedRoom.objects, (name) => ({ name, states: [] }));
+        }
+      }
+      this.newState = () => {
+        const selectedRoomName = document.querySelector('.upload-room select').value;
+        const selectedRoom = this.game.rooms.find(room => room.name === selectedRoomName);
+        if (selectedRoom) {
+          const selectedObjectName = document.querySelector('.upload-object select').value;
+          const selectedObject = selectedRoom.objects.find(object => object.name === selectedObjectName);
+          if (selectedObject) {
+            this.openNewThing('state', selectedObject.states, (name) => ({ name, sources: [] }));
+          }
+        }
+      }
+      this.saveUploadDetails = () => {
+        const selectedRoomName = document.querySelector('.upload-room select').value;
+        const selectedRoom = this.game.rooms.find(room => room.name === selectedRoomName);
+        if (selectedRoom) {
+          const selectedObjectName = document.querySelector('.upload-object select').value;
+          const selectedObject = selectedRoom.objects.find(object => object.name === selectedObjectName);
+          if (selectedObject) {
+            const selectedStateName = document.querySelector('.upload-state select').value;
+            const selectedState = selectedObject.states.find(state => state.name === selectedStateName);
+            if (selectedState) {
+              const selectedType = document.querySelector(`.upload-${type} select`).value;
+              if (selectedType && (selectedType !== '---')) {
+                selectedState.sources.push({
+                  type, id,
+                  subtype: selectedType
+                });
+                this.saveGame();
+                components.uploadDetailsBg.classList.add('hidden');
+                components.uploadDetailsModal.classList.add('hidden');
+                if (type === 'image') {
+                  //open masking
+                  this.openMaskingModal(id);
+                }
               }
             }
           }
         }
       }
     }
+    else {
+      document.querySelector('.upload-audio-name').classList.remove('hidden');
+      components.roomExistingRow.classList.add('hidden');
+      this.saveUploadDetails = () => {
+        const selectedType = document.querySelector(`.upload-${type} select`).value;
+        const name = document.querySelector('.upload-audio-name input').value;
+        if(selectedType && (selectedType !== '---') && name.trim()) {
+          this.game.audio = this.game.audio || {};
+          this.game.audio[selectedType] = this.game.audio[selectedType] || [];
+          this.game.audio[selectedType].push({
+            name, id
+          });
+          this.saveGame();
+          this.closeModal();
+        }
+      }
+    }
     this.cancelUploadDetails = () => {
-
+      this.closeModal();
     }
   }
   async openMaskingModal(sourceId) {
@@ -294,15 +317,46 @@ class App {
     const img = new Image();
     const maskImg = new Image();
     let dragging = false;
+    let mode = 'selecting';
+    const segmentSettings = document.querySelector('.segment-settings');
+    const drawSettings = document.querySelector('.draw-settings');
+    const drawButton = document.querySelector('#draw-button');
+    const segmentAllButton = document.querySelector('#segment-all-button');
+    const copyButtons = document.querySelectorAll('.copy-button');
+    segmentSettings.classList.remove('hidden');
+    drawSettings.classList.add('hidden');
+    drawButton.value = 'Draw';
+    segmentAllButton.classList.remove('hidden');
+    copyButtons.forEach(btn => btn.classList.remove('hidden'));
     let startPos = null;
     let index = 0;
+    const brush = document.createElement('canvas');
+    const brushCtx = brush.getContext('2d');
+    const makeBrush = (w, h) => {
+      brush.width = w;
+      brush.height = h;
+      const gradient = brushCtx.createRadialGradient(w/2,h/2,w/8,w/2,h/2,w/2);
+      gradient.addColorStop(0, "rgba(255,255,255,1)");
+      gradient.addColorStop(1, "rgba(255,255,255,0)");
+      brushCtx.clearRect(0, 0, w, h);
+      brushCtx.fillStyle = gradient;
+      brushCtx.fillRect(0,0,w,h);
+    }
+    this.makeBrush = makeBrush;
+    makeBrush(32, 32);
     const draw = () => {
       const maskBox = mySources[index].maskBox;
       if (maskBox) {
         if (mySources[index].hasMask) {
-          ctx.drawImage(maskImg, 0, 0, img.width, img.height);
-          ctx.globalCompositeOperation = 'source-in';
           ctx.drawImage(img, 0, 0, img.width, img.height);
+          if(document.querySelector('#showmask').checked) {
+            ctx.globalCompositeOperation = 'luminosity';
+            ctx.globalAlpha = 0.5;
+          }
+          else {
+            ctx.globalCompositeOperation = 'destination-in';
+          }
+          ctx.drawImage((mode==='drawing'?this.maskCanvas:maskImg), 0, 0, img.width, img.height);
         }
         else {
           ctx.drawImage(img, 0, 0, img.width, img.height);
@@ -324,15 +378,27 @@ class App {
       draw();
     }
     maskImg.onload = () => {
+      if(mode==='drawing') {
+        this.maskCanvas.width = canvas.width;
+        this.maskCanvas.height = canvas.height;
+        this.maskCtx.clearRect(0,0,canvas.width, canvas.height);
+        this.maskCtx.drawImage(maskImg, 0, 0);
+      }
       draw();
     }
+    this.draw = draw;
     this.maskingCanvasMouseDown = () => {
       event.preventDefault();
       const ratio = canvas.width / canvas.clientWidth;
       const [x, y] = [event.offsetX * ratio, event.offsetY * ratio];
       startPos = { x, y };
-      if (!mySources[index].hasMask) {
-        dragging = true;
+      if(mode==='selecting') {
+        if (!mySources[index].hasMask) {
+          dragging = true;
+        }
+      }
+      else {
+        if([0,2].includes(event.button)) dragging = event.button + 1;
       }
     }
     this.maskingCanvasMouseUp = () => {
@@ -353,15 +419,23 @@ class App {
       const [x, y] = [event.offsetX * ratio, event.offsetY * ratio];
       const currentPos = { x, y };
       if (dragging) {
-        const min = {
-          x: Math.min(startPos.x, currentPos.x),
-          y: Math.min(startPos.y, currentPos.y)
+        if(mode==='selecting') {
+          const min = {
+            x: Math.min(startPos.x, currentPos.x),
+            y: Math.min(startPos.y, currentPos.y)
+          }
+          const max = {
+            x: Math.max(startPos.x, currentPos.x),
+            y: Math.max(startPos.y, currentPos.y)
+          }
+          mySources[index].maskBox = { x: min.x, y: min.y, w: max.x - min.x, h: max.y - min.y };
         }
-        const max = {
-          x: Math.max(startPos.x, currentPos.x),
-          y: Math.max(startPos.y, currentPos.y)
+        else {
+          if(dragging===3)
+            this.maskCtx.globalCompositeOperation = 'destination-out';
+          this.maskCtx.drawImage(brush, x - brush.width/2, y - brush.height/2);
+          this.maskCtx.globalCompositeOperation = 'source-over'; 
         }
-        mySources[index].maskBox = { x: min.x, y: min.y, w: max.x - min.x, h: max.y - min.y };
         draw();
       }
     }
@@ -371,19 +445,26 @@ class App {
         maskImg.src = `${mySources[index].path}/${mySources[index].filename}-mask.png?r=${Math.floor(Math.random() * 99999)}`;
       }
       mySources[index].maskBox = mySources[index].maskBox || {};
-      const maskingLayers = document.querySelector('.masking-layers');
+      /*const maskingLayers = document.querySelector('.masking-layers');
       maskingLayers.innerHTML = new Array(mySources[index].numMasks).fill(0).map((m, i) => `
         <input type="checkbox" />
-      `);
+      `);*/
     }
     this.prevMaskingImage = () => {
+      if(mode==='drawing') {
+        this.saveCurrentMask();
+      }
       if (index > 0) this.openMaskingImage(--index);
     }
     this.nextMaskingImage = () => {
+      if(mode==='drawing') {
+        this.saveCurrentMask();
+      }
       if (index < mySources.length - 1) this.openMaskingImage(++index);
     }
     this.segmentImage = async (index) => {
       const source = mySources[index];
+      source.maskBox = source.maskBox || {x:0, y:0, w:canvas.width, h:canvas.height};
       const mb = source.maskBox;
       const expand = +maskingModal.querySelector('input[name=expand]').value;
       const blur = +maskingModal.querySelector('input[name=blur]').value;
@@ -415,15 +496,7 @@ class App {
       this.openMaskingImage(index);
     }
     this.saveMasking = async () => {
-      const response = await fetch('/save-sources', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json'
-        },
-        body: JSON.stringify({
-          sources: this.sources
-        })
-      });
+      await this.saveSources();
       this.filterList && this.filterList();
       this.saveGame();
       this.closeModal();
@@ -441,7 +514,7 @@ class App {
     this.clearMask = () => {
       mySources[index].maskBox = null;
       mySources[index].hasMask = null;
-      this.openMaskingImage(image);
+      this.openMaskingImage(index);
     }
     this.clearMaskAll = () => {
       for(let l=0; l<mySources.length; l++) {
@@ -449,6 +522,52 @@ class App {
         mySources[l].hasMask = null;
       }
       this.openMaskingImage(image);
+    }
+    this.drawMask = () => {
+      const segmentSettings = document.querySelector('.segment-settings');
+      const drawSettings = document.querySelector('.draw-settings');
+      const drawButton = document.querySelector('#draw-button');
+      const segmentAllButton = document.querySelector('#segment-all-button');
+      const copyButtons = document.querySelectorAll('.copy-button');
+      if(mode==='selecting') {
+        mode = 'drawing';
+        segmentSettings.classList.add('hidden');
+        segmentAllButton.classList.add('hidden');
+        drawSettings.classList.remove('hidden');
+        copyButtons.forEach(btn => btn.classList.add('hidden'));
+        drawButton.value = 'Select';
+        //get mask and draw it on mask canvas
+        const [w,h] = [canvas.width, canvas.height];
+        this.maskCanvas.width = w;
+        this.maskCanvas.height = h;
+        this.maskCtx.clearRect(0, 0, w, h);
+        if(maskImg && maskImg.src && maskImg.width) {
+          this.maskCtx.drawImage(maskImg, 0, 0);
+        }
+        mySources[index].hasMask = true;
+      }
+      else {
+        this.saveCurrentMask();
+        mode = 'selecting';
+        segmentSettings.classList.remove('hidden');
+        segmentAllButton.classList.remove('hidden');
+        drawSettings.classList.add('hidden');
+        copyButtons.forEach(btn => btn.classList.remove('hidden'));
+        drawButton.value = 'Draw';
+      }
+      draw();
+    }
+    this.saveCurrentMask = async () => {
+      const base64 = canvas.toDataURL();
+      const data = base64.split(',')[1];
+      const filename = `${mySources[index].path}/${mySources[index].filename}-mask.png`;
+      const response = await fetch('/save-mask-image', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ data, filename }),
+      });
     }
     this.openMaskingImage(0);
   }
@@ -697,6 +816,102 @@ class App {
       elm.disabled = !this.wordRange.length;
     });
   }
+  renderMusicList() {
+    const toolbar = document.querySelector('.toolbar');
+    const body = document.querySelector('.body');
+    toolbar.innerHTML = `
+      <input type="text" placeholder="Search..." class="filterText" onkeyup="app.filterList()" onchange="app.filterList()" />
+    `;
+    this.filterList = () => {
+      const filterText = document.querySelector('.filterText').value;
+      body.innerHTML = `<div class="audio-list-grid list-grid">` + ((this.game.audio || {}).Music || []).filter(audio => audio.name.toLowerCase().includes(filterText.toLowerCase())).map(audio => {
+        const audioSource = this.sources.find(source => source.id === audio.id);
+        if(audioSource) {
+          return `
+            <div class="audio-cell list-grid-cell" onclick="app.playAudio('${audio.id}', this)">
+              <div class="pos"></div>
+              <div class="cell-header">
+                <div class="audio-name">${audio.name}</div>
+                <a href="javascript:void(0)" onclick="app.togglePopupMenu(this)">...</a>
+              </div>
+              <div class="popup-menu hidden">
+                <a href="javascript:void(0)" onclick="app.deleteAudio('Music', '${audio.id}')">Delete</a>
+              </div>
+            </div>
+          `;
+        }
+      }).join('');
+    }
+    this.filterList();
+  }
+  renderSfxList() {
+    const toolbar = document.querySelector('.toolbar');
+    const body = document.querySelector('.body');
+    toolbar.innerHTML = `
+      <input type="text" placeholder="Search..." class="filterText" onkeyup="app.filterList()" onchange="app.filterList()" />
+    `;
+    this.filterList = () => {
+      const filterText = document.querySelector('.filterText').value;
+      body.innerHTML = `<div class="audio-list-grid list-grid">` + ((this.game.audio || {}).Sfx || []).filter(audio => audio.name.toLowerCase().includes(filterText.toLowerCase())).map(audio => {
+        const audioSource = this.sources.find(source => source.id === audio.id);
+        if(audioSource) {
+          return `
+            <div class="audio-cell list-grid-cell" onclick="app.playAudio('${audio.id}', this)">
+              <div class="pos"></div>
+              <div class="cell-header">
+                <div class="audio-name">${audio.name}</div>
+                <a href="javascript:void(0)" onclick="app.togglePopupMenu(this)">...</a>
+              </div>
+              <div class="popup-menu hidden">
+                <a href="javascript:void(0)" onclick="app.deleteAudio('Sfx', '${audio.id}')">Delete</a>
+              </div>
+            </div>
+          `;
+        }
+      }).join('');
+    }
+    this.filterList();
+  }
+  async playAudio(id, elm) {
+    const pos = elm.querySelector('.pos');
+    if(this.playingAudio) {
+      this.playingAudio = false;
+      pos.style.width = '0%';
+      this.audioSourceNode.stop();
+      console.log('returning');
+      return;
+    }
+    this.audioCtx = this.audioCtx || new AudioContext();
+    const source = this.sources.find(source => source.id === id);
+    console.log(source);
+    this.audioSourceNode = this.audioCtx.createBufferSource();
+    this.audioSourceNode.buffer = await new Promise(async resolve => {
+      const res = await fetch(`${source.path}/${source.filename.replace('#', '%23')}.ogg`);
+      const decoded = await this.audioCtx.decodeAudioData(await res.arrayBuffer());
+      resolve(decoded);
+    });
+    this.audioSourceNode.connect(this.audioCtx.destination);
+    this.audioSourceNode.addEventListener('ended', () => {
+      this.playingAudio = false;
+      pos.style.width = '0%';
+    });
+    this.audioSourceNode.start();
+    this.playingAudio = true;
+    const startTime = this.audioCtx.currentTime;
+    const endTime = startTime + this.audioSourceNode.buffer.duration;
+    const tick = () => {
+      const now = this.audioCtx.currentTime;
+      if (now < endTime) {
+        if(this.playingAudio) requestAnimationFrame(tick);
+        const percent = ((now - startTime) / (endTime - startTime)) * 100;
+        pos.style.width = percent + '%';
+      }
+      else {
+        pos.style.width = '0%';
+      }
+    }
+    tick();
+  }
   renderRoomList() {
     const toolbar = document.querySelector('.toolbar');
     const body = document.querySelector('.body');
@@ -718,7 +933,14 @@ class App {
         }
         return `
           <div class="room-cell list-grid-cell" onclick="app.setState('rooms', '${room.name}')">
-            <div class="room-name">${room.name}</div>
+            <div class="cell-header">
+              <div class="room-name">${room.name}</div>
+              <a href="javascript:void(0)" onclick="app.togglePopupMenu(this)">...</a>
+            </div>
+            <div class="popup-menu hidden">
+              <a href="javascript:void(0)" onclick="app.setState('rooms', '${room.name}')">Edit</a>
+              <a href="javascript:void(0)" onclick="app.deleteRoom('${room.name}')">Delete</a>
+            </div>
             <img src="${bgUrl}" />
           </div>
         `
@@ -763,9 +985,9 @@ class App {
               canvas.width = source.maskBox.w;
               canvas.height = source.maskBox.h;
               //context.globalCompositeOperation = 'multiply';
-              context.drawImage(mask, -source.maskBox.x, -source.maskBox.y);
-              context.globalCompositeOperation = 'source-in';
               context.drawImage(image, -source.maskBox.x, -source.maskBox.y);
+              context.globalCompositeOperation = 'destination-in';
+              context.drawImage(mask, -source.maskBox.x, -source.maskBox.y);
               imgUrl = canvas.toDataURL();
               res();
             }
@@ -781,14 +1003,36 @@ class App {
   renderObjectCells(list, roomName) {
     return list.map(async object => {
       console.log('i\'m cool', object);
-      const source = this.sources.find(source => source.id === (object.states[0].sources[0] || {}).id);
-      const imgUrl = await this.renderSourceImgUrl(source);
-      return `
-        <div class="object-cell list-grid-cell" onclick="app.setState('objects', '${object.name}-${roomName || object.roomName}')" data-room="${roomName || object.roomName}" data-object="${object.name}">
-          <div class="object-name">${object.name} - ${roomName || object.roomName}</div>
-          <center><img src="${imgUrl}" /></center>
-        </div>
-      `
+      if(object.states && object.states.length) {
+        const source = this.sources.find(source => source.id === (object.states[0].sources[0] || {}).id);
+        const imgUrl = await this.renderSourceImgUrl(source);
+        return `
+          <div class="object-cell list-grid-cell" onclick="app.setState('objects', '${object.name}-${roomName || object.roomName}')" data-room="${roomName || object.roomName}" data-object="${object.name}">
+            <div class="cell-header">
+              <div class="object-name">${object.name} - ${roomName || object.roomName}</div>
+              <a href="javascript:void(0)" onclick="app.togglePopupMenu(this)">...</a>
+            </div>
+            <div class="popup-menu hidden">
+              <a href="javascript:void(0)" onclick="app.setState('objects', '${object.name}-${roomName || object.roomName}')">Edit</a>
+              <a href="javascript:void(0)" onclick="app.deleteObject('${object.name}', '${roomName}')">Delete</a>
+            </div>
+            <center><img src="${imgUrl}" /></center>
+          </div>
+        `
+      }
+      else {
+        return `<div class="object-cell list-grid-cell" onclick="app.setState('objects', '${object.name}-${roomName || object.roomName}')" data-room="${roomName || object.roomName}" data-object="${object.name}">
+          <div class="cell-header">
+            <div class="object-name">${object.name} - ${roomName || object.roomName}</div>
+            <a href="javascript:void(0)" onclick="app.togglePopupMenu(this)">...</a>
+          </div>
+          <div class="popup-menu hidden">
+            <a href="javascript:void(0)" onclick="app.setState('objects', '${object.name}-${roomName || object.roomName}')">Edit</a>
+            <a href="javascript:void(0)" onclick="app.deleteObject('${object.name}', '${roomName}')">Delete</a>
+          </div>
+          <center>No states set</center>       
+        </div>`;
+      }
     })
   }
   async renderRoomDetails(roomName) {
@@ -812,7 +1056,14 @@ class App {
       const imgUrl = await this.renderSourceImgUrl(source);
       return `
         <div class="state-cell list-grid-cell" onclick="app.setState('states', '${state.name}-${objectName}-${roomName || object.roomName}')" data-room="${roomName}" data-object="${objectName}" data-state="${state.name}">
-          <div class="state-name">${state.name}</div>
+          <div class="cell-header">
+            <div class="state-name">${state.name}</div>
+            <a href="javascript:void(0)" onclick="app.togglePopupMenu(this)">...</a>
+          </div>
+          <div class="popup-menu hidden">
+            <a href="javascript:void(0)" onclick="app.setState('states', '${state.name}-${objectName}-${roomName || object.roomName}')">Edit</a>
+            <a href="javascript:void(0)" onclick="app.deleteState('${state.name}', '${objectName}', '${roomName}')">Delete</a>
+          </div>
           <center><img src="${imgUrl}" /></center>
         </div>
       `
@@ -839,11 +1090,19 @@ class App {
       const sources = this.sources.filter(source => source.id === item.id);
       allSources.push(...sources);
     })
-    return allSources.map(async source => {
+    return allSources.map(async (source, i) => {
       const imgUrl = await this.renderSourceImgUrl(source);
       return `
         <div class="source-cell list-grid-cell" data-room="${roomName}" data-object="${objectName}" data-state="${stateName}">
-          <div class="source-name">${source.filename}</div>
+          <div class="cell-header">
+            <div class="source-name">${source.filename}</div>
+            <a href="javascript:void(0)" onclick="app.togglePopupMenu(this)">...</a>
+          </div>
+          <div class="popup-menu hidden">
+            <a href="javascript:void(0)" onclick="app.openMaskingModal('${source.id}')">Edit mask</a>
+            <a href="javascript:void(0)" onclick="app.deleteSource('${source.id}', '${stateName}', '${objectName}', '${roomName}')">Delete source</a>
+            <a href="javascript:void(0)" onclick="app.deleteFrame('${source.id}')">Delete frame</a>
+          </div>
           <center><img src="${imgUrl}" /></center>
         </div>
       `
@@ -863,8 +1122,70 @@ class App {
     const state = object.states.find(state => state.name === stateName);
     console.log(state.sources);
     body.innerHTML = `<h1>STATE: ${state.name} - ${object.name} - ${room.name}</h1>`;
-    const results = await Promise.all(this.renderSourceCells(state.sources, state.name, room.name, object.name));
+    const results = await Promise.all(this.renderSourceCells(state.sources, state.name, object.name, room.name));
     body.innerHTML += `<div class="source-list-grid list-grid">` + results.join('') + `</div>`;
+
+  }    
+  deleteRoom(roomName) {
+    event.preventDefault();
+    event.cancelBubble = true;
+    if(!confirm('Are you sure?')) return;
+    this.game.rooms = this.game.rooms.filter(room => room.name !== roomName);
+    this.renderState(this.currentState.state, this.currentState.name);
+    this.saveGame();
+  }
+  deleteObject(objectName, roomName) {
+    event.preventDefault();
+    event.cancelBubble = true;
+    if(!confirm('Are you sure?')) return;
+    const room = this.game.rooms.find(room => room.name === roomName);
+    room.objects = room.objects.filter(object => object.name !== objectName);
+    this.renderState(this.currentState.state, this.currentState.name);
+    this.saveGame();
+  }
+  deleteState(stateName, objectName, roomName) {
+    event.preventDefault();
+    event.cancelBubble = true;
+    if(!confirm('Are you sure?')) return;
+    const room = this.game.rooms.find(room => room.name === roomName);
+    const object = room.objects.find(object => object.name === objectName);
+    object.states = object.states.filter(state => state.name !== stateName);
+    this.renderState(this.currentState.state, this.currentState.name);
+    this.saveGame();
+  }
+  deleteSource(sourceId, stateName, objectName, roomName) {
+    event.preventDefault();
+    event.cancelBubble = true;
+    if(!confirm('Are you sure?')) return;
+    const room = this.game.rooms.find(room => room.name === roomName);
+    const object = room.objects.find(object => object.name === objectName);
+    const state = object.states.find(state => state.name === stateName);
+    state.sources = state.sources.filter(source => source.id !== sourceId);
+    this.sources = this.sources.filter(source => source.id !== sourceId);
+    this.renderState(this.currentState.state, this.currentState.name);
+    this.saveGame();
+    this.saveSources();
+  }
+  deleteFrame(i, sourceId, stateName, objectName, roomName) {
+    event.preventDefault();
+    event.cancelBubble = true;
+    if(!confirm('Are you sure?')) return;
+  }
+  togglePopupMenu(elm) {
+    event.preventDefault();
+    event.cancelBubble = true;
+    const menu = elm.parentElement.parentElement.querySelector('.popup-menu');
+    const isHidden = menu.classList.contains('hidden');
+    document.querySelectorAll('.popup-menu').forEach(menu => menu.classList.add('hidden'));
+    if(isHidden) {
+      menu.classList.remove('hidden');
+    }
+    else {
+      menu.classList.add('hidden');
+    }
+  }
+  closePopupMenu() {
+    document.querySelectorAll('.popup-menu').forEach(menu => menu.classList.add('hidden'));
   }
   assignToLine() {
     const modal = document.querySelector('.script-modal');
@@ -926,6 +1247,7 @@ class App {
     document.location.hash = state + (name ? `/${name}` : '');
   }
   async renderState(state, name) {
+    this.currentState = {state, name};
     const body = document.querySelector('.body');
     switch (state.toLowerCase()) {
       case 'script':
@@ -935,10 +1257,10 @@ class App {
         this.renderTranscript();
         break;
       case 'music':
-        this.renderUnderConstruction(state);
+        this.renderMusicList(state);
         break;
       case 'sfx':
-        this.renderUnderConstruction(state);
+        this.renderSfxList(state);
         break;
       case 'animations':
         this.renderUnderConstruction(state);
@@ -999,6 +1321,17 @@ class App {
         game: this.game,
         language: 'en'
       }),
+    });
+  }
+  async saveSources() {
+    const response = await fetch('/save-sources', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({
+        sources: this.sources
+      })
     });
   }
   ok() {

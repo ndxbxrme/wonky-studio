@@ -177,6 +177,22 @@ def fill_mask_outlines(mask, fill_value):
 
     return filled_mask
 
+class SaveMaskImageResource:
+    def on_post(self, req, resp):
+        try:
+            data = req.media['data']
+            filename = req.media['filename']
+            # Convert base64 data to bytes
+            image_bytes = base64.b64decode(data)
+            # Save the image to disk
+            with open(filename, 'wb') as f:
+                f.write(image_bytes)
+            resp.status = falcon.HTTP_200
+            resp.media = {'message': 'Image saved successfully'}
+        except Exception as e:
+            resp.status = falcon.HTTP_500
+            resp.media = {'error': str(e)}
+
 class ErrorHandler:
     def __init__(self):
         pass
@@ -406,6 +422,7 @@ sgr = SaveGameResource()
 ssor = SaveSourcesResource()
 ur = UploadResource()
 sr = SegmentResource()
+smir = SaveMaskImageResource()
 app.add_error_handler(Exception, error_handler)
 app.add_route('/assign-words-to-line', awr)
 app.add_route('/get-audio-sources', gasr)
@@ -415,5 +432,6 @@ app.add_route('/save-game', sgr)
 app.add_route('/save-sources', ssor)
 app.add_route('/upload', ur)
 app.add_route('/segment', sr)
+app.add_route('/save-mask-image', smir)
 app.add_static_route('/', f'{os.getcwd()}/')
 app.add_static_route('/data', f'{os.getcwd()}/data')
