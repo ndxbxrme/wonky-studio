@@ -1,0 +1,64 @@
+<main class="app-layout">
+  <section class="hero" aria-labelledby="page-title">
+    <p class="eyebrow">Asset management</p>
+    <h1 id="page-title">{{appName}}</h1>
+    <p class="lede">
+      A focused workspace for tracking game assets, ownership, and production status.
+    </p>
+  </section>
+
+  <section class="auth-panel" aria-label="Authentication">
+    {{#if isGuest}}
+      <div class="panel-stack">
+        <h2>Sign in</h2>
+        <p>Use your team Google account to access {{organizationId}}.</p>
+        {{#if inviteToken}}
+          <p class="notice">This invite will be applied after Google sign-in.</p>
+        {{/if}}
+        <a class="button primary" href="{{loginUrl}}">Continue with Google</a>
+      </div>
+    {{/if}}
+
+    {{#if user}}
+      <div class="panel-stack">
+        <div>
+          <p class="eyebrow">Signed in</p>
+          <h2>{{user.display_name}}</h2>
+          <p>{{user.email}} · {{user.role}}</p>
+        </div>
+        <button class="button secondary" type="button" data-logout-button>Sign out</button>
+      </div>
+    {{/if}}
+  </section>
+
+  {{#if isAdmin}}
+    <section class="admin-panel" aria-labelledby="invites-title">
+      <div class="panel-stack">
+        <div>
+          <p class="eyebrow">Admin</p>
+          <h2 id="invites-title">Invite team members</h2>
+        </div>
+        <form class="invite-form" data-invite-form>
+          <label>
+            Email
+            <input name="email" type="email" placeholder="teammate@example.com" />
+          </label>
+          <label>
+            Role
+            <select name="role">
+              <option value="user">User</option>
+              <option value="admin">Admin</option>
+            </select>
+          </label>
+          <label>
+            Expires in days
+            <input name="expires_in_days" type="number" min="1" max="30" value="7" />
+          </label>
+          <button class="button primary" type="submit">Generate invite</button>
+        </form>
+        <p class="invite-result" data-invite-result aria-live="polite"></p>
+      </div>
+    </section>
+  {{/if}}
+</main>
+
