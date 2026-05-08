@@ -1,10 +1,10 @@
 import { expect, test } from '@playwright/test';
 
-test('shows the Wonky Studio home page', async ({ page }) => {
+test('redirects unauthenticated visitors to sign in', async ({ page }) => {
   await page.goto('/');
 
   await expect(page).toHaveTitle('Wonky Studio');
   await expect(page.getByRole('heading', { name: 'Wonky Studio' })).toBeVisible();
-  await expect(page.getByText('Asset management')).toBeVisible();
+  await expect(page.getByText('Not authorized')).toBeVisible();
+  await expect(page.getByRole('link', { name: 'Continue with Google' })).toBeVisible();
 });
-

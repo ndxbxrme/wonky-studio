@@ -1,0 +1,137 @@
+<main class="scene-layout" data-scene-page>
+  {{#if sceneFound}}
+    <header class="scene-header">
+      <div>
+        <a class="back-link" href="/">Scenes</a>
+        <p class="eyebrow">Scene {{scene.id}}</p>
+        <h1>{{scene.title}}</h1>
+        <p>{{scene.description}}</p>
+      </div>
+      <div class="scene-header__actions">
+        <button class="button secondary compact" type="button" data-action="analyze-vlm">Analyze with VLM</button>
+        <button class="button primary compact" type="button" data-action="extract-masks">Extract masks</button>
+        <button class="button secondary compact" type="button" data-action="logout">Sign out</button>
+      </div>
+    </header>
+
+    <section class="scene-detail-grid">
+      <article class="scene-preview-panel">
+        {{#if scene.thumbnailUrl}}
+          <img class="scene-preview" src="{{scene.thumbnailUrl}}" alt="{{scene.title}}" />
+        {{/if}}
+        <div class="scene-metadata">
+          <span>{{scene.images.length}} images</span>
+          <span>{{scene.objects.length}} objects</span>
+          <span>{{scene.objectMaskCount}} masks</span>
+        </div>
+        {{#if hasExtractionJob}}
+          <div class="job-status">
+            <strong>{{extractionJob.status}}</strong>
+            <p>{{extractionJob.message}}</p>
+            <p>{{extractionJob.progress_current}} / {{extractionJob.progress_total}}</p>
+            {{#if extractionJob.error}}
+              <p>{{extractionJob.error}}</p>
+            {{/if}}
+          </div>
+        {{/if}}
+        <p class="form-status" data-vlm-analysis-status aria-live="polite"></p>
+        <p class="form-status" data-mask-extraction-status aria-live="polite"></p>
+      </article>
+
+      <aside class="objects-panel">
+        <div class="panel-stack">
+          <div>
+            <p class="eyebrow">Objects</p>
+            <h2>Inventory</h2>
+          </div>
+          {{#if scene.hasObjects}}
+            <div class="object-list">
+              {{#each scene.objects as object}}
+                <span>{{object.name}}</span>
+              {{/each}}
+            </div>
+          {{/if}}
+          <form class="object-form" data-object-form>
+            <label>
+              Object name
+              <input name="name" type="text" placeholder="lamp" required />
+            </label>
+            <label>
+              Description
+              <input name="description" type="text" placeholder="Optional note" />
+            </label>
+            <label>
+              Segmentation prompt
+              <input name="prompt" type="text" placeholder="bed with covers and pillow" />
+            </label>
+            <button class="button secondary compact" type="submit">Add object</button>
+            <p class="form-status" data-object-form-status aria-live="polite"></p>
+          </form>
+        </div>
+      </aside>
+    </section>
+
+    <section class="object-masks scene-section" aria-label="Object masks">
+      <div class="object-masks__header">
+        <div>
+          <p class="eyebrow">Segmentation</p>
+          <h2>Objects and masks</h2>
+        </div>
+        <p>{{scene.objects.length}} objects · {{scene.objectMaskCount}} masks</p>
+      </div>
+      {{#if scene.hasObjects}}
+        <div class="object-mask-list">
+          {{#each scene.objects as object}}
+            <article class="object-mask-row">
+              {{#if object.hasMasks}}
+                <a class="object-thumbnail" href="/mask-editor/{{scene.id}}/{{object.id}}/{{object.firstMaskId}}" aria-label="Edit {{object.name}} masks">
+                  <img src="{{object.thumbnailUrl}}" alt="{{object.name}} thumbnail" />
+                </a>
+              {{/if}}
+              {{#if object.hasNoMasks}}
+                <div class="object-thumbnail object-thumbnail--empty" aria-hidden="true"></div>
+              {{/if}}
+              <div class="object-mask-row__content">
+                <div class="object-mask-row__summary">
+                  <div>
+                    <strong>{{object.name}}</strong>
+                    <p>
+                      {{object.source}} · {{object.maskCount}} masks ·
+                      <a class="inline-link" href="/animations/{{scene.id}}/{{object.id}}">{{object.animationCount}} animations</a>
+                    </p>
+                    {{#if object.description}}
+                      <p>{{object.description}}</p>
+                    {{/if}}
+                  </div>
+                  <button
+                    class="button danger compact"
+                    type="button"
+                    data-action="delete-object"
+                    data-object-id="{{object.id}}"
+                    data-object-name="{{object.name}}"
+                  >Remove</button>
+                </div>
+                <form class="object-prompt-form" data-object-prompt-form data-object-id="{{object.id}}">
+                  <label>
+                    Segmentation prompt
+                    <input name="prompt" type="text" value="{{object.prompt}}" required />
+                  </label>
+                  <button class="button secondary compact" type="submit">Save prompt</button>
+                  <p class="form-status" data-object-prompt-status aria-live="polite"></p>
+                </form>
+              </div>
+            </article>
+          {{/each}}
+        </div>
+      {{/if}}
+      <p class="form-status" data-object-action-status aria-live="polite"></p>
+    </section>
+  {{/if}}
+
+  {{#if sceneMissing}}
+    <section class="empty-state">
+      <p>Scene not found.</p>
+      <a class="button secondary" href="/">Back to scenes</a>
+    </section>
+  {{/if}}
+</main>

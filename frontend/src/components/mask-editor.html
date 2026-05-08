@@ -1,0 +1,21 @@
+<main class="mask-editor-page" data-mask-editor-page>
+  {{#if editorReady}}
+    <header class="mask-editor-header">
+      <div>
+        <a class="back-link" href="/scene/{{scene.id}}">Scene {{scene.id}}</a>
+        <p class="eyebrow">Mask editor</p>
+        <h1>{{object.name}}</h1>
+        <p>{{currentMask.original_filename}}</p>
+      </div>
+      <p class="form-status" data-editor-status aria-live="polite"></p>
+    </header>
+    <wonky-mask-editor></wonky-mask-editor>
+  {{/if}}
+
+  {{#if editorMissing}}
+    <section class="empty-state">
+      <p>Mask frame not found.</p>
+      <a class="button secondary" href="/">Back to scenes</a>
+    </section>
+  {{/if}}
+</main>

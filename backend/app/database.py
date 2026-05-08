@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import json
 import os
+import re
 import sqlite3
 from datetime import timedelta
 from pathlib import Path
@@ -122,6 +124,237 @@ def init_database(
             """
         )
         _ensure_column(connection, "assets", "organization_id", "TEXT NOT NULL DEFAULT 'wonky-studio'")
+        connection.execute(
+            """
+            CREATE TABLE IF NOT EXISTS upload_batches (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                organization_id TEXT NOT NULL,
+                created_by_user_id INTEGER NOT NULL,
+                status TEXT NOT NULL DEFAULT 'queued',
+                file_count INTEGER NOT NULL DEFAULT 0,
+                total_bytes INTEGER NOT NULL DEFAULT 0,
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (organization_id) REFERENCES organizations(id),
+                FOREIGN KEY (created_by_user_id) REFERENCES users(id)
+            )
+            """
+        )
+        connection.execute(
+            """
+            CREATE TABLE IF NOT EXISTS uploaded_files (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                batch_id INTEGER NOT NULL,
+                organization_id TEXT NOT NULL,
+                uploaded_by_user_id INTEGER NOT NULL,
+                original_filename TEXT NOT NULL,
+                stored_filename TEXT NOT NULL,
+                relative_path TEXT NOT NULL,
+                content_type TEXT,
+                file_size INTEGER NOT NULL,
+                processing_status TEXT NOT NULL DEFAULT 'queued',
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (batch_id) REFERENCES upload_batches(id),
+                FOREIGN KEY (organization_id) REFERENCES organizations(id),
+                FOREIGN KEY (uploaded_by_user_id) REFERENCES users(id)
+            )
+            """
+        )
+        connection.execute(
+            """
+            CREATE TABLE IF NOT EXISTS scenes (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                organization_id TEXT NOT NULL,
+                title TEXT NOT NULL,
+                description TEXT NOT NULL DEFAULT '',
+                status TEXT NOT NULL DEFAULT 'draft',
+                representative_uploaded_file_id INTEGER,
+                representative_hash TEXT,
+                created_by_user_id INTEGER NOT NULL,
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (organization_id) REFERENCES organizations(id),
+                FOREIGN KEY (representative_uploaded_file_id) REFERENCES uploaded_files(id),
+                FOREIGN KEY (created_by_user_id) REFERENCES users(id)
+            )
+            """
+        )
+        connection.execute(
+            """
+            CREATE TABLE IF NOT EXISTS scene_images (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                scene_id INTEGER NOT NULL,
+                uploaded_file_id INTEGER NOT NULL UNIQUE,
+                perceptual_hash TEXT NOT NULL,
+                width INTEGER NOT NULL,
+                height INTEGER NOT NULL,
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (scene_id) REFERENCES scenes(id),
+                FOREIGN KEY (uploaded_file_id) REFERENCES uploaded_files(id)
+            )
+            """
+        )
+        connection.execute(
+            """
+            CREATE TABLE IF NOT EXISTS scene_objects (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                scene_id INTEGER NOT NULL,
+                name TEXT NOT NULL,
+                description TEXT NOT NULL DEFAULT '',
+                prompt TEXT NOT NULL DEFAULT '',
+                category TEXT NOT NULL DEFAULT 'other',
+                source TEXT NOT NULL DEFAULT 'manual',
+                status TEXT NOT NULL DEFAULT 'draft',
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (scene_id) REFERENCES scenes(id)
+            )
+            """
+        )
+        _ensure_column(connection, "scene_objects", "prompt", "TEXT NOT NULL DEFAULT ''")
+        _ensure_column(connection, "scene_objects", "category", "TEXT NOT NULL DEFAULT 'other'")
+        _ensure_column(connection, "scene_objects", "source", "TEXT NOT NULL DEFAULT 'manual'")
+        connection.execute(
+            """
+            UPDATE scene_objects
+            SET prompt = name
+            WHERE trim(prompt) = ''
+            """
+        )
+        connection.execute(
+            """
+            CREATE TABLE IF NOT EXISTS object_animations (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                scene_object_id INTEGER NOT NULL,
+                name TEXT NOT NULL,
+                status TEXT NOT NULL DEFAULT 'draft',
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (scene_object_id) REFERENCES scene_objects(id)
+            )
+            """
+        )
+        connection.execute(
+            """
+            CREATE TABLE IF NOT EXISTS object_animation_segments (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                object_animation_id INTEGER NOT NULL,
+                start_frame INTEGER NOT NULL,
+                end_frame INTEGER NOT NULL,
+                frame_duration_seconds REAL NOT NULL,
+                sort_order INTEGER NOT NULL DEFAULT 0,
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (object_animation_id) REFERENCES object_animations(id)
+            )
+            """
+        )
+        connection.execute(
+            """
+            CREATE TABLE IF NOT EXISTS object_masks (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                scene_object_id INTEGER NOT NULL,
+                uploaded_file_id INTEGER NOT NULL,
+                relative_path TEXT NOT NULL,
+                soft_relative_path TEXT,
+                prompt_text TEXT NOT NULL DEFAULT '',
+                bbox_json TEXT,
+                score REAL,
+                status TEXT NOT NULL DEFAULT 'draft',
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (scene_object_id) REFERENCES scene_objects(id),
+                FOREIGN KEY (uploaded_file_id) REFERENCES uploaded_files(id)
+            )
+            """
+        )
+        _ensure_column(connection, "object_masks", "soft_relative_path", "TEXT")
+        _ensure_column(connection, "object_masks", "prompt_text", "TEXT NOT NULL DEFAULT ''")
+        _ensure_column(
+            connection,
+            "object_masks",
+            "updated_at",
+            "TEXT NOT NULL DEFAULT ''",
+        )
+        connection.execute(
+            """
+            UPDATE object_masks
+            SET updated_at = created_at
+            WHERE trim(updated_at) = ''
+            """
+        )
+        connection.execute(
+            """
+            CREATE TABLE IF NOT EXISTS scene_mask_prompts (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                scene_id INTEGER NOT NULL,
+                text TEXT NOT NULL,
+                source TEXT NOT NULL DEFAULT 'manual',
+                enabled INTEGER NOT NULL DEFAULT 1,
+                status TEXT NOT NULL DEFAULT 'draft',
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (scene_id) REFERENCES scenes(id)
+            )
+            """
+        )
+        connection.execute(
+            """
+            CREATE TABLE IF NOT EXISTS mask_candidates (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                scene_mask_prompt_id INTEGER NOT NULL,
+                scene_image_id INTEGER NOT NULL,
+                uploaded_file_id INTEGER NOT NULL,
+                raw_relative_path TEXT NOT NULL,
+                soft_relative_path TEXT,
+                bbox_json TEXT,
+                score REAL,
+                selected INTEGER NOT NULL DEFAULT 0,
+                status TEXT NOT NULL DEFAULT 'draft',
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (scene_mask_prompt_id) REFERENCES scene_mask_prompts(id),
+                FOREIGN KEY (scene_image_id) REFERENCES scene_images(id),
+                FOREIGN KEY (uploaded_file_id) REFERENCES uploaded_files(id)
+            )
+            """
+        )
+        connection.execute(
+            """
+            CREATE TABLE IF NOT EXISTS object_mask_images (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                scene_object_id INTEGER NOT NULL,
+                uploaded_file_id INTEGER NOT NULL,
+                relative_path TEXT NOT NULL,
+                revision INTEGER NOT NULL DEFAULT 1,
+                source TEXT NOT NULL DEFAULT 'generated',
+                status TEXT NOT NULL DEFAULT 'draft',
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (scene_object_id) REFERENCES scene_objects(id),
+                FOREIGN KEY (uploaded_file_id) REFERENCES uploaded_files(id)
+            )
+            """
+        )
+        connection.execute(
+            """
+            CREATE TABLE IF NOT EXISTS processing_jobs (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                organization_id TEXT NOT NULL,
+                job_type TEXT NOT NULL,
+                status TEXT NOT NULL DEFAULT 'queued',
+                scene_id INTEGER,
+                progress_current INTEGER NOT NULL DEFAULT 0,
+                progress_total INTEGER NOT NULL DEFAULT 0,
+                message TEXT NOT NULL DEFAULT '',
+                result_json TEXT,
+                error TEXT,
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                started_at TEXT,
+                completed_at TEXT,
+                FOREIGN KEY (organization_id) REFERENCES organizations(id),
+                FOREIGN KEY (scene_id) REFERENCES scenes(id)
+            )
+            """
+        )
 
 
 def list_assets(db_path: Path, organization_id: str) -> list[dict[str, Any]]:
@@ -137,6 +370,295 @@ def list_assets(db_path: Path, organization_id: str) -> list[dict[str, Any]]:
         ).fetchall()
 
     return [dict(row) for row in rows]
+
+
+def reset_workspace_tables(db_path: Path) -> list[str]:
+    tables = [
+        "object_mask_images",
+        "mask_candidates",
+        "scene_mask_prompts",
+        "object_masks",
+        "object_animation_segments",
+        "object_animations",
+        "scene_objects",
+        "scene_images",
+        "scenes",
+        "uploaded_files",
+        "upload_batches",
+        "assets",
+        "invites",
+        "processing_jobs",
+    ]
+    with connect(db_path) as connection:
+        for table in tables:
+            connection.execute(f"DELETE FROM {table}")
+        placeholders = ",".join("?" for _ in tables)
+        connection.execute(
+            f"DELETE FROM sqlite_sequence WHERE name IN ({placeholders})",
+            tables,
+        )
+
+    return tables
+
+
+def create_processing_job(
+    db_path: Path,
+    organization_id: str,
+    job_type: str,
+    scene_id: int | None = None,
+    progress_total: int = 0,
+    message: str = "",
+) -> dict[str, Any]:
+    with connect(db_path) as connection:
+        cursor = connection.execute(
+            """
+            INSERT INTO processing_jobs (
+                organization_id,
+                job_type,
+                scene_id,
+                progress_total,
+                message
+            )
+            VALUES (?, ?, ?, ?, ?)
+            """,
+            (organization_id, job_type, scene_id, progress_total, message),
+        )
+        row = connection.execute(
+            """
+            SELECT id,
+                   organization_id,
+                   job_type,
+                   status,
+                   scene_id,
+                   progress_current,
+                   progress_total,
+                   message,
+                   result_json,
+                   error,
+                   created_at,
+                   updated_at,
+                   started_at,
+                   completed_at
+            FROM processing_jobs
+            WHERE id = ?
+            """,
+            (cursor.lastrowid,),
+        ).fetchone()
+
+    return dict(row)
+
+
+def get_processing_job(
+    db_path: Path,
+    job_id: int,
+    organization_id: str,
+) -> dict[str, Any] | None:
+    with connect(db_path) as connection:
+        row = connection.execute(
+            """
+            SELECT id,
+                   organization_id,
+                   job_type,
+                   status,
+                   scene_id,
+                   progress_current,
+                   progress_total,
+                   message,
+                   result_json,
+                   error,
+                   created_at,
+                   updated_at,
+                   started_at,
+                   completed_at
+            FROM processing_jobs
+            WHERE id = ?
+              AND organization_id = ?
+            """,
+            (job_id, organization_id),
+        ).fetchone()
+
+    return dict(row) if row else None
+
+
+def get_active_processing_job_for_scene(
+    db_path: Path,
+    organization_id: str,
+    scene_id: int,
+    job_type: str,
+) -> dict[str, Any] | None:
+    with connect(db_path) as connection:
+        row = connection.execute(
+            """
+            SELECT id,
+                   organization_id,
+                   job_type,
+                   status,
+                   scene_id,
+                   progress_current,
+                   progress_total,
+                   message,
+                   result_json,
+                   error,
+                   created_at,
+                   updated_at,
+                   started_at,
+                   completed_at
+            FROM processing_jobs
+            WHERE organization_id = ?
+              AND scene_id = ?
+              AND job_type = ?
+              AND status IN ('queued', 'running')
+            ORDER BY id DESC
+            LIMIT 1
+            """,
+            (organization_id, scene_id, job_type),
+        ).fetchone()
+
+    return dict(row) if row else None
+
+
+def claim_next_processing_job(db_path: Path) -> dict[str, Any] | None:
+    with connect(db_path) as connection:
+        row = connection.execute(
+            """
+            SELECT id,
+                   organization_id,
+                   job_type,
+                   status,
+                   scene_id,
+                   progress_current,
+                   progress_total,
+                   message,
+                   result_json,
+                   error,
+                   created_at,
+                   updated_at,
+                   started_at,
+                   completed_at
+            FROM processing_jobs
+            WHERE status = 'queued'
+            ORDER BY id ASC
+            LIMIT 1
+            """
+        ).fetchone()
+        if row is None:
+            return None
+        connection.execute(
+            """
+            UPDATE processing_jobs
+            SET status = 'running',
+                message = 'Starting...',
+                started_at = CURRENT_TIMESTAMP,
+                updated_at = CURRENT_TIMESTAMP
+            WHERE id = ?
+            """,
+            (row["id"],),
+        )
+        claimed = connection.execute(
+            """
+            SELECT id,
+                   organization_id,
+                   job_type,
+                   status,
+                   scene_id,
+                   progress_current,
+                   progress_total,
+                   message,
+                   result_json,
+                   error,
+                   created_at,
+                   updated_at,
+                   started_at,
+                   completed_at
+            FROM processing_jobs
+            WHERE id = ?
+            """,
+            (row["id"],),
+        ).fetchone()
+
+    return dict(claimed)
+
+
+def requeue_interrupted_processing_jobs(db_path: Path) -> None:
+    with connect(db_path) as connection:
+        connection.execute(
+            """
+            UPDATE processing_jobs
+            SET status = 'queued',
+                message = 'Requeued after server restart',
+                updated_at = CURRENT_TIMESTAMP,
+                started_at = NULL
+            WHERE status = 'running'
+            """
+        )
+
+
+def update_processing_job_progress(
+    db_path: Path,
+    job_id: int,
+    progress_current: int,
+    progress_total: int | None = None,
+    message: str | None = None,
+) -> None:
+    assignments = ["progress_current = ?", "updated_at = CURRENT_TIMESTAMP"]
+    values: list[Any] = [progress_current]
+    if progress_total is not None:
+        assignments.append("progress_total = ?")
+        values.append(progress_total)
+    if message is not None:
+        assignments.append("message = ?")
+        values.append(message)
+    with connect(db_path) as connection:
+        connection.execute(
+            f"""
+            UPDATE processing_jobs
+            SET {", ".join(assignments)}
+            WHERE id = ?
+            """,
+            (*values, job_id),
+        )
+
+
+def complete_processing_job(
+    db_path: Path,
+    job_id: int,
+    result: dict[str, Any],
+    message: str = "Complete",
+) -> None:
+    with connect(db_path) as connection:
+        connection.execute(
+            """
+            UPDATE processing_jobs
+            SET status = 'succeeded',
+                progress_current = progress_total,
+                message = ?,
+                result_json = ?,
+                completed_at = CURRENT_TIMESTAMP,
+                updated_at = CURRENT_TIMESTAMP
+            WHERE id = ?
+            """,
+            (message, json_dumps(result), job_id),
+        )
+
+
+def fail_processing_job(
+    db_path: Path,
+    job_id: int,
+    error: str,
+) -> None:
+    with connect(db_path) as connection:
+        connection.execute(
+            """
+            UPDATE processing_jobs
+            SET status = 'failed',
+                message = 'Failed',
+                error = ?,
+                completed_at = CURRENT_TIMESTAMP,
+                updated_at = CURRENT_TIMESTAMP
+            WHERE id = ?
+            """,
+            (error, job_id),
+        )
 
 
 def create_asset(
@@ -168,6 +690,1433 @@ def create_asset(
         raise RuntimeError("Created asset could not be loaded")
 
     return dict(row)
+
+
+def create_upload_batch(
+    db_path: Path,
+    organization_id: str,
+    created_by_user_id: int,
+) -> dict[str, Any]:
+    with connect(db_path) as connection:
+        cursor = connection.execute(
+            """
+            INSERT INTO upload_batches (organization_id, created_by_user_id)
+            VALUES (?, ?)
+            """,
+            (organization_id, created_by_user_id),
+        )
+        row = connection.execute(
+            """
+            SELECT id, organization_id, created_by_user_id, status, file_count, total_bytes, created_at
+            FROM upload_batches
+            WHERE id = ?
+            """,
+            (cursor.lastrowid,),
+        ).fetchone()
+
+    return dict(row)
+
+
+def add_uploaded_file(
+    db_path: Path,
+    batch_id: int,
+    organization_id: str,
+    uploaded_by_user_id: int,
+    original_filename: str,
+    stored_filename: str,
+    relative_path: str,
+    content_type: str | None,
+    file_size: int,
+) -> dict[str, Any]:
+    with connect(db_path) as connection:
+        cursor = connection.execute(
+            """
+            INSERT INTO uploaded_files (
+                batch_id,
+                organization_id,
+                uploaded_by_user_id,
+                original_filename,
+                stored_filename,
+                relative_path,
+                content_type,
+                file_size
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                batch_id,
+                organization_id,
+                uploaded_by_user_id,
+                original_filename,
+                stored_filename,
+                relative_path,
+                content_type,
+                file_size,
+            ),
+        )
+        connection.execute(
+            """
+            UPDATE upload_batches
+            SET file_count = file_count + 1,
+                total_bytes = total_bytes + ?
+            WHERE id = ?
+            """,
+            (file_size, batch_id),
+        )
+        row = connection.execute(
+            """
+            SELECT id,
+                   batch_id,
+                   organization_id,
+                   uploaded_by_user_id,
+                   original_filename,
+                   stored_filename,
+                   relative_path,
+                   content_type,
+                   file_size,
+                   processing_status,
+                   created_at
+            FROM uploaded_files
+            WHERE id = ?
+            """,
+            (cursor.lastrowid,),
+        ).fetchone()
+
+    return dict(row)
+
+
+def get_upload_batch(db_path: Path, batch_id: int) -> dict[str, Any] | None:
+    with connect(db_path) as connection:
+        batch = connection.execute(
+            """
+            SELECT id, organization_id, created_by_user_id, status, file_count, total_bytes, created_at
+            FROM upload_batches
+            WHERE id = ?
+            """,
+            (batch_id,),
+        ).fetchone()
+        if batch is None:
+            return None
+        files = connection.execute(
+            """
+            SELECT id,
+                   batch_id,
+                   organization_id,
+                   uploaded_by_user_id,
+                   original_filename,
+                   stored_filename,
+                   relative_path,
+                   content_type,
+                   file_size,
+                   processing_status,
+                   created_at
+            FROM uploaded_files
+            WHERE batch_id = ?
+            ORDER BY id ASC
+            """,
+            (batch_id,),
+        ).fetchall()
+
+    return {**dict(batch), "files": [dict(row) for row in files]}
+
+
+def get_uploaded_file_by_id(
+    db_path: Path,
+    uploaded_file_id: int,
+    organization_id: str,
+) -> dict[str, Any] | None:
+    with connect(db_path) as connection:
+        row = connection.execute(
+            """
+            SELECT id,
+                   batch_id,
+                   organization_id,
+                   uploaded_by_user_id,
+                   original_filename,
+                   stored_filename,
+                   relative_path,
+                   content_type,
+                   file_size,
+                   processing_status,
+                   created_at
+            FROM uploaded_files
+            WHERE id = ?
+              AND organization_id = ?
+            """,
+            (uploaded_file_id, organization_id),
+        ).fetchone()
+
+    return dict(row) if row else None
+
+
+def list_upload_batches(
+    db_path: Path,
+    organization_id: str,
+    limit: int = 10,
+) -> list[dict[str, Any]]:
+    with connect(db_path) as connection:
+        rows = connection.execute(
+            """
+            SELECT id, organization_id, created_by_user_id, status, file_count, total_bytes, created_at
+            FROM upload_batches
+            WHERE organization_id = ?
+            ORDER BY id DESC
+            LIMIT ?
+            """,
+            (organization_id, limit),
+        ).fetchall()
+
+    return [dict(row) for row in rows]
+
+
+def list_uploaded_image_files_for_batch(
+    db_path: Path,
+    batch_id: int,
+    organization_id: str,
+) -> list[dict[str, Any]]:
+    with connect(db_path) as connection:
+        rows = connection.execute(
+            """
+            SELECT id,
+                   batch_id,
+                   organization_id,
+                   uploaded_by_user_id,
+                   original_filename,
+                   stored_filename,
+                   relative_path,
+                   content_type,
+                   file_size,
+                   processing_status,
+                   created_at
+            FROM uploaded_files
+            WHERE batch_id = ?
+              AND organization_id = ?
+              AND (
+                content_type LIKE 'image/%'
+                OR lower(original_filename) GLOB '*.jpg'
+                OR lower(original_filename) GLOB '*.jpeg'
+                OR lower(original_filename) GLOB '*.png'
+                OR lower(original_filename) GLOB '*.webp'
+              )
+            ORDER BY id ASC
+            """,
+            (batch_id, organization_id),
+        ).fetchall()
+
+    return sorted(
+        [dict(row) for row in rows],
+        key=lambda row: (_original_filename_sort_key(row), row["id"]),
+    )
+
+
+def list_scene_image_hashes(
+    db_path: Path,
+    organization_id: str,
+) -> list[dict[str, Any]]:
+    with connect(db_path) as connection:
+        rows = connection.execute(
+            """
+            SELECT scene_images.scene_id,
+                   scene_images.uploaded_file_id,
+                   scene_images.perceptual_hash,
+                   scene_images.width,
+                   scene_images.height
+            FROM scene_images
+            JOIN scenes ON scenes.id = scene_images.scene_id
+            WHERE scenes.organization_id = ?
+            """,
+            (organization_id,),
+        ).fetchall()
+
+    return [dict(row) for row in rows]
+
+
+def create_scene(
+    db_path: Path,
+    organization_id: str,
+    created_by_user_id: int,
+    representative_uploaded_file_id: int,
+    representative_hash: str,
+    title: str,
+    description: str,
+) -> dict[str, Any]:
+    with connect(db_path) as connection:
+        cursor = connection.execute(
+            """
+            INSERT INTO scenes (
+                organization_id,
+                title,
+                description,
+                representative_uploaded_file_id,
+                representative_hash,
+                created_by_user_id
+            )
+            VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            (
+                organization_id,
+                title,
+                description,
+                representative_uploaded_file_id,
+                representative_hash,
+                created_by_user_id,
+            ),
+        )
+        row = connection.execute(
+            """
+            SELECT id,
+                   organization_id,
+                   title,
+                   description,
+                   status,
+                   representative_uploaded_file_id,
+                   representative_hash,
+                   created_by_user_id,
+                   created_at,
+                   updated_at
+            FROM scenes
+            WHERE id = ?
+            """,
+            (cursor.lastrowid,),
+        ).fetchone()
+
+    return dict(row)
+
+
+def add_scene_image(
+    db_path: Path,
+    scene_id: int,
+    uploaded_file_id: int,
+    perceptual_hash: str,
+    width: int,
+    height: int,
+) -> dict[str, Any]:
+    with connect(db_path) as connection:
+        connection.execute(
+            """
+            INSERT INTO scene_images (
+                scene_id,
+                uploaded_file_id,
+                perceptual_hash,
+                width,
+                height
+            )
+            VALUES (?, ?, ?, ?, ?)
+            ON CONFLICT(uploaded_file_id)
+            DO UPDATE SET scene_id = excluded.scene_id,
+                          perceptual_hash = excluded.perceptual_hash,
+                          width = excluded.width,
+                          height = excluded.height
+            """,
+            (scene_id, uploaded_file_id, perceptual_hash, width, height),
+        )
+        row = connection.execute(
+            """
+            SELECT id, scene_id, uploaded_file_id, perceptual_hash, width, height, created_at
+            FROM scene_images
+            WHERE uploaded_file_id = ?
+            """,
+            (uploaded_file_id,),
+        ).fetchone()
+
+    return dict(row)
+
+
+def get_scene_with_images(db_path: Path, scene_id: int) -> dict[str, Any] | None:
+    with connect(db_path) as connection:
+        scene = connection.execute(
+            """
+            SELECT id,
+                   organization_id,
+                   title,
+                   description,
+                   status,
+                   representative_uploaded_file_id,
+                   representative_hash,
+                   created_by_user_id,
+                   created_at,
+                   updated_at
+            FROM scenes
+            WHERE id = ?
+            """,
+            (scene_id,),
+        ).fetchone()
+        if scene is None:
+            return None
+        images = connection.execute(
+            """
+            SELECT scene_images.id,
+                   scene_images.scene_id,
+                   scene_images.uploaded_file_id,
+                   scene_images.perceptual_hash,
+                   scene_images.width,
+                   scene_images.height,
+                   scene_images.created_at,
+                   uploaded_files.original_filename,
+                   uploaded_files.relative_path
+            FROM scene_images
+            JOIN uploaded_files ON uploaded_files.id = scene_images.uploaded_file_id
+            WHERE scene_images.scene_id = ?
+            ORDER BY scene_images.id ASC
+            """,
+            (scene_id,),
+        ).fetchall()
+        images = sorted(
+            [dict(row) for row in images],
+            key=lambda row: (_original_filename_sort_key(row), row["id"]),
+        )
+        objects = connection.execute(
+            """
+            SELECT scene_objects.id,
+                   scene_objects.scene_id,
+                   scene_objects.name,
+                   scene_objects.description,
+                   scene_objects.prompt,
+                   scene_objects.category,
+                   scene_objects.source,
+                   scene_objects.status,
+                   scene_objects.created_at,
+                   scene_objects.updated_at,
+                   COUNT(DISTINCT object_masks.id) AS mask_image_count,
+                   COUNT(DISTINCT object_animations.id) AS animation_count
+            FROM scene_objects
+            LEFT JOIN object_masks ON object_masks.scene_object_id = scene_objects.id
+            LEFT JOIN object_animations ON object_animations.scene_object_id = scene_objects.id
+            WHERE scene_objects.scene_id = ?
+            GROUP BY scene_objects.id
+            ORDER BY lower(scene_objects.name) ASC
+            """,
+            (scene_id,),
+        ).fetchall()
+        object_ids = [row["id"] for row in objects]
+        masks_by_object_id: dict[int, list[dict[str, Any]]] = {
+            object_id: [] for object_id in object_ids
+        }
+        if object_ids:
+            placeholders = ",".join("?" for _ in object_ids)
+            object_masks = connection.execute(
+                f"""
+                SELECT object_masks.id,
+                       object_masks.scene_object_id,
+                       object_masks.uploaded_file_id,
+                       object_masks.relative_path,
+                       object_masks.soft_relative_path,
+                       object_masks.prompt_text,
+                       object_masks.bbox_json,
+                       object_masks.score,
+                       object_masks.status,
+                       object_masks.created_at,
+                       object_masks.updated_at,
+                       uploaded_files.original_filename
+                FROM object_masks
+                JOIN uploaded_files ON uploaded_files.id = object_masks.uploaded_file_id
+                WHERE object_masks.scene_object_id IN ({placeholders})
+                ORDER BY uploaded_files.original_filename ASC, object_masks.id DESC
+                """,
+                object_ids,
+            ).fetchall()
+            object_masks = sorted(
+                [dict(row) for row in object_masks],
+                key=lambda row: (
+                    row["scene_object_id"],
+                    _original_filename_sort_key(row),
+                    row["id"],
+                ),
+            )
+            for object_mask in object_masks:
+                masks_by_object_id[object_mask["scene_object_id"]].append(object_mask)
+    return {
+        **dict(scene),
+        "images": images,
+        "objects": [
+            {
+                **dict(row),
+                "masks": masks_by_object_id[row["id"]],
+            }
+            for row in objects
+        ],
+    }
+
+
+def list_scenes(db_path: Path, organization_id: str, limit: int = 20) -> list[dict[str, Any]]:
+    with connect(db_path) as connection:
+        rows = connection.execute(
+            """
+            SELECT scenes.id,
+                   scenes.organization_id,
+                   scenes.title,
+                   scenes.description,
+                   scenes.status,
+                   scenes.representative_uploaded_file_id,
+                   scenes.representative_hash,
+                   scenes.created_by_user_id,
+                   scenes.created_at,
+                   scenes.updated_at,
+                   COUNT(DISTINCT scene_images.id) AS image_count,
+                   COUNT(DISTINCT scene_objects.id) AS object_count
+            FROM scenes
+            LEFT JOIN scene_images ON scene_images.scene_id = scenes.id
+            LEFT JOIN scene_objects ON scene_objects.scene_id = scenes.id
+            WHERE scenes.organization_id = ?
+            GROUP BY scenes.id
+            ORDER BY scenes.id DESC
+            LIMIT ?
+            """,
+            (organization_id, limit),
+        ).fetchall()
+
+    return [dict(row) for row in rows]
+
+
+def create_scene_object(
+    db_path: Path,
+    scene_id: int,
+    name: str,
+    description: str = "",
+    prompt: str | None = None,
+    category: str = "other",
+    source: str = "manual",
+) -> dict[str, Any]:
+    normalized_name = name.strip()
+    normalized_prompt = (prompt or normalized_name).strip()
+    with connect(db_path) as connection:
+        cursor = connection.execute(
+            """
+            INSERT INTO scene_objects (scene_id, name, description, prompt, category, source)
+            VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            (
+                scene_id,
+                normalized_name,
+                description.strip(),
+                normalized_prompt,
+                category.strip(),
+                source.strip(),
+            ),
+        )
+        row = connection.execute(
+            """
+            SELECT id, scene_id, name, description, prompt, category, source, status, created_at, updated_at
+            FROM scene_objects
+            WHERE id = ?
+            """,
+            (cursor.lastrowid,),
+        ).fetchone()
+
+    return dict(row)
+
+
+def create_scene_mask_prompt(
+    db_path: Path,
+    scene_id: int,
+    text: str,
+    source: str = "manual",
+    enabled: bool = True,
+) -> tuple[dict[str, Any], bool]:
+    normalized_text = _normalize_prompt_text(text)
+    with connect(db_path) as connection:
+        existing = connection.execute(
+            """
+            SELECT id, scene_id, text, source, enabled, status, created_at, updated_at
+            FROM scene_mask_prompts
+            WHERE scene_id = ?
+              AND lower(text) = ?
+            """,
+            (scene_id, normalized_text.lower()),
+        ).fetchone()
+        if existing:
+            return {**dict(existing), "enabled": bool(existing["enabled"])}, False
+
+        cursor = connection.execute(
+            """
+            INSERT INTO scene_mask_prompts (scene_id, text, source, enabled)
+            VALUES (?, ?, ?, ?)
+            """,
+            (scene_id, normalized_text, source.strip() or "manual", int(enabled)),
+        )
+        row = connection.execute(
+            """
+            SELECT id, scene_id, text, source, enabled, status, created_at, updated_at
+            FROM scene_mask_prompts
+            WHERE id = ?
+            """,
+            (cursor.lastrowid,),
+        ).fetchone()
+
+    return {**dict(row), "enabled": bool(row["enabled"])}, True
+
+
+def update_scene_mask_prompt(
+    db_path: Path,
+    prompt_id: int,
+    scene_id: int,
+    text: str | None = None,
+    enabled: bool | None = None,
+) -> dict[str, Any] | None:
+    assignments = []
+    values: list[Any] = []
+    if text is not None:
+        assignments.append("text = ?")
+        values.append(_normalize_prompt_text(text))
+    if enabled is not None:
+        assignments.append("enabled = ?")
+        values.append(int(enabled))
+    if assignments:
+        assignments.append("updated_at = CURRENT_TIMESTAMP")
+        with connect(db_path) as connection:
+            connection.execute(
+                f"""
+                UPDATE scene_mask_prompts
+                SET {", ".join(assignments)}
+                WHERE id = ?
+                  AND scene_id = ?
+                """,
+                (*values, prompt_id, scene_id),
+            )
+
+    return get_scene_mask_prompt(db_path, prompt_id=prompt_id, scene_id=scene_id)
+
+
+def delete_scene_mask_prompt(db_path: Path, prompt_id: int, scene_id: int) -> None:
+    with connect(db_path) as connection:
+        connection.execute(
+            """
+            DELETE FROM scene_mask_prompts
+            WHERE id = ?
+              AND scene_id = ?
+            """,
+            (prompt_id, scene_id),
+        )
+
+
+def get_scene_mask_prompt(
+    db_path: Path,
+    prompt_id: int,
+    scene_id: int,
+) -> dict[str, Any] | None:
+    with connect(db_path) as connection:
+        row = connection.execute(
+            """
+            SELECT id, scene_id, text, source, enabled, status, created_at, updated_at
+            FROM scene_mask_prompts
+            WHERE id = ?
+              AND scene_id = ?
+            """,
+            (prompt_id, scene_id),
+        ).fetchone()
+
+    return {**dict(row), "enabled": bool(row["enabled"])} if row else None
+
+
+def list_enabled_scene_mask_prompts(
+    db_path: Path,
+    scene_id: int,
+) -> list[dict[str, Any]]:
+    with connect(db_path) as connection:
+        rows = connection.execute(
+            """
+            SELECT id, scene_id, text, source, enabled, status, created_at, updated_at
+            FROM scene_mask_prompts
+            WHERE scene_id = ?
+              AND enabled = 1
+            ORDER BY lower(text) ASC
+            """,
+            (scene_id,),
+        ).fetchall()
+
+    return [{**dict(row), "enabled": bool(row["enabled"])} for row in rows]
+
+
+def list_scene_images_for_scene(db_path: Path, scene_id: int) -> list[dict[str, Any]]:
+    with connect(db_path) as connection:
+        rows = connection.execute(
+            """
+            SELECT scene_images.id,
+                   scene_images.scene_id,
+                   scene_images.uploaded_file_id,
+                   scene_images.perceptual_hash,
+                   scene_images.width,
+                   scene_images.height,
+                   scene_images.created_at,
+                   uploaded_files.original_filename,
+                   uploaded_files.relative_path,
+                   uploaded_files.content_type
+            FROM scene_images
+            JOIN uploaded_files ON uploaded_files.id = scene_images.uploaded_file_id
+            WHERE scene_images.scene_id = ?
+            ORDER BY scene_images.id ASC
+            """,
+            (scene_id,),
+        ).fetchall()
+
+    return sorted(
+        [dict(row) for row in rows],
+        key=lambda row: (_original_filename_sort_key(row), row["id"]),
+    )
+
+
+def mask_candidate_exists(
+    db_path: Path,
+    prompt_id: int,
+    scene_image_id: int,
+) -> bool:
+    with connect(db_path) as connection:
+        row = connection.execute(
+            """
+            SELECT 1
+            FROM mask_candidates
+            WHERE scene_mask_prompt_id = ?
+              AND scene_image_id = ?
+            """,
+            (prompt_id, scene_image_id),
+        ).fetchone()
+
+    return row is not None
+
+
+def create_mask_candidate(
+    db_path: Path,
+    prompt_id: int,
+    scene_image_id: int,
+    uploaded_file_id: int,
+    raw_relative_path: str,
+    soft_relative_path: str | None,
+    bbox_json: str | None,
+    score: float | None,
+) -> dict[str, Any]:
+    with connect(db_path) as connection:
+        cursor = connection.execute(
+            """
+            INSERT INTO mask_candidates (
+                scene_mask_prompt_id,
+                scene_image_id,
+                uploaded_file_id,
+                raw_relative_path,
+                soft_relative_path,
+                bbox_json,
+                score
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                prompt_id,
+                scene_image_id,
+                uploaded_file_id,
+                raw_relative_path,
+                soft_relative_path,
+                bbox_json,
+                score,
+            ),
+        )
+        row = connection.execute(
+            """
+            SELECT id,
+                   scene_mask_prompt_id,
+                   scene_image_id,
+                   uploaded_file_id,
+                   raw_relative_path,
+                   soft_relative_path,
+                   bbox_json,
+                   score,
+                   selected,
+                   status,
+                   created_at
+            FROM mask_candidates
+            WHERE id = ?
+            """,
+            (cursor.lastrowid,),
+        ).fetchone()
+
+    return {**dict(row), "selected": bool(row["selected"])}
+
+
+def get_mask_candidate_by_id(
+    db_path: Path,
+    candidate_id: int,
+    organization_id: str,
+) -> dict[str, Any] | None:
+    with connect(db_path) as connection:
+        row = connection.execute(
+            """
+            SELECT mask_candidates.id,
+                   mask_candidates.scene_mask_prompt_id,
+                   mask_candidates.scene_image_id,
+                   mask_candidates.uploaded_file_id,
+                   mask_candidates.raw_relative_path,
+                   mask_candidates.soft_relative_path,
+                   mask_candidates.bbox_json,
+                   mask_candidates.score,
+                   mask_candidates.selected,
+                   mask_candidates.status,
+                   mask_candidates.created_at
+            FROM mask_candidates
+            JOIN scene_mask_prompts ON scene_mask_prompts.id = mask_candidates.scene_mask_prompt_id
+            JOIN scenes ON scenes.id = scene_mask_prompts.scene_id
+            WHERE mask_candidates.id = ?
+              AND scenes.organization_id = ?
+            """,
+            (candidate_id, organization_id),
+        ).fetchone()
+
+    return {**dict(row), "selected": bool(row["selected"])} if row else None
+
+
+def create_scene_object_if_missing(
+    db_path: Path,
+    scene_id: int,
+    name: str,
+    description: str = "",
+    prompt: str | None = None,
+    category: str = "other",
+    source: str = "vlm",
+) -> tuple[dict[str, Any], bool]:
+    normalized_name = _normalize_object_name(name)
+    with connect(db_path) as connection:
+        existing = connection.execute(
+            """
+            SELECT id, scene_id, name, description, prompt, category, source, status, created_at, updated_at
+            FROM scene_objects
+            WHERE scene_id = ?
+              AND lower(name) = ?
+            """,
+            (scene_id, normalized_name.lower()),
+        ).fetchone()
+        if existing:
+            return dict(existing), False
+
+        cursor = connection.execute(
+            """
+            INSERT INTO scene_objects (scene_id, name, description, prompt, category, source)
+            VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            (
+                scene_id,
+                normalized_name,
+                description.strip(),
+                (prompt or normalized_name).strip(),
+                category.strip() or "other",
+                source.strip() or "vlm",
+            ),
+        )
+        row = connection.execute(
+            """
+            SELECT id, scene_id, name, description, prompt, category, source, status, created_at, updated_at
+            FROM scene_objects
+            WHERE id = ?
+            """,
+            (cursor.lastrowid,),
+        ).fetchone()
+
+    return dict(row), True
+
+
+def update_scene_object(
+    db_path: Path,
+    scene_id: int,
+    object_id: int,
+    name: str | None = None,
+    description: str | None = None,
+    prompt: str | None = None,
+) -> dict[str, Any] | None:
+    assignments = []
+    values: list[Any] = []
+    if name is not None:
+        assignments.append("name = ?")
+        values.append(name.strip())
+    if description is not None:
+        assignments.append("description = ?")
+        values.append(description.strip())
+    if prompt is not None:
+        assignments.append("prompt = ?")
+        values.append(prompt.strip())
+    if assignments:
+        assignments.append("updated_at = CURRENT_TIMESTAMP")
+        with connect(db_path) as connection:
+            connection.execute(
+                f"""
+                UPDATE scene_objects
+                SET {", ".join(assignments)}
+                WHERE id = ?
+                  AND scene_id = ?
+                """,
+                (*values, object_id, scene_id),
+            )
+
+    return get_scene_object(db_path, scene_id=scene_id, object_id=object_id)
+
+
+def delete_scene_object(db_path: Path, scene_id: int, object_id: int) -> None:
+    with connect(db_path) as connection:
+        connection.execute(
+            """
+            DELETE FROM object_animation_segments
+            WHERE object_animation_id IN (
+                SELECT object_animations.id
+                FROM object_animations
+                JOIN scene_objects ON scene_objects.id = object_animations.scene_object_id
+                WHERE object_animations.scene_object_id = ?
+                  AND scene_objects.scene_id = ?
+            )
+            """,
+            (object_id, scene_id),
+        )
+        connection.execute(
+            """
+            DELETE FROM object_animations
+            WHERE scene_object_id IN (
+                SELECT id
+                FROM scene_objects
+                WHERE id = ?
+                  AND scene_id = ?
+            )
+            """,
+            (object_id, scene_id),
+        )
+        connection.execute(
+            """
+            DELETE FROM object_masks
+            WHERE scene_object_id IN (
+                SELECT id
+                FROM scene_objects
+                WHERE id = ?
+                  AND scene_id = ?
+            )
+            """,
+            (object_id, scene_id),
+        )
+        connection.execute(
+            """
+            DELETE FROM object_mask_images
+            WHERE scene_object_id IN (
+                SELECT id
+                FROM scene_objects
+                WHERE id = ?
+                  AND scene_id = ?
+            )
+            """,
+            (object_id, scene_id),
+        )
+        connection.execute(
+            """
+            DELETE FROM scene_objects
+            WHERE id = ?
+              AND scene_id = ?
+            """,
+            (object_id, scene_id),
+        )
+
+
+def get_scene_object(
+    db_path: Path,
+    scene_id: int,
+    object_id: int,
+) -> dict[str, Any] | None:
+    with connect(db_path) as connection:
+        row = connection.execute(
+            """
+            SELECT id, scene_id, name, description, prompt, category, source, status, created_at, updated_at
+            FROM scene_objects
+            WHERE id = ?
+              AND scene_id = ?
+            """,
+            (object_id, scene_id),
+        ).fetchone()
+
+    return dict(row) if row else None
+
+
+def get_scene_object_for_organization(
+    db_path: Path,
+    object_id: int,
+    organization_id: str,
+) -> dict[str, Any] | None:
+    with connect(db_path) as connection:
+        row = connection.execute(
+            """
+            SELECT scene_objects.id,
+                   scene_objects.scene_id,
+                   scene_objects.name,
+                   scene_objects.description,
+                   scene_objects.prompt,
+                   scene_objects.category,
+                   scene_objects.source,
+                   scene_objects.status,
+                   scene_objects.created_at,
+                   scene_objects.updated_at
+            FROM scene_objects
+            JOIN scenes ON scenes.id = scene_objects.scene_id
+            WHERE scene_objects.id = ?
+              AND scenes.organization_id = ?
+            """,
+            (object_id, organization_id),
+        ).fetchone()
+
+    return dict(row) if row else None
+
+
+def list_object_animations_for_object(
+    db_path: Path,
+    scene_object_id: int,
+    organization_id: str,
+) -> list[dict[str, Any]]:
+    with connect(db_path) as connection:
+        animation_rows = connection.execute(
+            """
+            SELECT object_animations.id,
+                   object_animations.scene_object_id,
+                   object_animations.name,
+                   object_animations.status,
+                   object_animations.created_at,
+                   object_animations.updated_at
+            FROM object_animations
+            JOIN scene_objects ON scene_objects.id = object_animations.scene_object_id
+            JOIN scenes ON scenes.id = scene_objects.scene_id
+            WHERE object_animations.scene_object_id = ?
+              AND scenes.organization_id = ?
+            ORDER BY lower(object_animations.name) ASC, object_animations.id ASC
+            """,
+            (scene_object_id, organization_id),
+        ).fetchall()
+        animations = [dict(row) for row in animation_rows]
+        if not animations:
+            return []
+
+        animation_ids = [animation["id"] for animation in animations]
+        placeholders = ",".join("?" for _ in animation_ids)
+        segment_rows = connection.execute(
+            f"""
+            SELECT id,
+                   object_animation_id,
+                   start_frame,
+                   end_frame,
+                   frame_duration_seconds,
+                   sort_order,
+                   created_at,
+                   updated_at
+            FROM object_animation_segments
+            WHERE object_animation_id IN ({placeholders})
+            ORDER BY sort_order ASC, id ASC
+            """,
+            animation_ids,
+        ).fetchall()
+
+    segments_by_animation_id: dict[int, list[dict[str, Any]]] = {
+        animation["id"]: [] for animation in animations
+    }
+    for row in segment_rows:
+        segments_by_animation_id[row["object_animation_id"]].append(dict(row))
+    return [
+        {
+            **animation,
+            "segments": segments_by_animation_id[animation["id"]],
+        }
+        for animation in animations
+    ]
+
+
+def create_object_animation(
+    db_path: Path,
+    scene_object_id: int,
+    name: str,
+    segments: list[dict[str, Any]],
+) -> dict[str, Any]:
+    with connect(db_path) as connection:
+        cursor = connection.execute(
+            """
+            INSERT INTO object_animations (scene_object_id, name)
+            VALUES (?, ?)
+            """,
+            (scene_object_id, name.strip()),
+        )
+        animation_id = int(cursor.lastrowid)
+        _insert_object_animation_segments(connection, animation_id, segments)
+
+    return get_object_animation(db_path, animation_id, scene_object_id)
+
+
+def update_object_animation(
+    db_path: Path,
+    animation_id: int,
+    scene_object_id: int,
+    name: str,
+    segments: list[dict[str, Any]],
+) -> dict[str, Any] | None:
+    with connect(db_path) as connection:
+        cursor = connection.execute(
+            """
+            UPDATE object_animations
+            SET name = ?,
+                updated_at = CURRENT_TIMESTAMP
+            WHERE id = ?
+              AND scene_object_id = ?
+            """,
+            (name.strip(), animation_id, scene_object_id),
+        )
+        if cursor.rowcount == 0:
+            return None
+        connection.execute(
+            """
+            DELETE FROM object_animation_segments
+            WHERE object_animation_id = ?
+            """,
+            (animation_id,),
+        )
+        _insert_object_animation_segments(connection, animation_id, segments)
+
+    return get_object_animation(db_path, animation_id, scene_object_id)
+
+
+def delete_object_animation(
+    db_path: Path,
+    animation_id: int,
+    scene_object_id: int,
+) -> None:
+    with connect(db_path) as connection:
+        connection.execute(
+            """
+            DELETE FROM object_animation_segments
+            WHERE object_animation_id = ?
+            """,
+            (animation_id,),
+        )
+        connection.execute(
+            """
+            DELETE FROM object_animations
+            WHERE id = ?
+              AND scene_object_id = ?
+            """,
+            (animation_id, scene_object_id),
+        )
+
+
+def get_object_animation(
+    db_path: Path,
+    animation_id: int,
+    scene_object_id: int,
+) -> dict[str, Any] | None:
+    with connect(db_path) as connection:
+        animation = connection.execute(
+            """
+            SELECT id, scene_object_id, name, status, created_at, updated_at
+            FROM object_animations
+            WHERE id = ?
+              AND scene_object_id = ?
+            """,
+            (animation_id, scene_object_id),
+        ).fetchone()
+        if animation is None:
+            return None
+        segments = connection.execute(
+            """
+            SELECT id,
+                   object_animation_id,
+                   start_frame,
+                   end_frame,
+                   frame_duration_seconds,
+                   sort_order,
+                   created_at,
+                   updated_at
+            FROM object_animation_segments
+            WHERE object_animation_id = ?
+            ORDER BY sort_order ASC, id ASC
+            """,
+            (animation_id,),
+        ).fetchall()
+
+    return {
+        **dict(animation),
+        "segments": [dict(row) for row in segments],
+    }
+
+
+def _insert_object_animation_segments(
+    connection: sqlite3.Connection,
+    animation_id: int,
+    segments: list[dict[str, Any]],
+) -> None:
+    for index, segment in enumerate(segments):
+        connection.execute(
+            """
+            INSERT INTO object_animation_segments (
+                object_animation_id,
+                start_frame,
+                end_frame,
+                frame_duration_seconds,
+                sort_order
+            )
+            VALUES (?, ?, ?, ?, ?)
+            """,
+            (
+                animation_id,
+                int(segment["start_frame"]),
+                int(segment["end_frame"]),
+                float(segment["frame_duration_seconds"]),
+                index,
+            ),
+        )
+
+
+def list_scene_objects_for_scene(db_path: Path, scene_id: int) -> list[dict[str, Any]]:
+    with connect(db_path) as connection:
+        rows = connection.execute(
+            """
+            SELECT id, scene_id, name, description, prompt, category, source, status, created_at, updated_at
+            FROM scene_objects
+            WHERE scene_id = ?
+              AND trim(prompt) != ''
+            ORDER BY lower(name) ASC
+            """,
+            (scene_id,),
+        ).fetchall()
+
+    return [dict(row) for row in rows]
+
+
+def object_mask_exists_for_prompt(
+    db_path: Path,
+    scene_object_id: int,
+    uploaded_file_id: int,
+    prompt_text: str,
+) -> bool:
+    with connect(db_path) as connection:
+        row = connection.execute(
+            """
+            SELECT 1
+            FROM object_masks
+            WHERE scene_object_id = ?
+              AND uploaded_file_id = ?
+              AND prompt_text = ?
+            """,
+            (scene_object_id, uploaded_file_id, prompt_text.strip()),
+        ).fetchone()
+
+    return row is not None
+
+
+def create_object_mask(
+    db_path: Path,
+    scene_object_id: int,
+    uploaded_file_id: int,
+    relative_path: str,
+    soft_relative_path: str | None,
+    prompt_text: str,
+    bbox_json: str | None,
+    score: float | None,
+) -> dict[str, Any]:
+    with connect(db_path) as connection:
+        cursor = connection.execute(
+            """
+            INSERT INTO object_masks (
+                scene_object_id,
+                uploaded_file_id,
+                relative_path,
+                soft_relative_path,
+                prompt_text,
+                bbox_json,
+                score
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                scene_object_id,
+                uploaded_file_id,
+                relative_path,
+                soft_relative_path,
+                prompt_text.strip(),
+                bbox_json,
+                score,
+            ),
+        )
+        row = connection.execute(
+            """
+            SELECT id,
+                   scene_object_id,
+                   uploaded_file_id,
+                   relative_path,
+                   soft_relative_path,
+                   prompt_text,
+                   bbox_json,
+                   score,
+                   status,
+                   created_at,
+                   updated_at
+            FROM object_masks
+            WHERE id = ?
+            """,
+            (cursor.lastrowid,),
+        ).fetchone()
+
+    return dict(row)
+
+
+def get_object_mask_by_id(
+    db_path: Path,
+    object_mask_id: int,
+    organization_id: str,
+) -> dict[str, Any] | None:
+    with connect(db_path) as connection:
+        row = connection.execute(
+            """
+            SELECT object_masks.id,
+                   object_masks.scene_object_id,
+                   scene_objects.scene_id,
+                   object_masks.uploaded_file_id,
+                   object_masks.relative_path,
+                   object_masks.soft_relative_path,
+                   object_masks.prompt_text,
+                   object_masks.bbox_json,
+                   object_masks.score,
+                   object_masks.status,
+                   object_masks.created_at,
+                   object_masks.updated_at
+            FROM object_masks
+            JOIN scene_objects ON scene_objects.id = object_masks.scene_object_id
+            JOIN scenes ON scenes.id = scene_objects.scene_id
+            WHERE object_masks.id = ?
+              AND scenes.organization_id = ?
+            """,
+            (object_mask_id, organization_id),
+        ).fetchone()
+
+    return dict(row) if row else None
+
+
+def list_object_masks_for_object(
+    db_path: Path,
+    scene_object_id: int,
+    organization_id: str,
+) -> list[dict[str, Any]]:
+    with connect(db_path) as connection:
+        rows = connection.execute(
+            """
+            SELECT object_masks.id,
+                   object_masks.scene_object_id,
+                   scene_objects.scene_id,
+                   object_masks.uploaded_file_id,
+                   object_masks.relative_path,
+                   object_masks.soft_relative_path,
+                   object_masks.prompt_text,
+                   object_masks.bbox_json,
+                   object_masks.score,
+                   object_masks.status,
+                   object_masks.created_at,
+                   object_masks.updated_at,
+                   uploaded_files.original_filename,
+                   uploaded_files.relative_path AS original_relative_path
+            FROM object_masks
+            JOIN scene_objects ON scene_objects.id = object_masks.scene_object_id
+            JOIN scenes ON scenes.id = scene_objects.scene_id
+            JOIN uploaded_files ON uploaded_files.id = object_masks.uploaded_file_id
+            WHERE object_masks.scene_object_id = ?
+              AND scenes.organization_id = ?
+            """,
+            (scene_object_id, organization_id),
+        ).fetchall()
+
+    return sorted(
+        [dict(row) for row in rows],
+        key=lambda row: (_original_filename_sort_key(row), row["id"]),
+    )
+
+
+def touch_object_mask(db_path: Path, object_mask_id: int) -> dict[str, Any] | None:
+    with connect(db_path) as connection:
+        connection.execute(
+            """
+            UPDATE object_masks
+            SET updated_at = CURRENT_TIMESTAMP
+            WHERE id = ?
+            """,
+            (object_mask_id,),
+        )
+        row = connection.execute(
+            """
+            SELECT id,
+                   scene_object_id,
+                   uploaded_file_id,
+                   relative_path,
+                   soft_relative_path,
+                   prompt_text,
+                   bbox_json,
+                   score,
+                   status,
+                   created_at,
+                   updated_at
+            FROM object_masks
+            WHERE id = ?
+            """,
+            (object_mask_id,),
+        ).fetchone()
+
+    return dict(row) if row else None
+
+
+def update_scene_description(
+    db_path: Path,
+    scene_id: int,
+    description: str,
+    title: str | None = None,
+) -> dict[str, Any]:
+    with connect(db_path) as connection:
+        if title:
+            connection.execute(
+                """
+                UPDATE scenes
+                SET title = ?,
+                    description = ?,
+                    updated_at = CURRENT_TIMESTAMP
+                WHERE id = ?
+                """,
+                (title.strip(), description.strip(), scene_id),
+            )
+        else:
+            connection.execute(
+                """
+                UPDATE scenes
+                SET description = ?,
+                    updated_at = CURRENT_TIMESTAMP
+                WHERE id = ?
+                """,
+                (description.strip(), scene_id),
+            )
+        row = connection.execute(
+            """
+            SELECT id,
+                   organization_id,
+                   title,
+                   description,
+                   status,
+                   representative_uploaded_file_id,
+                   representative_hash,
+                   created_by_user_id,
+                   created_at,
+                   updated_at
+            FROM scenes
+            WHERE id = ?
+            """,
+            (scene_id,),
+        ).fetchone()
+
+    return dict(row)
+
+
+def scene_belongs_to_organization(
+    db_path: Path,
+    scene_id: int,
+    organization_id: str,
+) -> bool:
+    with connect(db_path) as connection:
+        row = connection.execute(
+            """
+            SELECT 1
+            FROM scenes
+            WHERE id = ?
+              AND organization_id = ?
+            """,
+            (scene_id, organization_id),
+        ).fetchone()
+
+    return row is not None
 
 
 def create_or_promote_admin(
@@ -447,3 +2396,26 @@ def _ensure_column(
         connection.execute(
             f"ALTER TABLE {table_name} ADD COLUMN {column_name} {column_definition}"
         )
+
+
+def _normalize_object_name(name: str) -> str:
+    return " ".join(name.replace("_", " ").strip().lower().split())
+
+
+def _normalize_prompt_text(text: str) -> str:
+    return " ".join(text.strip().lower().split())
+
+
+def _original_filename_sort_key(row: dict[str, Any] | sqlite3.Row) -> list[tuple[int, int | str]]:
+    filename = str(row["original_filename"] or "").casefold()
+    parts: list[tuple[int, int | str]] = []
+    for part in re.split(r"(\d+)", filename):
+        if part.isdigit():
+            parts.append((0, int(part)))
+        else:
+            parts.append((1, part))
+    return parts
+
+
+def json_dumps(value: dict[str, Any]) -> str:
+    return json.dumps(value, separators=(",", ":"))

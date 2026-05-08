@@ -1,64 +1,156 @@
-<main class="app-layout">
-  <section class="hero" aria-labelledby="page-title">
-    <p class="eyebrow">Asset management</p>
-    <h1 id="page-title">{{appName}}</h1>
-    <p class="lede">
-      A focused workspace for tracking game assets, ownership, and production status.
-    </p>
-  </section>
+<main class="app-layout" data-home-page>
+  <section class="workspace-main">
+    <header class="hero" aria-labelledby="page-title">
+      <div>
+        <p class="eyebrow">Asset management</p>
+        <h1 id="page-title">{{appName}}</h1>
+      </div>
+      <p class="lede">
+        Process raw scene photography into grouped scenes, editable object inventories, and masks.
+      </p>
+    </header>
 
-  <section class="auth-panel" aria-label="Authentication">
-    {{#if isGuest}}
+
+    <section class="scenes-list" aria-labelledby="scenes-title">
       <div class="panel-stack">
-        <h2>Sign in</h2>
-        <p>Use your team Google account to access {{organizationId}}.</p>
-        {{#if inviteToken}}
-          <p class="notice">This invite will be applied after Google sign-in.</p>
+        <div>
+          <p class="eyebrow">Scenes</p>
+          <h2 id="scenes-title">Draft scenes</h2>
+        </div>
+        {{#if hasScenes}}
+          <div class="scene-grid">
+            {{#each scenes as scene}}
+              <article class="scene-card">
+                {{#if scene.thumbnailUrl}}
+                  <img class="scene-card__thumb" src="{{scene.thumbnailUrl}}" alt="{{scene.title}}" />
+                {{/if}}
+                <div class="scene-card__body">
+                  <div>
+                    <strong>{{scene.title}}</strong>
+                    <p>{{scene.images.length}} images · {{scene.objects.length}} objects · {{scene.objectMaskCount}} masks · {{scene.status}}</p>
+                    <p>{{scene.description}}</p>
+                  </div>
+
+                  {{#if scene.hasObjects}}
+                    <div class="object-list" aria-label="Scene objects">
+                      {{#each scene.objects as object}}
+                        <span>{{object.name}}</span>
+                      {{/each}}
+                    </div>
+                  {{/if}}
+
+                  <a class="button secondary compact" href="/scene/{{scene.id}}">Open scene</a>
+                </div>
+              </article>
+            {{/each}}
+          </div>
         {{/if}}
-        <a class="button primary" href="{{loginUrl}}">Continue with Google</a>
-      </div>
-    {{/if}}
-
-    {{#if user}}
-      <div class="panel-stack">
-        <div>
-          <p class="eyebrow">Signed in</p>
-          <h2>{{user.display_name}}</h2>
-          <p>{{user.email}} · {{user.role}}</p>
-        </div>
-        <button class="button secondary" type="button" data-logout-button>Sign out</button>
-      </div>
-    {{/if}}
-  </section>
-
-  {{#if isAdmin}}
-    <section class="admin-panel" aria-labelledby="invites-title">
-      <div class="panel-stack">
-        <div>
-          <p class="eyebrow">Admin</p>
-          <h2 id="invites-title">Invite team members</h2>
-        </div>
-        <form class="invite-form" data-invite-form>
-          <label>
-            Email
-            <input name="email" type="email" placeholder="teammate@example.com" />
-          </label>
-          <label>
-            Role
-            <select name="role">
-              <option value="user">User</option>
-              <option value="admin">Admin</option>
-            </select>
-          </label>
-          <label>
-            Expires in days
-            <input name="expires_in_days" type="number" min="1" max="30" value="7" />
-          </label>
-          <button class="button primary" type="submit">Generate invite</button>
-        </form>
-        <p class="invite-result" data-invite-result aria-live="polite"></p>
+        {{#if isGuest}}
+          <p class="empty-state">Sign in to review processed scenes.</p>
+        {{/if}}
       </div>
     </section>
-  {{/if}}
-</main>
+  </section>
 
+  <aside class="workspace-sidebar" aria-label="Workspace controls">
+    <section class="auth-panel" aria-label="Authentication">
+      <div class="panel-stack">
+        {{#if isGuest}}
+          <div>
+            <h2>Sign in</h2>
+            <p>Use your team Google account to access {{organizationId}}.</p>
+          </div>
+          {{#if inviteToken}}
+            <p class="notice">This invite will be applied after Google sign-in.</p>
+          {{/if}}
+          <a class="button primary" href="{{loginUrl}}">Continue with Google</a>
+        {{/if}}
+
+        {{#if user}}
+          <div>
+            <p class="eyebrow">Signed in</p>
+            <h2>{{user.display_name}}</h2>
+            <p>{{user.email}} · {{user.role}}</p>
+          </div>
+          <button class="button secondary" type="button" data-action="logout">Sign out</button>
+        {{/if}}
+      </div>
+    </section>
+
+    {{#if hasUploadBatches}}
+      <section class="uploads-list" aria-labelledby="recent-uploads-title">
+        <div class="panel-stack">
+          <div>
+            <p class="eyebrow">Recent</p>
+            <h2 id="recent-uploads-title">Upload batches</h2>
+          </div>
+          <div class="batch-list">
+            {{#each uploadBatches as batch}}
+              <article class="batch-row">
+                <div>
+                  <strong>Batch {{batch.id}}</strong>
+                  <p>{{batch.file_count}} files · {{formatBytes batch.total_bytes}} · {{batch.status}}</p>
+                </div>
+                <button class="button secondary compact" type="button" data-action="process-batch" data-batch-id="{{batch.id}}">
+                  Process scene
+                </button>
+              </article>
+            {{/each}}
+          </div>
+        </div>
+      </section>
+    {{/if}}
+
+    <section class="upload-panel" aria-labelledby="upload-title" data-upload-dropzone>
+      <div class="panel-stack">
+        <div>
+          <p class="eyebrow">Batch intake</p>
+          <h2 id="upload-title">Drop files anywhere</h2>
+          <p>Upload raw scene photos, masks, audio, or text fragments into the processing queue.</p>
+        </div>
+        <input class="file-input" type="file" multiple data-file-input />
+        <button class="button primary" type="button" data-action="browse-files">Select files</button>
+        <p class="upload-status" data-upload-status aria-live="polite"></p>
+      </div>
+    </section>
+
+    {{#if isAdmin}}
+      <section class="admin-panel" aria-labelledby="invites-title">
+        <div class="panel-stack">
+          <div>
+            <p class="eyebrow">Admin</p>
+            <h2 id="invites-title">Invite team members</h2>
+          </div>
+          <form class="invite-form" data-invite-form>
+            <label>
+              Email
+              <input name="email" type="email" placeholder="teammate@example.com" />
+            </label>
+            <label>
+              Role
+              <select name="role">
+                <option value="user">User</option>
+                <option value="admin">Admin</option>
+              </select>
+            </label>
+            <label>
+              Expires in days
+              <input name="expires_in_days" type="number" min="1" max="30" value="7" />
+            </label>
+            <button class="button primary" type="submit">Generate invite</button>
+          </form>
+          <p class="invite-result" data-invite-result aria-live="polite"></p>
+          <div class="danger-zone">
+            <div>
+              <p class="eyebrow">Development</p>
+              <strong>Reset workspace data</strong>
+              <p>Clears scenes, uploads, masks, assets, and invites. Users stay in place.</p>
+            </div>
+            <button class="button danger" type="button" data-action="reset-database">Reset database</button>
+            <p class="form-status" data-reset-database-status aria-live="polite"></p>
+          </div>
+        </div>
+      </section>
+    {{/if}}
+  </aside>
+</main>

@@ -1,0 +1,15 @@
+<main class="not-authorized">
+  <section class="auth-panel">
+    <div class="panel-stack">
+      <div>
+        <p class="eyebrow">Not authorized</p>
+        <h1>{{appName}}</h1>
+        <p>Sign in with your team Google account to access {{organizationId}}.</p>
+      </div>
+      {{#if inviteToken}}
+        <p class="notice">This invite will be applied after Google sign-in.</p>
+      {{/if}}
+      <a class="button primary" href="{{loginUrl}}">Continue with Google</a>
+    </div>
+  </section>
+</main>

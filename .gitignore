@@ -13,6 +13,7 @@ __pycache__/
 *.pyo
 *.pyd
 *.sqlite3
+backend/data/
 .coverage
 coverage/
 .DS_Store
