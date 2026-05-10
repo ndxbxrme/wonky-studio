@@ -1,0 +1,201 @@
+<main class="script-review-page" data-script-review-page>
+  <header class="script-review-header">
+    <div>
+      <a class="back-link" href="/">Back to workspace</a>
+      <p class="eyebrow">Script review</p>
+      <h1>Dialog, audio, and translations</h1>
+    </div>
+    <div class="script-review-header__actions">
+      {{#if isAdmin}}
+        <button class="button secondary" type="button" data-action="import-script-audio">Import manifests</button>
+      {{/if}}
+      <p class="form-status" data-script-status aria-live="polite">{{status}}</p>
+    </div>
+  </header>
+
+  <section class="script-review-filters" aria-label="Script filters">
+    <form class="script-filter-form" data-script-filters>
+      <label>
+        Search
+        <input name="q" type="search" placeholder="line text, path, translation" />
+      </label>
+      <label>
+        Language
+        <select name="language">
+          {{#each languages as language}}
+            <option value="{{language.value}}">{{language.label}}</option>
+          {{/each}}
+        </select>
+      </label>
+      <label>
+        Path
+        <input name="path" type="search" list="script-path-options" placeholder="ROOMS / LEVELS" />
+        <datalist id="script-path-options">
+          {{#each pathOptions as option}}
+            <option value="{{option.path}}"></option>
+          {{/each}}
+        </datalist>
+      </label>
+      <label>
+        Translation
+        <select name="translation_status">
+          <option value="">Any</option>
+          <option value="needs_review">Needs review</option>
+          <option value="approved">Approved</option>
+          <option value="needs_edit">Needs edit</option>
+          <option value="missing">Missing</option>
+        </select>
+      </label>
+      <label>
+        Audio status
+        <select name="audio_status">
+          <option value="">Any</option>
+          <option value="candidate">Candidate</option>
+          <option value="needs_review">Needs review</option>
+          <option value="approved">Approved</option>
+          <option value="needs_edit">Needs edit</option>
+          <option value="missing">Missing</option>
+          <option value="rejected">Rejected</option>
+        </select>
+      </label>
+      <label>
+        Audio source
+        <select name="audio_source">
+          <option value="">Any</option>
+          <option value="narrator_candidate">Narrator</option>
+          <option value="tts">TTS</option>
+        </select>
+      </label>
+      <label class="checkbox-label">
+        <input name="missing_audio" type="checkbox" />
+        Missing audio
+      </label>
+      <button class="button primary" type="submit">Search</button>
+    </form>
+  </section>
+
+  <section class="script-review-grid">
+    <aside class="script-line-panel" aria-label="Script line list">
+      <div class="script-line-panel__header">
+        <strong>{{total}} lines</strong>
+        <div class="script-pager">
+          <button class="button secondary compact" type="button" data-action="previous-page">Prev</button>
+          <button class="button secondary compact" type="button" data-action="next-page">Next</button>
+        </div>
+      </div>
+      {{#if hasLines}}
+        <div class="script-line-list">
+          {{#each lines as line}}
+            <button class="script-line-row {{#if line.isSelected}}is-selected{{/if}}" type="button" data-action="select-script-line" data-line-id="{{line.line_id}}">
+              <span class="script-line-row__number">#{{line.line_id}}</span>
+              <span class="script-line-row__body">
+                <strong>{{line.source_text}}</strong>
+                <span>{{line.pathLabel}}</span>
+                <span>{{line.translationStatusLabel}} · {{line.audioSummary}}</span>
+              </span>
+            </button>
+          {{/each}}
+        </div>
+      {{/if}}
+      {{#if hasPreviousPage}}
+        <span class="script-page-flag">Previous results available</span>
+      {{/if}}
+      {{#if hasNextPage}}
+        <span class="script-page-flag">More results available</span>
+      {{/if}}
+    </aside>
+
+    <section class="script-detail-panel" aria-label="Selected script line">
+      {{#if hasSelectedLine}}
+        <div class="script-detail-header">
+          <div>
+            <p class="eyebrow">Line #{{selectedLine.line_id}}</p>
+            <h2>{{selectedLine.source_text}}</h2>
+            <p>{{selectedLine.pathLabel}}</p>
+          </div>
+        </div>
+
+        <form class="translation-editor" data-translation-form>
+          <input type="hidden" name="language" value="{{language}}" />
+          <div class="translation-editor__header">
+            <div>
+              <p class="eyebrow">{{language}} translation</p>
+              <strong>{{selectedLine.activeTranslation.statusLabel}}</strong>
+            </div>
+            <label>
+              Status
+              <select name="review_status">
+                <option value="needs_review">Needs review</option>
+                <option value="approved">Approved</option>
+                <option value="needs_edit">Needs edit</option>
+                <option value="missing">Missing</option>
+              </select>
+            </label>
+          </div>
+          <label>
+            Translation text
+            <textarea name="text" rows="5">{{selectedLine.activeTranslation.text}}</textarea>
+          </label>
+          <label>
+            Notes
+            <textarea name="notes" rows="2">{{selectedLine.activeTranslation.notes}}</textarea>
+          </label>
+          <button class="button primary" type="submit">Save translation</button>
+        </form>
+
+        <section class="audio-review-section" aria-label="Audio candidates">
+          <div class="audio-review-section__header">
+            <div>
+              <p class="eyebrow">Audio</p>
+              <h2>Candidates</h2>
+            </div>
+          </div>
+          {{#if selectedLine.hasAudioCandidates}}
+            <div class="audio-candidate-list">
+              {{#each selectedLine.audio_candidates as candidate}}
+                <form class="audio-candidate-row" data-audio-candidate-form>
+                  <input type="hidden" name="candidate_id" value="{{candidate.id}}" />
+                  <div class="audio-candidate-row__summary">
+                    <div>
+                      <strong>{{candidate.sourceLabel}} · {{candidate.statusLabel}}</strong>
+                      <p>{{candidate.manifest_status}} {{candidate.durationLabel}} {{candidate.scoreLabel}}</p>
+                      <p>{{candidate.relative_path}}</p>
+                    </div>
+                    <label class="checkbox-label">
+                      <input name="selected" type="checkbox" />
+                      Selected
+                    </label>
+                  </div>
+                  {{#if candidate.hasAudio}}
+                    <audio controls preload="metadata" src="{{candidate.audioUrl}}"></audio>
+                  {{/if}}
+                  {{#if candidate.error}}
+                    <p class="audio-candidate-error">{{candidate.error}}</p>
+                  {{/if}}
+                  <div class="audio-candidate-row__controls">
+                    <label>
+                      Review
+                      <select name="review_status">
+                        <option value="candidate">Candidate</option>
+                        <option value="needs_review">Needs review</option>
+                        <option value="approved">Approved</option>
+                        <option value="needs_edit">Needs edit</option>
+                        <option value="missing">Missing</option>
+                        <option value="rejected">Rejected</option>
+                      </select>
+                    </label>
+                    <label>
+                      Notes
+                      <input name="notes" type="text" value="{{candidate.notes}}" />
+                    </label>
+                    <button class="button secondary compact" type="submit">Save audio</button>
+                  </div>
+                </form>
+              {{/each}}
+            </div>
+          {{/if}}
+        </section>
+      {{/if}}
+    </section>
+  </section>
+</main>

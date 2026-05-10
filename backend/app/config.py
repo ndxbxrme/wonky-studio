@@ -17,6 +17,7 @@ class Settings:
     google_client_secret: str | None
     google_redirect_uri: str
     storage_root: Path
+    script_audio_root: Path = Path("/mnt/d/wonky-studio/audio")
     vlm_provider: str = "ollama"
     vlm_base_url: str = "http://127.0.0.1:11434"
     vlm_model: str = "gemma3:4b"
@@ -53,6 +54,9 @@ def get_settings() -> Settings:
         ),
         storage_root=Path(
             os.environ.get("WONKY_STUDIO_STORAGE_ROOT", _default_storage_root())
+        ),
+        script_audio_root=Path(
+            os.environ.get("WONKY_STUDIO_SCRIPT_AUDIO_ROOT", "/mnt/d/wonky-studio/audio")
         ),
         vlm_provider=os.environ.get("WONKY_STUDIO_VLM_PROVIDER", "ollama"),
         vlm_base_url=os.environ.get("WONKY_STUDIO_VLM_BASE_URL", "http://127.0.0.1:11434"),

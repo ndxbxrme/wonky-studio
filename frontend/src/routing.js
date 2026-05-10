@@ -8,6 +8,8 @@ import {MaskEditorCtrl} from './components/mask-editor.ctrl.js';
 import maskEditorTemplate from './components/mask-editor.html?raw';
 import {AnimationsCtrl} from './components/animations.ctrl.js';
 import animationsTemplate from './components/animations.html?raw';
+import {ScriptReviewCtrl} from './components/script-review.ctrl.js';
+import scriptReviewTemplate from './components/script-review.html?raw';
 import {authMiddleware} from './auth-middleware.js';
 
 const initRoutes = async (app) => {
@@ -24,6 +26,8 @@ const initRoutes = async (app) => {
   app.controller('mask-editor', MaskEditorCtrl(app));
   app.template('animations', animationsTemplate);
   app.controller('animations', AnimationsCtrl(app));
+  app.template('script-review', scriptReviewTemplate);
+  app.controller('script-review', ScriptReviewCtrl(app));
 }
 
 function formatBytes(bytes) {

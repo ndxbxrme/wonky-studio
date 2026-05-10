@@ -34,4 +34,15 @@ function objectThumbnailUrl(objectId, cacheKey = '') {
   return url.toString();
 }
 
-export {API_BASE_URL, apiFetch, objectMaskUrl, objectThumbnailUrl, uploadedFileUrl};
+function scriptAudioCandidateUrl(candidateId) {
+  return `${API_BASE_URL}/api/script-audio-candidates/${candidateId}/content`;
+}
+
+export {
+  API_BASE_URL,
+  apiFetch,
+  objectMaskUrl,
+  objectThumbnailUrl,
+  scriptAudioCandidateUrl,
+  uploadedFileUrl
+};

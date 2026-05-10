@@ -355,6 +355,81 @@ def init_database(
             )
             """
         )
+        connection.execute(
+            """
+            CREATE TABLE IF NOT EXISTS script_lines (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                organization_id TEXT NOT NULL,
+                line_id INTEGER NOT NULL,
+                script_index INTEGER NOT NULL,
+                source_text TEXT NOT NULL,
+                path_json TEXT NOT NULL DEFAULT '[]',
+                path_text TEXT NOT NULL DEFAULT '',
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE (organization_id, line_id),
+                FOREIGN KEY (organization_id) REFERENCES organizations(id)
+            )
+            """
+        )
+        connection.execute(
+            """
+            CREATE TABLE IF NOT EXISTS script_translations (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                script_line_id INTEGER NOT NULL,
+                language TEXT NOT NULL,
+                text TEXT NOT NULL DEFAULT '',
+                source TEXT NOT NULL DEFAULT 'ai_translation',
+                review_status TEXT NOT NULL DEFAULT 'needs_review',
+                notes TEXT NOT NULL DEFAULT '',
+                manually_edited INTEGER NOT NULL DEFAULT 0,
+                meta_json TEXT NOT NULL DEFAULT '{}',
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE (script_line_id, language),
+                FOREIGN KEY (script_line_id) REFERENCES script_lines(id)
+            )
+            """
+        )
+        connection.execute(
+            """
+            CREATE TABLE IF NOT EXISTS script_audio_candidates (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                script_line_id INTEGER NOT NULL,
+                language TEXT NOT NULL,
+                source_type TEXT NOT NULL,
+                manifest_status TEXT NOT NULL DEFAULT '',
+                review_status TEXT NOT NULL DEFAULT 'needs_review',
+                relative_path TEXT NOT NULL DEFAULT '',
+                original_path TEXT NOT NULL DEFAULT '',
+                selected INTEGER NOT NULL DEFAULT 0,
+                rank INTEGER,
+                score REAL,
+                text_score REAL,
+                quality_score REAL,
+                duration_seconds REAL,
+                transcript_match TEXT NOT NULL DEFAULT '',
+                notes TEXT NOT NULL DEFAULT '',
+                error TEXT NOT NULL DEFAULT '',
+                source_file TEXT NOT NULL DEFAULT '',
+                start_seconds REAL,
+                end_seconds REAL,
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE (script_line_id, language, source_type, original_path, rank),
+                FOREIGN KEY (script_line_id) REFERENCES script_lines(id)
+            )
+            """
+        )
+        connection.execute(
+            "CREATE INDEX IF NOT EXISTS idx_script_lines_path ON script_lines (organization_id, path_text)"
+        )
+        connection.execute(
+            "CREATE INDEX IF NOT EXISTS idx_script_translations_status ON script_translations (language, review_status)"
+        )
+        connection.execute(
+            "CREATE INDEX IF NOT EXISTS idx_script_audio_status ON script_audio_candidates (language, source_type, review_status)"
+        )
 
 
 def list_assets(db_path: Path, organization_id: str) -> list[dict[str, Any]]:
@@ -374,6 +449,9 @@ def list_assets(db_path: Path, organization_id: str) -> list[dict[str, Any]]:
 
 def reset_workspace_tables(db_path: Path) -> list[str]:
     tables = [
+        "script_audio_candidates",
+        "script_translations",
+        "script_lines",
         "object_mask_images",
         "mask_candidates",
         "scene_mask_prompts",
@@ -690,6 +768,538 @@ def create_asset(
         raise RuntimeError("Created asset could not be loaded")
 
     return dict(row)
+
+
+def upsert_script_line(
+    db_path: Path,
+    organization_id: str,
+    line_id: int,
+    script_index: int,
+    source_text: str,
+    path_parts: list[str],
+) -> dict[str, Any]:
+    path_json = json.dumps(path_parts, ensure_ascii=False)
+    path_text = " / ".join(path_parts)
+    with connect(db_path) as connection:
+        connection.execute(
+            """
+            INSERT INTO script_lines (
+                organization_id,
+                line_id,
+                script_index,
+                source_text,
+                path_json,
+                path_text
+            )
+            VALUES (?, ?, ?, ?, ?, ?)
+            ON CONFLICT (organization_id, line_id) DO UPDATE SET
+                script_index = excluded.script_index,
+                source_text = excluded.source_text,
+                path_json = excluded.path_json,
+                path_text = excluded.path_text,
+                updated_at = CURRENT_TIMESTAMP
+            """,
+            (organization_id, line_id, script_index, source_text, path_json, path_text),
+        )
+        row = connection.execute(
+            """
+            SELECT id,
+                   organization_id,
+                   line_id,
+                   script_index,
+                   source_text,
+                   path_json,
+                   path_text,
+                   created_at,
+                   updated_at
+            FROM script_lines
+            WHERE organization_id = ?
+              AND line_id = ?
+            """,
+            (organization_id, line_id),
+        ).fetchone()
+    return dict(row)
+
+
+def upsert_script_translation(
+    db_path: Path,
+    organization_id: str,
+    line_id: int,
+    language: str,
+    text: str,
+    source: str,
+    meta: dict[str, Any] | None = None,
+    review_status: str = "needs_review",
+) -> dict[str, Any] | None:
+    meta_json = json_dumps(meta or {})
+    with connect(db_path) as connection:
+        line = _get_script_line_row(connection, organization_id, line_id)
+        if line is None:
+            return None
+        connection.execute(
+            """
+            INSERT INTO script_translations (
+                script_line_id,
+                language,
+                text,
+                source,
+                review_status,
+                meta_json
+            )
+            VALUES (?, ?, ?, ?, ?, ?)
+            ON CONFLICT (script_line_id, language) DO UPDATE SET
+                text = CASE
+                    WHEN script_translations.manually_edited = 0 THEN excluded.text
+                    ELSE script_translations.text
+                END,
+                source = CASE
+                    WHEN script_translations.manually_edited = 0 THEN excluded.source
+                    ELSE script_translations.source
+                END,
+                meta_json = CASE
+                    WHEN script_translations.manually_edited = 0 THEN excluded.meta_json
+                    ELSE script_translations.meta_json
+                END,
+                updated_at = CURRENT_TIMESTAMP
+            """,
+            (line["id"], language, text, source, review_status, meta_json),
+        )
+        row = connection.execute(
+            """
+            SELECT id,
+                   script_line_id,
+                   language,
+                   text,
+                   source,
+                   review_status,
+                   notes,
+                   manually_edited,
+                   meta_json,
+                   created_at,
+                   updated_at
+            FROM script_translations
+            WHERE script_line_id = ?
+              AND language = ?
+            """,
+            (line["id"], language),
+        ).fetchone()
+    return dict(row) if row else None
+
+
+def upsert_script_audio_candidate(
+    db_path: Path,
+    organization_id: str,
+    line_id: int,
+    language: str,
+    source_type: str,
+    manifest_status: str,
+    relative_path: str,
+    original_path: str,
+    rank: int | None = None,
+    score: float | None = None,
+    text_score: float | None = None,
+    quality_score: float | None = None,
+    duration_seconds: float | None = None,
+    transcript_match: str = "",
+    notes: str = "",
+    error: str = "",
+    source_file: str = "",
+    start_seconds: float | None = None,
+    end_seconds: float | None = None,
+    review_status: str = "needs_review",
+) -> dict[str, Any] | None:
+    normalized_rank = rank if rank is not None else -1
+    with connect(db_path) as connection:
+        line = _get_script_line_row(connection, organization_id, line_id)
+        if line is None:
+            return None
+        connection.execute(
+            """
+            INSERT INTO script_audio_candidates (
+                script_line_id,
+                language,
+                source_type,
+                manifest_status,
+                review_status,
+                relative_path,
+                original_path,
+                rank,
+                score,
+                text_score,
+                quality_score,
+                duration_seconds,
+                transcript_match,
+                notes,
+                error,
+                source_file,
+                start_seconds,
+                end_seconds
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT (script_line_id, language, source_type, original_path, rank)
+            DO UPDATE SET
+                manifest_status = excluded.manifest_status,
+                relative_path = excluded.relative_path,
+                score = excluded.score,
+                text_score = excluded.text_score,
+                quality_score = excluded.quality_score,
+                duration_seconds = excluded.duration_seconds,
+                transcript_match = excluded.transcript_match,
+                error = excluded.error,
+                source_file = excluded.source_file,
+                start_seconds = excluded.start_seconds,
+                end_seconds = excluded.end_seconds,
+                updated_at = CURRENT_TIMESTAMP
+            """,
+            (
+                line["id"],
+                language,
+                source_type,
+                manifest_status,
+                review_status,
+                relative_path,
+                original_path,
+                normalized_rank,
+                score,
+                text_score,
+                quality_score,
+                duration_seconds,
+                transcript_match,
+                notes,
+                error,
+                source_file,
+                start_seconds,
+                end_seconds,
+            ),
+        )
+        row = connection.execute(
+            """
+            SELECT *
+            FROM script_audio_candidates
+            WHERE script_line_id = ?
+              AND language = ?
+              AND source_type = ?
+              AND original_path = ?
+              AND rank = ?
+            """,
+            (line["id"], language, source_type, original_path, normalized_rank),
+        ).fetchone()
+    return dict(row) if row else None
+
+
+def list_script_lines(
+    db_path: Path,
+    organization_id: str,
+    language: str = "en",
+    query: str = "",
+    path: str = "",
+    translation_status: str = "",
+    audio_status: str = "",
+    audio_source: str = "",
+    missing_audio: bool = False,
+    limit: int = 50,
+    offset: int = 0,
+) -> dict[str, Any]:
+    where = ["sl.organization_id = ?"]
+    values: list[Any] = [organization_id]
+    if query:
+        like = f"%{query}%"
+        where.append(
+            """
+            (
+                sl.source_text LIKE ?
+                OR sl.path_text LIKE ?
+                OR EXISTS (
+                    SELECT 1
+                    FROM script_translations qst
+                    WHERE qst.script_line_id = sl.id
+                      AND qst.text LIKE ?
+                )
+            )
+            """
+        )
+        values.extend([like, like, like])
+    if path:
+        where.append("sl.path_text LIKE ?")
+        values.append(f"{path}%")
+    if translation_status:
+        where.append(
+            """
+            EXISTS (
+                SELECT 1
+                FROM script_translations fst
+                WHERE fst.script_line_id = sl.id
+                  AND fst.language = ?
+                  AND fst.review_status = ?
+            )
+            """
+        )
+        values.extend([language, translation_status])
+    if audio_status:
+        where.append(
+            """
+            EXISTS (
+                SELECT 1
+                FROM script_audio_candidates fac
+                WHERE fac.script_line_id = sl.id
+                  AND fac.language = ?
+                  AND fac.review_status = ?
+            )
+            """
+        )
+        values.extend([language, audio_status])
+    if audio_source:
+        where.append(
+            """
+            EXISTS (
+                SELECT 1
+                FROM script_audio_candidates fsrc
+                WHERE fsrc.script_line_id = sl.id
+                  AND fsrc.language = ?
+                  AND fsrc.source_type = ?
+            )
+            """
+        )
+        values.extend([language, audio_source])
+    if missing_audio:
+        where.append(
+            """
+            NOT EXISTS (
+                SELECT 1
+                FROM script_audio_candidates mac
+                WHERE mac.script_line_id = sl.id
+                  AND mac.language = ?
+                  AND mac.relative_path != ''
+                  AND mac.manifest_status != 'error'
+            )
+            """
+        )
+        values.append(language)
+
+    where_sql = " AND ".join(where)
+    with connect(db_path) as connection:
+        total_row = connection.execute(
+            f"SELECT COUNT(*) AS count FROM script_lines sl WHERE {where_sql}",
+            values,
+        ).fetchone()
+        rows = connection.execute(
+            f"""
+            SELECT sl.id,
+                   sl.organization_id,
+                   sl.line_id,
+                   sl.script_index,
+                   sl.source_text,
+                   sl.path_json,
+                   sl.path_text,
+                   sl.created_at,
+                   sl.updated_at,
+                   st.id AS selected_translation_id,
+                   st.text AS selected_translation_text,
+                   st.source AS selected_translation_source,
+                   st.review_status AS selected_translation_status,
+                   st.notes AS selected_translation_notes,
+                   st.manually_edited AS selected_translation_manually_edited,
+                   (
+                       SELECT COUNT(*)
+                       FROM script_audio_candidates sac
+                       WHERE sac.script_line_id = sl.id
+                         AND sac.language = ?
+                         AND sac.relative_path != ''
+                         AND sac.manifest_status != 'error'
+                   ) AS audio_candidate_count
+            FROM script_lines sl
+            LEFT JOIN script_translations st
+              ON st.script_line_id = sl.id
+             AND st.language = ?
+            WHERE {where_sql}
+            ORDER BY sl.line_id ASC
+            LIMIT ?
+            OFFSET ?
+            """,
+            [language, language, *values, limit, offset],
+        ).fetchall()
+
+    return {
+        "items": [_script_line_summary_from_row(row, language) for row in rows],
+        "total": int(total_row["count"] if total_row else 0),
+        "limit": limit,
+        "offset": offset,
+    }
+
+
+def get_script_line_detail(
+    db_path: Path,
+    organization_id: str,
+    line_id: int,
+) -> dict[str, Any] | None:
+    with connect(db_path) as connection:
+        line = _get_script_line_row(connection, organization_id, line_id)
+        if line is None:
+            return None
+        translations = connection.execute(
+            """
+            SELECT id,
+                   script_line_id,
+                   language,
+                   text,
+                   source,
+                   review_status,
+                   notes,
+                   manually_edited,
+                   meta_json,
+                   created_at,
+                   updated_at
+            FROM script_translations
+            WHERE script_line_id = ?
+            ORDER BY language ASC
+            """,
+            (line["id"],),
+        ).fetchall()
+        audio_candidates = connection.execute(
+            """
+            SELECT *
+            FROM script_audio_candidates
+            WHERE script_line_id = ?
+            ORDER BY language ASC,
+                     source_type ASC,
+                     selected DESC,
+                     CASE WHEN rank < 0 THEN 999 ELSE rank END ASC,
+                     id ASC
+            """,
+            (line["id"],),
+        ).fetchall()
+
+    return {
+        **dict(line),
+        "path_parts": _json_loads(line["path_json"], []),
+        "translations": [_translation_from_row(row) for row in translations],
+        "audio_candidates": [_audio_candidate_from_row(row) for row in audio_candidates],
+    }
+
+
+def list_script_path_options(
+    db_path: Path,
+    organization_id: str,
+    limit: int = 500,
+) -> list[str]:
+    with connect(db_path) as connection:
+        rows = connection.execute(
+            """
+            SELECT DISTINCT path_text
+            FROM script_lines
+            WHERE organization_id = ?
+              AND path_text != ''
+            ORDER BY path_text ASC
+            LIMIT ?
+            """,
+            (organization_id, limit),
+        ).fetchall()
+    return [str(row["path_text"]) for row in rows]
+
+
+def update_script_translation(
+    db_path: Path,
+    organization_id: str,
+    line_id: int,
+    language: str,
+    text: str,
+    review_status: str,
+    notes: str = "",
+) -> dict[str, Any] | None:
+    with connect(db_path) as connection:
+        line = _get_script_line_row(connection, organization_id, line_id)
+        if line is None:
+            return None
+        connection.execute(
+            """
+            INSERT INTO script_translations (
+                script_line_id,
+                language,
+                text,
+                source,
+                review_status,
+                notes,
+                manually_edited
+            )
+            VALUES (?, ?, ?, 'manual', ?, ?, 1)
+            ON CONFLICT (script_line_id, language) DO UPDATE SET
+                text = excluded.text,
+                source = 'manual',
+                review_status = excluded.review_status,
+                notes = excluded.notes,
+                manually_edited = 1,
+                updated_at = CURRENT_TIMESTAMP
+            """,
+            (line["id"], language, text, review_status, notes),
+        )
+        row = connection.execute(
+            """
+            SELECT id,
+                   script_line_id,
+                   language,
+                   text,
+                   source,
+                   review_status,
+                   notes,
+                   manually_edited,
+                   meta_json,
+                   created_at,
+                   updated_at
+            FROM script_translations
+            WHERE script_line_id = ?
+              AND language = ?
+            """,
+            (line["id"], language),
+        ).fetchone()
+    return _translation_from_row(row) if row else None
+
+
+def update_script_audio_candidate(
+    db_path: Path,
+    organization_id: str,
+    candidate_id: int,
+    review_status: str,
+    notes: str = "",
+    selected: bool | None = None,
+) -> dict[str, Any] | None:
+    with connect(db_path) as connection:
+        candidate = _get_audio_candidate_row(connection, organization_id, candidate_id)
+        if candidate is None:
+            return None
+        if selected:
+            connection.execute(
+                """
+                UPDATE script_audio_candidates
+                SET selected = 0,
+                    updated_at = CURRENT_TIMESTAMP
+                WHERE script_line_id = ?
+                  AND language = ?
+                """,
+                (candidate["script_line_id"], candidate["language"]),
+            )
+        connection.execute(
+            """
+            UPDATE script_audio_candidates
+            SET review_status = ?,
+                notes = ?,
+                selected = COALESCE(?, selected),
+                updated_at = CURRENT_TIMESTAMP
+            WHERE id = ?
+            """,
+            (review_status, notes, int(selected) if selected is not None else None, candidate_id),
+        )
+        row = _get_audio_candidate_row(connection, organization_id, candidate_id)
+    return _audio_candidate_from_row(row) if row else None
+
+
+def get_script_audio_candidate_by_id(
+    db_path: Path,
+    organization_id: str,
+    candidate_id: int,
+) -> dict[str, Any] | None:
+    with connect(db_path) as connection:
+        row = _get_audio_candidate_row(connection, organization_id, candidate_id)
+    return _audio_candidate_from_row(row) if row else None
 
 
 def create_upload_batch(
@@ -2415,6 +3025,100 @@ def _original_filename_sort_key(row: dict[str, Any] | sqlite3.Row) -> list[tuple
         else:
             parts.append((1, part))
     return parts
+
+
+def _get_script_line_row(
+    connection: sqlite3.Connection,
+    organization_id: str,
+    line_id: int,
+) -> sqlite3.Row | None:
+    return connection.execute(
+        """
+        SELECT id,
+               organization_id,
+               line_id,
+               script_index,
+               source_text,
+               path_json,
+               path_text,
+               created_at,
+               updated_at
+        FROM script_lines
+        WHERE organization_id = ?
+          AND line_id = ?
+        """,
+        (organization_id, line_id),
+    ).fetchone()
+
+
+def _get_audio_candidate_row(
+    connection: sqlite3.Connection,
+    organization_id: str,
+    candidate_id: int,
+) -> sqlite3.Row | None:
+    return connection.execute(
+        """
+        SELECT sac.*
+        FROM script_audio_candidates sac
+        JOIN script_lines sl ON sl.id = sac.script_line_id
+        WHERE sac.id = ?
+          AND sl.organization_id = ?
+        """,
+        (candidate_id, organization_id),
+    ).fetchone()
+
+
+def _script_line_summary_from_row(row: sqlite3.Row, language: str) -> dict[str, Any]:
+    result = dict(row)
+    result["path_parts"] = _json_loads(result.get("path_json"), [])
+    translation_id = result.pop("selected_translation_id", None)
+    result["selected_translation"] = (
+        {
+            "id": translation_id,
+            "script_line_id": result["id"],
+            "language": language,
+            "text": result.pop("selected_translation_text") or "",
+            "source": result.pop("selected_translation_source") or "",
+            "review_status": result.pop("selected_translation_status") or "missing",
+            "notes": result.pop("selected_translation_notes") or "",
+            "manually_edited": bool(result.pop("selected_translation_manually_edited") or 0),
+        }
+        if translation_id is not None
+        else {
+            "id": None,
+            "script_line_id": result["id"],
+            "language": language,
+            "text": "",
+            "source": "",
+            "review_status": "missing",
+            "notes": "",
+            "manually_edited": False,
+        }
+    )
+    result["audio_candidate_count"] = int(result["audio_candidate_count"] or 0)
+    return result
+
+
+def _translation_from_row(row: sqlite3.Row) -> dict[str, Any]:
+    result = dict(row)
+    result["manually_edited"] = bool(result["manually_edited"])
+    result["meta"] = _json_loads(result.pop("meta_json", "{}"), {})
+    return result
+
+
+def _audio_candidate_from_row(row: sqlite3.Row) -> dict[str, Any]:
+    result = dict(row)
+    result["selected"] = bool(result["selected"])
+    if result.get("rank") == -1:
+        result["rank"] = None
+    return result
+
+
+def _json_loads(raw: Any, fallback: Any) -> Any:
+    try:
+        return json.loads(raw) if raw else fallback
+    except (TypeError, json.JSONDecodeError):
+        return fallback
 
 
 def json_dumps(value: dict[str, Any]) -> str:

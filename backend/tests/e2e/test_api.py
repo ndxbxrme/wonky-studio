@@ -33,6 +33,7 @@ def api_client(
         google_client_secret=None,
         google_redirect_uri="http://127.0.0.1:8000/api/auth/google/callback",
         storage_root=tmp_path / "uploads",
+        script_audio_root=tmp_path / "audio",
     )
     app = create_app(
         db_path,
@@ -69,6 +70,83 @@ def wait_for_job(client: TestClient, job_id: int, timeout_seconds: float = 5.0):
             return job
         time.sleep(0.05)
     raise AssertionError(f"Job {job_id} did not finish")
+
+
+def create_script_audio_fixture(audio_root: Path) -> None:
+    audio_root.mkdir(parents=True, exist_ok=True)
+    script_rows = [
+        {"line": "Hello", "path": ["ROOMS", "BEDROOM"]},
+        {"line": "Open the door", "path": ["ROOMS", "BEDROOM"]},
+        {"line": "Inventory", "path": ["USER INTERFACE"]},
+    ]
+    (audio_root / "language-adventure-script.json").write_text(
+        json.dumps(script_rows),
+        encoding="utf-8",
+    )
+    (audio_root / "language-adventure-script.en.json").write_text(
+        json.dumps(script_rows),
+        encoding="utf-8",
+    )
+    (audio_root / "language-adventure-script.fr.json").write_text(
+        json.dumps(
+            [
+                {
+                    "line": "Hello",
+                    "path": ["ROOMS", "BEDROOM"],
+                    "translations": {"fr": "Bonjour"},
+                    "translation_meta": {"fr": {"model": "test"}},
+                    "line_fr": "Bonjour",
+                },
+                {
+                    "line": "Open the door",
+                    "path": ["ROOMS", "BEDROOM"],
+                    "translations": {"fr": "Ouvre la porte"},
+                    "translation_meta": {"fr": {"model": "test"}},
+                    "line_fr": "Ouvre la porte",
+                },
+                {
+                    "line": "Inventory",
+                    "path": ["USER INTERFACE"],
+                    "translations": {"fr": "Inventaire"},
+                    "translation_meta": {"fr": {"model": "test"}},
+                    "line_fr": "Inventaire",
+                },
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    clips_root = audio_root / "clips_ogg"
+    clips_root.mkdir(parents=True, exist_ok=True)
+    (clips_root / "0001.ogg").write_bytes(b"OggS narrator one")
+    (clips_root / "0002.ogg").write_bytes(b"OggS narrator two")
+    (clips_root / "manifest.csv").write_text(
+        "\n".join(
+            [
+                "line_index,rank,score,text_score,quality_score,source_file,start,end,duration,script_line,path,transcript_match,notes,clip,exported",
+                "1,1,100,100,100,source.wav,0,1,1,Hello,ROOMS / BEDROOM,Hello,,clips\\0001.ogg,True",
+                "2,1,96,97,95,source.wav,1,2,1,Open the door,ROOMS / BEDROOM,Open the door,,clips\\0002.ogg,True",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    tts_root = audio_root / "clips_tts_ogg" / "fr"
+    tts_root.mkdir(parents=True, exist_ok=True)
+    (tts_root / "0001_fr.ogg").write_bytes(b"OggS tts one")
+    (tts_root / "0003_fr.ogg").write_bytes(b"OggS tts three")
+    (audio_root / "clips_tts_ogg" / "manifest_tts_fr.csv").write_text(
+        "\n".join(
+            [
+                "line_id,index,lang,source_line,translated_line,path,output_wav,status,error,seconds",
+                "1,0,fr,Hello,Bonjour,ROOMS / BEDROOM,clips_tts\\fr\\0001_fr.ogg,exists,,0.9",
+                "1,0,fr,Hello,Bonjour,ROOMS / BEDROOM,clips_tts\\fr\\0001_fr.ogg,generated,,0.9",
+                "2,1,fr,Open the door,Ouvre la porte,ROOMS / BEDROOM,clips_tts\\fr\\0002_fr.ogg,error,tts failed,",
+                "3,2,fr,Inventory,Inventaire,USER INTERFACE,clips_tts\\fr\\0003_fr.ogg,generated,,0.8",
+            ]
+        ),
+        encoding="utf-8",
+    )
 
 
 def test_health_check_responds(tmp_path):
@@ -123,6 +201,91 @@ def test_regular_user_cannot_generate_invite_link(tmp_path):
         authenticate(client, db_path, settings, role="user")
 
         response = client.post("/api/invites", json={"role": "user"})
+
+    assert response.status_code == 403
+
+
+def test_admin_can_import_and_review_script_audio(tmp_path):
+    with api_client(tmp_path) as (client, db_path, settings):
+        authenticate(client, db_path, settings, role="admin")
+        create_script_audio_fixture(settings.script_audio_root)
+
+        import_response = client.post("/api/admin/import-script-audio", json={})
+        list_response = client.get("/api/script-lines?language=fr&q=Bonjour")
+
+        assert import_response.status_code == 200
+        import_result = import_response.json()
+        assert import_result["script_lines"] == 3
+        assert import_result["translations"] == 6
+        assert import_result["narrator_candidates"] == 2
+        assert import_result["tts_candidates"] == 3
+        assert import_result["missing_narrator_line_ids"] == [3]
+
+        assert list_response.status_code == 200
+        listed = list_response.json()
+        assert listed["total"] == 1
+        assert listed["items"][0]["line_id"] == 1
+        assert listed["items"][0]["selected_translation"]["text"] == "Bonjour"
+
+        detail_response = client.get("/api/script-lines/1")
+        assert detail_response.status_code == 200
+        detail = detail_response.json()
+        narrator = next(
+            candidate
+            for candidate in detail["audio_candidates"]
+            if candidate["source_type"] == "narrator_candidate"
+        )
+        audio_response = client.get(f"/api/script-audio-candidates/{narrator['id']}/content")
+        assert audio_response.status_code == 200
+        assert audio_response.content.startswith(b"OggS")
+
+        translation_response = client.patch(
+            "/api/script-lines/1/translations/fr",
+            json={
+                "text": "Salut",
+                "review_status": "approved",
+                "notes": "Native speaker approved",
+            },
+        )
+        assert translation_response.status_code == 200
+        assert translation_response.json()["manually_edited"] is True
+
+        selected_response = client.patch(
+            f"/api/script-audio-candidates/{narrator['id']}",
+            json={
+                "review_status": "approved",
+                "notes": "Clean take",
+                "selected": True,
+            },
+        )
+        assert selected_response.status_code == 200
+        assert selected_response.json()["selected"] is True
+
+        reimport_response = client.post("/api/admin/import-script-audio", json={})
+        assert reimport_response.status_code == 200
+        updated_detail = client.get("/api/script-lines/1").json()
+        french = next(
+            translation
+            for translation in updated_detail["translations"]
+            if translation["language"] == "fr"
+        )
+        updated_narrator = next(
+            candidate
+            for candidate in updated_detail["audio_candidates"]
+            if candidate["id"] == narrator["id"]
+        )
+        assert french["text"] == "Salut"
+        assert french["review_status"] == "approved"
+        assert updated_narrator["selected"] is True
+        assert updated_narrator["review_status"] == "approved"
+
+
+def test_regular_user_cannot_import_script_audio(tmp_path):
+    with api_client(tmp_path) as (client, db_path, settings):
+        authenticate(client, db_path, settings, role="user")
+        create_script_audio_fixture(settings.script_audio_root)
+
+        response = client.post("/api/admin/import-script-audio", json={})
 
     assert response.status_code == 403
 

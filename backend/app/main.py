@@ -39,6 +39,8 @@ from .database import (
     get_database_path,
     get_mask_candidate_by_id,
     get_object_mask_by_id,
+    get_script_audio_candidate_by_id,
+    get_script_line_detail,
     get_scene_object_for_organization,
     get_active_processing_job_for_scene,
     get_processing_job,
@@ -54,6 +56,8 @@ from .database import (
     list_assets,
     list_object_animations_for_object,
     list_object_masks_for_object,
+    list_script_lines,
+    list_script_path_options,
     list_scene_objects_for_scene,
     list_scene_images_for_scene,
     list_scenes,
@@ -66,6 +70,8 @@ from .database import (
     reset_workspace_tables,
     scene_belongs_to_organization,
     touch_object_mask,
+    update_script_audio_candidate,
+    update_script_translation,
     update_object_animation,
     update_scene_mask_prompt,
     update_scene_object,
@@ -77,6 +83,7 @@ from .object_rendering import render_masked_object_crop
 from .scene_processing import process_upload_batch_into_scene
 from .security import sign_state, verify_state
 from .segmentation import SegmentationProvider, build_segmentation_provider
+from .script_import import import_script_audio_data
 from .vlm import SceneVlmProvider, build_scene_vlm_provider, scene_draft_to_dict
 
 
@@ -387,6 +394,107 @@ class ResetDatabaseResult(BaseModel):
     cleared_tables: list[str]
 
 
+class ScriptImportRequest(BaseModel):
+    audio_root: str | None = None
+
+
+class ScriptImportResult(BaseModel):
+    script_lines: int
+    translations: int
+    narrator_candidates: int
+    tts_candidates: int
+    missing_narrator_line_ids: list[int]
+    skipped_files: list[str]
+
+
+class ScriptTranslation(BaseModel):
+    id: int | None = None
+    script_line_id: int
+    language: str
+    text: str
+    source: str
+    review_status: str
+    notes: str = ""
+    manually_edited: bool = False
+    meta: dict[str, Any] = Field(default_factory=dict)
+    created_at: str | None = None
+    updated_at: str | None = None
+
+
+class ScriptAudioCandidate(BaseModel):
+    id: int
+    script_line_id: int
+    language: str
+    source_type: str
+    manifest_status: str
+    review_status: str
+    relative_path: str
+    original_path: str
+    selected: bool
+    rank: int | None
+    score: float | None
+    text_score: float | None
+    quality_score: float | None
+    duration_seconds: float | None
+    transcript_match: str
+    notes: str
+    error: str
+    source_file: str
+    start_seconds: float | None
+    end_seconds: float | None
+    created_at: str
+    updated_at: str
+
+
+class ScriptLineSummary(BaseModel):
+    id: int
+    organization_id: str
+    line_id: int
+    script_index: int
+    source_text: str
+    path_json: str
+    path_text: str
+    path_parts: list[str]
+    created_at: str
+    updated_at: str
+    selected_translation: ScriptTranslation
+    audio_candidate_count: int
+
+
+class ScriptLineDetail(BaseModel):
+    id: int
+    organization_id: str
+    line_id: int
+    script_index: int
+    source_text: str
+    path_json: str
+    path_text: str
+    path_parts: list[str]
+    created_at: str
+    updated_at: str
+    translations: list[ScriptTranslation]
+    audio_candidates: list[ScriptAudioCandidate]
+
+
+class ScriptLineListResponse(BaseModel):
+    items: list[ScriptLineSummary]
+    total: int
+    limit: int
+    offset: int
+
+
+class ScriptTranslationUpdate(BaseModel):
+    text: str = Field(default="", max_length=5000)
+    review_status: str = Field(pattern="^(needs_review|approved|needs_edit|missing)$")
+    notes: str = Field(default="", max_length=1000)
+
+
+class ScriptAudioCandidateUpdate(BaseModel):
+    review_status: str = Field(pattern="^(candidate|needs_review|approved|needs_edit|missing|rejected)$")
+    notes: str = Field(default="", max_length=1000)
+    selected: bool | None = None
+
+
 def create_app(
     db_path: Path | None = None,
     settings: Settings | None = None,
@@ -588,6 +696,126 @@ def create_app(
             "ok": True,
             "cleared_tables": reset_workspace_tables(database_path),
         }
+
+    @app.post("/api/admin/import-script-audio", response_model=ScriptImportResult)
+    def post_import_script_audio(
+        request: ScriptImportRequest,
+        admin: dict[str, Any] = Depends(current_admin),
+    ) -> dict[str, Any]:
+        audio_root = Path(request.audio_root) if request.audio_root else app_settings.script_audio_root
+        try:
+            return import_script_audio_data(
+                database_path,
+                audio_root=audio_root,
+                organization_id=admin["organization_id"],
+            )
+        except FileNotFoundError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        except (OSError, ValueError) as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    @app.get("/api/script-lines", response_model=ScriptLineListResponse)
+    def get_script_lines(
+        q: str = "",
+        path: str = "",
+        language: str = "en",
+        translation_status: str = "",
+        audio_status: str = "",
+        audio_source: str = "",
+        missing_audio: bool = False,
+        limit: int = 50,
+        offset: int = 0,
+        user: dict[str, Any] = Depends(current_user),
+    ) -> dict[str, Any]:
+        return list_script_lines(
+            database_path,
+            organization_id=user["organization_id"],
+            language=language,
+            query=q.strip(),
+            path=path.strip(),
+            translation_status=translation_status.strip(),
+            audio_status=audio_status.strip(),
+            audio_source=audio_source.strip(),
+            missing_audio=missing_audio,
+            limit=max(1, min(limit, 200)),
+            offset=max(0, offset),
+        )
+
+    @app.get("/api/script-lines/paths", response_model=list[str])
+    def get_script_line_paths(user: dict[str, Any] = Depends(current_user)) -> list[str]:
+        return list_script_path_options(database_path, user["organization_id"])
+
+    @app.get("/api/script-lines/{line_id}", response_model=ScriptLineDetail)
+    def get_script_line(
+        line_id: int,
+        user: dict[str, Any] = Depends(current_user),
+    ) -> dict[str, Any]:
+        line = get_script_line_detail(database_path, user["organization_id"], line_id)
+        if line is None:
+            raise HTTPException(status_code=404, detail="Script line not found")
+        return line
+
+    @app.patch(
+        "/api/script-lines/{line_id}/translations/{language}",
+        response_model=ScriptTranslation,
+    )
+    def patch_script_translation(
+        line_id: int,
+        language: str,
+        update: ScriptTranslationUpdate,
+        user: dict[str, Any] = Depends(current_user),
+    ) -> dict[str, Any]:
+        translation = update_script_translation(
+            database_path,
+            organization_id=user["organization_id"],
+            line_id=line_id,
+            language=language,
+            text=update.text,
+            review_status=update.review_status,
+            notes=update.notes,
+        )
+        if translation is None:
+            raise HTTPException(status_code=404, detail="Script line not found")
+        return translation
+
+    @app.patch("/api/script-audio-candidates/{candidate_id}", response_model=ScriptAudioCandidate)
+    def patch_script_audio_candidate(
+        candidate_id: int,
+        update: ScriptAudioCandidateUpdate,
+        user: dict[str, Any] = Depends(current_user),
+    ) -> dict[str, Any]:
+        candidate = update_script_audio_candidate(
+            database_path,
+            organization_id=user["organization_id"],
+            candidate_id=candidate_id,
+            review_status=update.review_status,
+            notes=update.notes,
+            selected=update.selected,
+        )
+        if candidate is None:
+            raise HTTPException(status_code=404, detail="Audio candidate not found")
+        return candidate
+
+    @app.get("/api/script-audio-candidates/{candidate_id}/content")
+    def get_script_audio_content(
+        candidate_id: int,
+        user: dict[str, Any] = Depends(current_user),
+    ) -> FileResponse:
+        candidate = get_script_audio_candidate_by_id(
+            database_path,
+            user["organization_id"],
+            candidate_id,
+        )
+        if candidate is None or not candidate["relative_path"]:
+            raise HTTPException(status_code=404, detail="Audio candidate not found")
+        file_path = _safe_child_path(app_settings.script_audio_root, candidate["relative_path"])
+        if not file_path.exists() or not file_path.is_file():
+            raise HTTPException(status_code=404, detail="Audio file not found")
+        return FileResponse(
+            file_path,
+            media_type="audio/ogg",
+            headers={"Cache-Control": "public, max-age=3600"},
+        )
 
     @app.get("/api/uploads/batches", response_model=list[UploadBatchSummary])
     def get_upload_batches(user: dict[str, Any] = Depends(current_user)) -> list[dict]:
@@ -1667,6 +1895,14 @@ def _derived_file_is_stale(output_path: Path, source_paths: list[Path]) -> bool:
 
 def _batch_storage_root(storage_root: Path, organization_id: str, batch_id: int) -> Path:
     return storage_root / _safe_path_segment(organization_id) / str(batch_id)
+
+
+def _safe_child_path(root: Path, relative_path: str) -> Path:
+    root_path = root.resolve()
+    file_path = (root_path / relative_path).resolve()
+    if file_path != root_path and root_path not in file_path.parents:
+        raise HTTPException(status_code=404, detail="File not found")
+    return file_path
 
 
 def _safe_filename(filename: str) -> str:
