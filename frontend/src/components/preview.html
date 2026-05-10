@@ -1,0 +1,89 @@
+<main class="scene-runtime-page" data-preview-page>
+  {{#if editorReady}}
+    <header class="scene-header preview-header">
+      <div>
+        <a class="back-link" href="/scene/{{sceneId}}">Scene {{sceneId}}</a>
+        <p class="eyebrow">Preview</p>
+        <h1>{{previewData.title}}</h1>
+        <p>{{previewData.images.length}} frames · {{previewObjects.length}} objects</p>
+      </div>
+      <div class="scene-header__actions">
+        <button class="button secondary compact" type="button" data-action="refresh-preview">Refresh</button>
+        <button class="button secondary compact" type="button" data-action="toggle-background">
+          {{#if showBackground}}Hide background{{/if}}
+          {{#if not showBackground}}Show background{{/if}}
+        </button>
+        <button class="button secondary compact" type="button" data-action="reset-preview">Reset pose</button>
+      </div>
+    </header>
+
+    <section class="scene-runtime-grid">
+      <section class="scene-runtime-stage">
+        <wonky-scene-preview></wonky-scene-preview>
+      </section>
+
+      <aside class="scene-runtime-sidebar">
+        <div class="actions-panel">
+          <div class="actions-panel__header">
+            <div>
+              <p class="eyebrow">Status</p>
+              <h2>Live preview</h2>
+            </div>
+          </div>
+          <p class="muted">Editor changes in this browser refresh the preview automatically.</p>
+          <p class="form-status" data-preview-status aria-live="polite">{{status}}</p>
+        </div>
+
+        <div class="actions-panel">
+          <div class="actions-panel__header">
+            <div>
+              <p class="eyebrow">Objects</p>
+              <h2>Animations</h2>
+            </div>
+          </div>
+          <div class="preview-object-list">
+            {{#each previewObjects as object}}
+              <section class="preview-object-card {{#if object.isSelected}}is-selected{{/if}}">
+                <button
+                  class="preview-object-card__header"
+                  type="button"
+                  data-action="select-preview-object"
+                  data-object-id="{{object.id}}"
+                >
+                  <strong>{{object.name}}</strong>
+                  <span>{{object.animationCount}} animations</span>
+                </button>
+                {{#if object.hasAnimations}}
+                  <div class="preview-animation-list">
+                    {{#each object.animations as animation}}
+                      <button
+                        class="preview-animation-button {{#if animation.isSelected}}is-selected{{/if}}"
+                        type="button"
+                        data-action="play-animation"
+                        data-object-id="{{object.id}}"
+                        data-animation-id="{{animation.id}}"
+                      >
+                        <strong>{{animation.name}}</strong>
+                        <span>{{animation.frameCount}} frames</span>
+                      </button>
+                    {{/each}}
+                  </div>
+                {{/if}}
+                {{#if not object.hasAnimations}}
+                  <p class="muted">No saved animations.</p>
+                {{/if}}
+              </section>
+            {{/each}}
+          </div>
+        </div>
+      </aside>
+    </section>
+  {{/if}}
+
+  {{#if editorMissing}}
+    <section class="empty-state">
+      <p>Scene preview unavailable.</p>
+      <a class="button secondary" href="/">Back to scenes</a>
+    </section>
+  {{/if}}
+</main>

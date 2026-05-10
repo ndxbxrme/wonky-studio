@@ -1,4 +1,4 @@
-import {API_BASE_URL} from '../api.js';
+import {apiUrl} from '../api.js';
 
 const user = {
   session: null,
@@ -18,7 +18,7 @@ const user = {
 
 async function loadUser() {
   try {
-    const response = await fetch(`${API_BASE_URL}/api/auth/session`, {
+    const response = await fetch(apiUrl('/api/auth/session'), {
       credentials: 'include'
     });
     if (!response.ok) {
@@ -34,7 +34,7 @@ async function loadUser() {
 }
 
 async function logoutUser() {
-  await fetch(`${API_BASE_URL}/api/auth/logout`, {
+  await fetch(apiUrl('/api/auth/logout'), {
     method: 'POST',
     credentials: 'include'
   });
@@ -42,7 +42,7 @@ async function logoutUser() {
 }
 
 function loginUrl(inviteToken = '') {
-  const url = new URL('/api/auth/google/login', API_BASE_URL);
+  const url = new URL(apiUrl('/api/auth/google/login'));
   if (inviteToken) url.searchParams.set('invite', inviteToken);
   return url.toString();
 }

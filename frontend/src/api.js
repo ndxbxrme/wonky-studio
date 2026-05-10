@@ -1,7 +1,7 @@
-const API_BASE_URL = import.meta.env.VITE_API_BASE_URL ?? 'http://127.0.0.1:8000';
+const API_BASE_URL = (import.meta.env.VITE_API_BASE_URL ?? '').replace(/\/$/, '');
 
 async function apiFetch(path, options = {}) {
-  const response = await fetch(`${API_BASE_URL}${path}`, {
+  const response = await fetch(resolveApiPath(path), {
     credentials: 'include',
     ...options,
     headers: {
@@ -19,27 +19,37 @@ async function apiFetch(path, options = {}) {
 }
 
 function uploadedFileUrl(uploadedFileId) {
-  return `${API_BASE_URL}/api/uploads/files/${uploadedFileId}/content`;
+  return resolveApiPath(`/api/uploads/files/${uploadedFileId}/content`);
+}
+
+function apiUrl(path) {
+  return new URL(resolveApiPath(path), window.location.origin).toString();
 }
 
 function objectMaskUrl(maskId, variant, cacheKey = '') {
-  const url = new URL(`/api/object-masks/${maskId}/${variant}`, API_BASE_URL);
+  const url = new URL(resolveApiPath(`/api/object-masks/${maskId}/${variant}`), window.location.origin);
   if (cacheKey) url.searchParams.set('v', cacheKey);
   return url.toString();
 }
 
 function objectThumbnailUrl(objectId, cacheKey = '') {
-  const url = new URL(`/api/scene-objects/${objectId}/thumbnail`, API_BASE_URL);
+  const url = new URL(resolveApiPath(`/api/scene-objects/${objectId}/thumbnail`), window.location.origin);
   if (cacheKey) url.searchParams.set('v', cacheKey);
   return url.toString();
 }
 
 function scriptAudioCandidateUrl(candidateId) {
-  return `${API_BASE_URL}/api/script-audio-candidates/${candidateId}/content`;
+  return resolveApiPath(`/api/script-audio-candidates/${candidateId}/content`);
+}
+
+function resolveApiPath(path) {
+  if (!path.startsWith('/')) path = `/${path}`;
+  return API_BASE_URL ? `${API_BASE_URL}${path}` : path;
 }
 
 export {
   API_BASE_URL,
+  apiUrl,
   apiFetch,
   objectMaskUrl,
   objectThumbnailUrl,

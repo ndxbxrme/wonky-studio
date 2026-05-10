@@ -1,6 +1,6 @@
 # Wonky Studio
 
-Internal asset tooling for a point-and-click adventure game built from real-world diorama photography. The current focus is scene intake, object inventory, AI-assisted mask generation, and manual mask cleanup.
+Internal asset tooling for a point-and-click adventure game built from real-world diorama photography. The current focus is scene intake, object inventory, AI-assisted mask generation, animation authoring, script/audio review, action authoring, and live scene preview.
 
 ## Run Locally
 
@@ -21,6 +21,8 @@ npm run dev -- --host 127.0.0.1
 ```
 
 Open `http://127.0.0.1:5173/`. The API runs at `http://127.0.0.1:8000/`.
+
+In development, the frontend uses a Vite `/api` proxy to the backend. Browser code should use relative `/api/...` paths rather than hardcoding `127.0.0.1:8000`.
 
 Tests:
 
@@ -96,6 +98,7 @@ Manual mask editor:
 - Route: `/mask-editor/{sceneId}/{objectId}/{maskId}`.
 - Left mouse draws, right mouse erases, middle mouse pans, mouse wheel zooms.
 - Controls: brush size, hardness, overlay opacity, display mode, undo/redo, previous/next frame.
+- Keyboard shortcuts: `ArrowLeft`/`a` previous frame, `ArrowRight`/`d` next frame, `s` save.
 - Display modes: overlay, mask only, masked image.
 - Server-side operations: grow mask and fill holes, optionally applied to all masks for the object.
 - “Apply to all frames” for brush edits replays the current frame’s brush strokes over every mask, instead of copying one mask to all frames.
@@ -108,17 +111,53 @@ Object thumbnails:
 - Thumbnail rendering uses `backend/app/object_rendering.py`, which should be reused later for animation/final object rendering.
 - Thumbnail URLs include mask cache keys, and derived thumbnails rerender when source/mask files change.
 
+Animations:
+
+- Each object can have multiple named animations.
+- Animations are defined as ordered frame ranges with per-frame duration.
+- Route: `/animations/{sceneId}/{objectId}`.
+- The animation editor previews saved frame sequences and supports a background object for context.
+- Keyboard shortcuts: `ArrowLeft`/`a` previous preview frame, `ArrowRight`/`d` next preview frame, `s` save current animation.
+
+Script/audio review:
+
+- Admin import route loads the script and audio manifests from `WONKY_STUDIO_SCRIPT_AUDIO_ROOT`.
+- Route: `/script-review`.
+- Script lines are searchable by path/text/language.
+- Each translation and audio candidate has review state, notes, and audio preview.
+
+Actions:
+
+- Route: `/actions/{sceneId}`.
+- Global variables: `bool`, `string`, `number`.
+- Scene interactions support scene/object/variable triggers.
+- Action steps are structured and validated, not free-form script text.
+- Supported steps today: `play_animation`, `set_object_property`, `show_subtitle`, `play_audio`, `set_variable`, `if_variable`, `delay`.
+- Scene pages show action counts plus per-object action summaries with links back into the action editor.
+
+Scene preview:
+
+- Route: `/preview/{sceneId}`.
+- Opened from the scene page or actions page in a popout window.
+- Uses cached server-rendered object crops, not raw masks in the browser.
+- Renders each object’s first valid frame plus any frames referenced by saved animations.
+- Uses a canvas renderer for deterministic composition and playback.
+- Background can be toggled on/off for object inspection.
+- The currently playing object is drawn on top of the stack during playback.
+- Listens for editor updates in the same browser via `BroadcastChannel` and refreshes automatically.
+
 ## Backend Map
 
-- `backend/app/main.py`: FastAPI app, routes, auth dependencies, job worker, mask editor endpoints.
-- `backend/app/database.py`: SQLite schema and data access functions. There is no external migration tool yet; schema changes are handled in `init_database`.
+- `backend/app/main.py`: FastAPI app, routes, auth dependencies, processing worker, mask editor endpoints, script/audio review, actions validation, and scene preview payload/render endpoints.
+- `backend/app/database.py`: SQLite schema and data access functions for uploads, scenes, masks, animations, script review, variables, and interactions. There is no external migration tool yet; schema changes are handled in `init_database`.
 - `backend/app/config.py`: environment-driven settings.
 - `backend/app/security.py`: tokens/session helpers.
 - `backend/app/scene_processing.py`: upload batch to scene matching.
 - `backend/app/vlm.py`: VLM provider abstraction and Ollama implementation.
 - `backend/app/segmentation.py`: segmentation provider abstraction and SAM3 subprocess implementation.
-- `backend/app/object_rendering.py`: reusable object crop/render helpers.
-- `backend/tests/e2e/test_api.py`: backend e2e coverage for auth, uploads, scenes, VLM, mask extraction, mask editing, thumbnails.
+- `backend/app/object_rendering.py`: reusable object crop/render helpers used for thumbnails and preview renders.
+- `backend/app/script_import.py`: imports script line, translation, and audio candidate data from local manifests.
+- `backend/tests/e2e/test_api.py`: backend e2e coverage for auth, uploads, scenes, VLM, mask extraction, mask editing, thumbnails, script/audio review, actions, and preview payloads.
 
 ## Frontend Map
 
@@ -126,12 +165,19 @@ Object thumbnails:
 - `frontend/src/routing.js`: registers templates, controllers, helpers, and auth middleware.
 - `frontend/src/api.js`: API wrapper and URL builders.
 - `frontend/src/auth-middleware.js`: redirects unauthenticated users to `/not-authorized`.
+- `frontend/src/preview-sync.js`: `BroadcastChannel` helpers for preview invalidation and popout launch.
 - `frontend/src/state/user.js`: shared current user/session state.
 - `frontend/src/state/scenes.js`: shared scene cache and scene preparation helpers.
 - `frontend/src/components/default.*`: home/upload/admin/scene list route.
 - `frontend/src/components/scene.*`: scene detail route.
 - `frontend/src/components/mask-editor.*`: full-screen mask editor route.
 - `frontend/src/components/mask-editor-element.js`: canvas editor web component.
+- `frontend/src/components/animations.*`: animation authoring route.
+- `frontend/src/components/animation-preview-element.js`: animation preview surface.
+- `frontend/src/components/script-review.*`: script/audio review route.
+- `frontend/src/components/actions.*`: actions/variables authoring route.
+- `frontend/src/components/preview.*`: popout scene preview route.
+- `frontend/src/components/scene-preview-element.js`: canvas-based cached scene composition preview surface.
 - `frontend/src/app.css`: global app styles.
 
 ## Turbomini Notes
@@ -142,7 +188,7 @@ Routes:
 
 - A route is registered with `app.template(name, html)` and `app.controller(name, Controller(app))`.
 - Route matching is prefix-based from the URL path. `/scene/1` uses the `scene` route and receives `["1"]` as params.
-- Current routes: `default`, `not-authorized`, `scene`, `mask-editor`.
+- Current routes: `default`, `not-authorized`, `scene`, `mask-editor`, `animations`, `script-review`, `actions`, `preview`.
 
 Controller pattern:
 
@@ -203,8 +249,11 @@ When to use a web component:
 5. Optionally run VLM analysis to draft objects.
 6. Edit object names/prompts manually as needed.
 7. Click **Extract masks** to queue SAM3 extraction.
-8. Use object thumbnails/list to open the mask editor.
-9. Clean masks frame-by-frame or apply operations/brush edits across all frames.
+8. Use object thumbnails/list to open the mask editor and clean masks.
+9. Open `/animations/{sceneId}/{objectId}` to define reusable frame sequences.
+10. Open `/actions/{sceneId}` to define triggers, variables, and action sequences.
+11. Open `/preview/{sceneId}` from the scene/actions UI to test cached object playback in a live popout.
+12. Use `/script-review` to import, search, and review dialog/translations/audio candidates.
 
 ## Known Design Choices
 
@@ -213,3 +262,6 @@ When to use a web component:
 - Object prompt text is the extraction key. Existing masks are preserved when a prompt changes.
 - Derived files are stored under `derived/scenes/...` inside the storage root.
 - Manual mask edits overwrite the raw and soft mask files for now.
+- Preview invalidation currently uses `BroadcastChannel`, so automatic refresh works between windows in the same browser profile.
+- The preview is a runtime foundation, not a full game player yet. It currently supports cached composition and manual animation playback, not full authored interaction execution.
+- Default object layering is still implicit. During preview playback the currently animating object is temporarily drawn last.

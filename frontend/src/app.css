@@ -122,6 +122,40 @@ select {
   font-weight: 700;
 }
 
+.scene-action-summary {
+  margin: 0 12px 12px;
+  padding: 12px;
+  border-top: 1px solid #e3e8e2;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.scene-action-summary .eyebrow {
+  flex: 1 0 100%;
+  margin-bottom: 0;
+}
+
+.scene-action-summary span,
+.object-action-summary a {
+  max-width: 100%;
+  padding: 4px 8px;
+  border: 1px solid #bad6ca;
+  border-radius: 999px;
+  background: #eef7f1;
+  color: #1f2937;
+  font-size: 0.84rem;
+  font-weight: 700;
+  text-decoration: none;
+  overflow-wrap: anywhere;
+}
+
+.object-action-summary a:focus-visible,
+.object-action-summary a:hover {
+  border-color: #1f6f5b;
+  background: #e0f1e8;
+}
+
 .job-status {
   margin: 0 12px 12px;
   padding: 12px;
@@ -462,6 +496,13 @@ p {
 
 .object-mask-row__summary p {
   overflow-wrap: anywhere;
+}
+
+.object-action-summary {
+  margin-top: 10px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
 }
 
 .mask-strip {
@@ -919,6 +960,257 @@ textarea {
   overflow-wrap: anywhere;
 }
 
+.actions-page {
+  width: min(1600px, 100%);
+  min-height: 100vh;
+  margin: 0 auto;
+  padding: 28px;
+  display: grid;
+  gap: 18px;
+}
+
+.actions-header .form-status {
+  justify-self: end;
+}
+
+.actions-grid {
+  display: grid;
+  grid-template-columns: 360px minmax(0, 1fr);
+  gap: 18px;
+  align-items: start;
+}
+
+.actions-sidebar,
+.actions-workbench {
+  min-width: 0;
+  display: grid;
+  gap: 18px;
+}
+
+.actions-sidebar {
+  position: sticky;
+  top: 24px;
+}
+
+.actions-panel {
+  min-width: 0;
+  padding: 18px;
+  border: 1px solid #d7ded6;
+  border-radius: 8px;
+  background: #ffffff;
+  box-shadow: 0 16px 36px rgba(17, 24, 39, 0.08);
+  display: grid;
+  gap: 14px;
+}
+
+.actions-panel__header,
+.interaction-editor__header {
+  min-width: 0;
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  align-items: start;
+}
+
+.stack-form,
+.interaction-list,
+.variable-list,
+.action-step-list,
+.script-line-search-results {
+  min-width: 0;
+  display: grid;
+  gap: 10px;
+}
+
+.interaction-list__item {
+  width: 100%;
+  min-width: 0;
+  padding: 10px;
+  border: 1px solid #dce3de;
+  border-radius: 6px;
+  background: #fbfcfa;
+  color: #1f2937;
+  text-align: left;
+  cursor: pointer;
+  display: grid;
+  gap: 4px;
+}
+
+.interaction-list__item.is-selected {
+  border-color: #1f6f5b;
+  background: #eef7f1;
+}
+
+.interaction-list__item strong,
+.interaction-list__item span,
+.variable-list span {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.interaction-list__item span,
+.variable-list span {
+  color: #667085;
+  font-size: 0.9rem;
+}
+
+.variable-list span {
+  padding: 8px;
+  border: 1px solid #dce3de;
+  border-radius: 6px;
+  background: #fbfcfa;
+}
+
+.interaction-editor__fields,
+.action-step-form,
+.script-line-picker {
+  min-width: 0;
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+  align-items: end;
+}
+
+.action-step-form [hidden] {
+  display: none;
+}
+
+.interaction-editor__fields .checkbox-label,
+.action-step-form .muted {
+  align-self: end;
+}
+
+.action-step-row,
+.script-line-search-row {
+  min-width: 0;
+  padding: 12px;
+  border: 1px solid #dce3de;
+  border-radius: 6px;
+  background: #fbfcfa;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 12px;
+  align-items: center;
+}
+
+.action-step-row strong,
+.action-step-row p,
+.script-line-search-row strong,
+.script-line-search-row p {
+  overflow-wrap: anywhere;
+}
+
+.action-step-row__actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  justify-content: end;
+}
+
+.script-line-search-row {
+  grid-template-columns: minmax(0, 1fr) minmax(220px, 360px) auto;
+}
+
+.script-line-search-row audio {
+  width: 100%;
+}
+
+.scene-runtime-page {
+  width: min(1680px, 100%);
+  min-height: 100vh;
+  margin: 0 auto;
+  padding: 28px;
+  display: grid;
+  gap: 18px;
+}
+
+.scene-runtime-grid {
+  min-height: calc(100vh - 150px);
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 360px;
+  gap: 18px;
+  align-items: stretch;
+}
+
+.scene-runtime-stage {
+  min-width: 0;
+  min-height: 0;
+  padding: 18px;
+  border: 1px solid #d7ded6;
+  border-radius: 8px;
+  background: #ffffff;
+  box-shadow: 0 16px 36px rgba(17, 24, 39, 0.08);
+  display: grid;
+}
+
+.scene-runtime-stage wonky-scene-preview {
+  min-height: min(70vh, 820px);
+}
+
+.scene-runtime-sidebar {
+  min-width: 0;
+  max-height: calc(100vh - 150px);
+  display: grid;
+  gap: 18px;
+  align-content: start;
+  overflow: auto;
+}
+
+.preview-object-list,
+.preview-animation-list {
+  display: grid;
+  gap: 10px;
+}
+
+.preview-object-card {
+  min-width: 0;
+  padding: 12px;
+  border: 1px solid #dce3de;
+  border-radius: 6px;
+  background: #fbfcfa;
+  display: grid;
+  gap: 10px;
+}
+
+.preview-object-card.is-selected {
+  border-color: #1f6f5b;
+  background: #eef7f1;
+}
+
+.preview-object-card__header,
+.preview-animation-button {
+  width: 100%;
+  min-width: 0;
+  border: 0;
+  background: transparent;
+  text-align: left;
+  color: inherit;
+  padding: 0;
+  cursor: pointer;
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.preview-object-card__header span,
+.preview-animation-button span {
+  color: #667085;
+  font-size: 0.88rem;
+}
+
+.preview-animation-button {
+  padding: 8px 10px;
+  border: 1px solid #dce3de;
+  border-radius: 6px;
+  background: #ffffff;
+}
+
+.preview-animation-button.is-selected {
+  border-color: #1f6f5b;
+  background: #e8f4ed;
+}
+
 .object-prompt-form {
   display: grid;
   grid-template-columns: minmax(180px, 1fr) auto;
@@ -1045,7 +1337,14 @@ select {
   .script-review-header,
   .script-review-grid,
   .script-filter-form,
-  .audio-candidate-row__controls {
+  .audio-candidate-row__controls,
+  .actions-grid,
+  .interaction-editor__fields,
+  .action-step-form,
+  .script-line-picker,
+  .action-step-row,
+  .script-line-search-row,
+  .scene-runtime-grid {
     grid-template-columns: 1fr;
   }
 
@@ -1053,8 +1352,25 @@ select {
     padding: 20px 14px;
   }
 
+  .actions-page {
+    padding: 20px 14px;
+  }
+
+  .scene-runtime-page {
+    padding: 20px 14px;
+  }
+
   .script-review-header__actions {
     justify-items: start;
+  }
+
+  .actions-sidebar {
+    position: static;
+  }
+
+  .scene-runtime-sidebar {
+    max-height: none;
+    overflow: visible;
   }
 
   .animation-editor-grid {

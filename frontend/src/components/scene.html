@@ -10,6 +10,8 @@
       <div class="scene-header__actions">
         <button class="button secondary compact" type="button" data-action="analyze-vlm">Analyze with VLM</button>
         <button class="button primary compact" type="button" data-action="extract-masks">Extract masks</button>
+        <a class="button secondary compact" href="/actions/{{scene.id}}">Edit actions</a>
+        <button class="button secondary compact" type="button" data-action="open-preview">Open preview</button>
         <button class="button secondary compact" type="button" data-action="logout">Sign out</button>
       </div>
     </header>
@@ -23,7 +25,16 @@
           <span>{{scene.images.length}} images</span>
           <span>{{scene.objects.length}} objects</span>
           <span>{{scene.objectMaskCount}} masks</span>
+          <span>{{scene.actionCount}} actions</span>
         </div>
+        {{#if scene.hasSceneActionSummaries}}
+          <div class="scene-action-summary" aria-label="Scene-level actions">
+            <p class="eyebrow">Scene actions</p>
+            {{#each scene.sceneActionSummaries as action}}
+              <span>{{action.label}}</span>
+            {{/each}}
+          </div>
+        {{/if}}
         {{#if hasExtractionJob}}
           <div class="job-status">
             <strong>{{extractionJob.status}}</strong>
@@ -97,10 +108,18 @@
                     <strong>{{object.name}}</strong>
                     <p>
                       {{object.source}} · {{object.maskCount}} masks ·
-                      <a class="inline-link" href="/animations/{{scene.id}}/{{object.id}}">{{object.animationCount}} animations</a>
+                      <a class="inline-link" href="/animations/{{scene.id}}/{{object.id}}">{{object.animationCount}} animations</a> ·
+                      <a class="inline-link" href="/actions/{{scene.id}}?objectId={{object.id}}">New action</a>
                     </p>
                     {{#if object.description}}
                       <p>{{object.description}}</p>
+                    {{/if}}
+                    {{#if object.hasActionSummaries}}
+                      <div class="object-action-summary" aria-label="{{object.name}} actions">
+                        {{#each object.actionSummaries as action}}
+                          <a href="{{action.href}}">{{action.label}}</a>
+                        {{/each}}
+                      </div>
                     {{/if}}
                   </div>
                   <button

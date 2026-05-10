@@ -10,6 +10,10 @@ import {AnimationsCtrl} from './components/animations.ctrl.js';
 import animationsTemplate from './components/animations.html?raw';
 import {ScriptReviewCtrl} from './components/script-review.ctrl.js';
 import scriptReviewTemplate from './components/script-review.html?raw';
+import {ActionsCtrl} from './components/actions.ctrl.js';
+import actionsTemplate from './components/actions.html?raw';
+import {PreviewCtrl} from './components/preview.ctrl.js';
+import previewTemplate from './components/preview.html?raw';
 import {authMiddleware} from './auth-middleware.js';
 
 const initRoutes = async (app) => {
@@ -28,6 +32,10 @@ const initRoutes = async (app) => {
   app.controller('animations', AnimationsCtrl(app));
   app.template('script-review', scriptReviewTemplate);
   app.controller('script-review', ScriptReviewCtrl(app));
+  app.template('actions', actionsTemplate);
+  app.controller('actions', ActionsCtrl(app));
+  app.template('preview', previewTemplate);
+  app.controller('preview', PreviewCtrl(app));
 }
 
 function formatBytes(bytes) {

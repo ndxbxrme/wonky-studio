@@ -569,6 +569,175 @@ def test_scene_object_animations_can_be_created_updated_listed_and_removed(tmp_p
     assert empty_list_response.json() == []
 
 
+def test_scene_interactions_validate_actions_and_export_json(tmp_path):
+    with api_client(tmp_path) as (client, db_path, settings):
+        authenticate(client, db_path, settings, role="user")
+        create_script_audio_fixture(settings.script_audio_root)
+        assert client.post("/api/admin/import-script-audio", json={}).status_code == 403
+
+    with api_client(tmp_path) as (client, db_path, settings):
+        authenticate(client, db_path, settings, role="admin")
+        create_script_audio_fixture(settings.script_audio_root)
+        client.post("/api/admin/import-script-audio", json={})
+
+        upload_response = client.post(
+            "/api/uploads/batches",
+            files=[("files", ("bedroom.png", png_bytes(draw_flower=True), "image/png"))],
+        )
+        scene = client.post(
+            f"/api/uploads/batches/{upload_response.json()['id']}/process-scene"
+        ).json()["scene"]
+        clock = client.post(
+            f"/api/scenes/{scene['id']}/objects",
+            json={"name": "clock", "prompt": "clock"},
+        ).json()
+        bed = client.post(
+            f"/api/scenes/{scene['id']}/objects",
+            json={"name": "bed", "prompt": "bed"},
+        ).json()
+        animation = client.post(
+            f"/api/scene-objects/{clock['id']}/animations",
+            json={
+                "name": "tick",
+                "segments": [
+                    {"start_frame": 0, "end_frame": 0, "frame_duration_seconds": 0.5},
+                ],
+            },
+        ).json()
+        variable_response = client.post(
+            "/api/variables",
+            json={
+                "name": "clock_opened",
+                "value_type": "bool",
+                "default_value": False,
+                "description": "Clock has been opened.",
+            },
+        )
+        variable = variable_response.json()
+
+        create_response = client.post(
+            f"/api/scenes/{scene['id']}/interactions",
+            json={
+                "name": "Click clock",
+                "enabled": True,
+                "trigger": {"type": "object_click", "object_id": clock["id"]},
+                "action_tree": [
+                    {
+                        "type": "play_audio",
+                        "script_line_ids": [1, 2],
+                        "wait": "wait",
+                    },
+                    {
+                        "type": "set_object_property",
+                        "target_object_id": bed["id"],
+                        "property": "visible",
+                        "value": True,
+                    },
+                    {
+                        "type": "play_animation",
+                        "target_object_id": clock["id"],
+                        "animation_id": animation["id"],
+                        "mode": "queued",
+                        "wait": "continue",
+                    },
+                    {
+                        "type": "if_variable",
+                        "variable_id": variable["id"],
+                        "operator": "equals",
+                        "value": False,
+                        "then_steps": [
+                            {
+                                "type": "set_variable",
+                                "variable_id": variable["id"],
+                                "value": True,
+                            }
+                        ],
+                        "else_steps": [
+                            {
+                                "type": "show_subtitle",
+                                "script_line_ids": [3],
+                                "duration_seconds": 1.5,
+                            }
+                        ],
+                    },
+                ],
+            },
+        )
+        list_response = client.get(f"/api/scenes/{scene['id']}/interactions")
+        export_response = client.get(
+            f"/api/scenes/{scene['id']}/interactions/validation-json"
+        )
+
+        wrong_animation_response = client.post(
+            f"/api/scenes/{scene['id']}/interactions",
+            json={
+                "name": "Bad animation",
+                "enabled": True,
+                "trigger": {"type": "object_click", "object_id": bed["id"]},
+                "action_tree": [
+                    {
+                        "type": "play_animation",
+                        "target_object_id": bed["id"],
+                        "animation_id": animation["id"],
+                    }
+                ],
+            },
+        )
+        bad_variable_response = client.post(
+            f"/api/scenes/{scene['id']}/interactions",
+            json={
+                "name": "Bad variable",
+                "enabled": True,
+                "trigger": {"type": "scene_enter"},
+                "action_tree": [
+                    {
+                        "type": "set_variable",
+                        "variable_id": variable["id"],
+                        "value": "yes",
+                    }
+                ],
+            },
+        )
+        missing_audio_response = client.post(
+            f"/api/scenes/{scene['id']}/interactions",
+            json={
+                "name": "Missing audio",
+                "enabled": True,
+                "trigger": {"type": "scene_enter"},
+                "action_tree": [
+                    {
+                        "type": "play_audio",
+                        "script_line_ids": [99999],
+                    }
+                ],
+            },
+        )
+
+    assert variable_response.status_code == 201
+    assert variable["default_value"] is False
+
+    assert create_response.status_code == 201
+    interaction = create_response.json()
+    assert interaction["trigger"] == {"type": "object_click", "object_id": clock["id"]}
+    assert interaction["action_tree"][0]["selection"] == "random"
+    assert interaction["action_tree"][0]["script_line_ids"] == [1, 2]
+    assert interaction["action_tree"][0]["id"]
+    assert interaction["action_tree"][3]["then_steps"][0]["type"] == "set_variable"
+
+    assert list_response.status_code == 200
+    assert list_response.json()[0]["id"] == interaction["id"]
+
+    assert export_response.status_code == 200
+    exported = export_response.json()
+    assert exported["scene_id"] == scene["id"]
+    assert exported["variables"][0]["name"] == "clock_opened"
+    assert exported["interactions"][0]["name"] == "Click clock"
+
+    assert wrong_animation_response.status_code == 400
+    assert bad_variable_response.status_code == 400
+    assert missing_audio_response.status_code == 400
+
+
 def test_scene_vlm_analysis_updates_description_and_adds_missing_draft_objects(tmp_path):
     fake_vlm = FakeVlmProvider()
     with api_client(tmp_path, vlm_provider=fake_vlm) as (client, db_path, settings):
@@ -689,6 +858,141 @@ def test_scene_object_prompts_can_be_reviewed_extracted_and_removed(tmp_path):
     assert len(changed_detail_response.json()["objects"][0]["masks"]) == 2
     assert delete_response.status_code == 204
     assert deleted_detail_response.json()["objects"] == []
+
+
+def test_scene_preview_data_renders_default_and_animation_frames_only(tmp_path):
+    fake_segmentation = FakeSegmentationProvider()
+    with api_client(
+        tmp_path,
+        segmentation_provider=fake_segmentation,
+    ) as (client, db_path, settings):
+        authenticate(client, db_path, settings, role="user")
+        upload_response = client.post(
+            "/api/uploads/batches",
+            files=[
+                ("files", ("bedroom_0002.png", png_bytes(draw_flower=True), "image/png")),
+                ("files", ("bedroom_0000.png", png_bytes(draw_flower=False), "image/png")),
+                ("files", ("bedroom_0001.png", png_bytes(draw_flower=True), "image/png")),
+            ],
+        )
+        batch_id = upload_response.json()["id"]
+        scene = client.post(f"/api/uploads/batches/{batch_id}/process-scene").json()["scene"]
+        scene_object = client.post(
+            f"/api/scenes/{scene['id']}/objects",
+            json={"name": "bed", "prompt": "bed"},
+        ).json()
+        extract_response = client.post(f"/api/scenes/{scene['id']}/extract-masks")
+        extract_job = wait_for_job(client, extract_response.json()["id"])
+        assert extract_job["status"] == "succeeded"
+
+        animation_response = client.post(
+            f"/api/scene-objects/{scene_object['id']}/animations",
+            json={
+                "name": "idle",
+                "segments": [
+                    {"start_frame": 0, "end_frame": 1, "frame_duration_seconds": 0.25},
+                ],
+            },
+        )
+        preview_response = client.get(f"/api/scenes/{scene['id']}/preview-data")
+
+        assert animation_response.status_code == 201
+        assert preview_response.status_code == 200
+        preview = preview_response.json()
+        assert [image["original_filename"] for image in preview["images"]] == [
+            "bedroom_0000.png",
+            "bedroom_0001.png",
+            "bedroom_0002.png",
+        ]
+        assert preview["width"] == 96
+        assert preview["height"] == 54
+
+        preview_object = preview["objects"][0]
+        assert preview_object["name"] == "bed"
+        assert preview_object["default_render"]["original_filename"] == "bedroom_0000.png"
+        assert preview_object["default_render"]["frame_index"] == 0
+        assert preview_object["default_render"]["url"].startswith(
+            f"/api/scene-objects/{scene_object['id']}/preview-renders/"
+        )
+
+        animation = preview_object["animations"][0]
+        assert animation["name"] == "idle"
+        assert [frame["frame_index"] for frame in animation["frames"]] == [0, 1]
+        assert [frame["original_filename"] for frame in animation["frames"]] == [
+            "bedroom_0000.png",
+            "bedroom_0001.png",
+        ]
+        assert all(frame["render"] for frame in animation["frames"])
+
+        preview_root = (
+            settings.storage_root
+            / settings.organization_id
+            / "derived"
+            / "scenes"
+            / str(scene["id"])
+            / "objects"
+            / str(scene_object["id"])
+            / "preview"
+        )
+        rendered_files = sorted(path.name for path in preview_root.glob("*.png"))
+        assert rendered_files == [
+            str(preview["images"][0]["uploaded_file_id"]) + ".png",
+            str(preview["images"][1]["uploaded_file_id"]) + ".png",
+        ]
+
+        first_render_response = client.get(
+            f"/api/scene-objects/{scene_object['id']}/preview-renders/{preview['images'][0]['uploaded_file_id']}"
+        )
+        second_render_response = client.get(
+            f"/api/scene-objects/{scene_object['id']}/preview-renders/{preview['images'][1]['uploaded_file_id']}"
+        )
+        missing_render_response = client.get(
+            f"/api/scene-objects/{scene_object['id']}/preview-renders/{preview['images'][2]['uploaded_file_id']}"
+        )
+
+        assert first_render_response.status_code == 200
+        assert second_render_response.status_code == 200
+        assert missing_render_response.status_code == 200
+
+
+def test_scene_preview_cache_key_changes_after_mask_edit(tmp_path):
+    fake_segmentation = FakeSegmentationProvider()
+    with api_client(
+        tmp_path,
+        segmentation_provider=fake_segmentation,
+    ) as (client, db_path, settings):
+        authenticate(client, db_path, settings, role="user")
+        upload_response = client.post(
+            "/api/uploads/batches",
+            files=[("files", ("bedroom.png", png_bytes(draw_flower=True), "image/png"))],
+        )
+        batch_id = upload_response.json()["id"]
+        scene = client.post(f"/api/uploads/batches/{batch_id}/process-scene").json()["scene"]
+        scene_object = client.post(
+            f"/api/scenes/{scene['id']}/objects",
+            json={"name": "bed", "prompt": "bed"},
+        ).json()
+        extract_response = client.post(f"/api/scenes/{scene['id']}/extract-masks")
+        extract_job = wait_for_job(client, extract_response.json()["id"])
+        assert extract_job["status"] == "succeeded"
+
+        first_preview = client.get(f"/api/scenes/{scene['id']}/preview-data").json()
+        first_render = first_preview["objects"][0]["default_render"]
+        mask_id = first_render["object_mask_id"]
+
+        edited_mask = Image.new("L", (16, 9), 255)
+        ImageDraw.Draw(edited_mask).rectangle((0, 0, 6, 8), fill=0)
+        save_response = client.put(
+            f"/api/object-masks/{mask_id}/content",
+            content=image_bytes(edited_mask),
+            headers={"Content-Type": "image/png"},
+        )
+        second_preview = client.get(f"/api/scenes/{scene['id']}/preview-data").json()
+        second_render = second_preview["objects"][0]["default_render"]
+
+        assert save_response.status_code == 200
+        assert first_render["cache_key"] != second_render["cache_key"]
+        assert first_render["url"] != second_render["url"]
 
 
 def test_object_mask_content_can_be_saved_and_processed(tmp_path):

@@ -5,6 +5,7 @@ import {
   replaceScene,
   scenes
 } from '../state/scenes.js';
+import {notifyScenePreview, openScenePreview} from '../preview-sync.js';
 import {logoutUser, user} from '../state/user.js';
 
 const SceneCtrl = app => async params => {
@@ -15,6 +16,7 @@ const SceneCtrl = app => async params => {
     organizationId: user.organizationId,
     sceneId,
     scene: findScene(sceneId),
+    interactions: [],
     sceneFound: false,
     sceneMissing: false,
     scenes,
@@ -63,6 +65,12 @@ const SceneCtrl = app => async params => {
         return;
       }
 
+      const previewButton = event.target.closest('[data-action="open-preview"]');
+      if (previewButton) {
+        openScenePreview(this.sceneId);
+        return;
+      }
+
       const deleteObjectButton = event.target.closest('[data-action="delete-object"]');
       if (deleteObjectButton) {
         await this.deleteObject(deleteObjectButton);
@@ -85,11 +93,17 @@ const SceneCtrl = app => async params => {
     },
 
     async refreshScene() {
-      const latestScene = await loadScene(this.sceneId);
-      this.scene = replaceScene(latestScene);
+      await this.loadSceneWithActions();
       this.sceneFound = Boolean(this.scene);
       this.sceneMissing = !this.sceneFound;
       app.refresh();
+    },
+
+    async loadSceneWithActions() {
+      const latestScene = replaceScene(await loadScene(this.sceneId));
+      this.interactions = await loadSceneInteractions(this.sceneId);
+      this.scene = annotateSceneActions(latestScene, this.interactions);
+      return this.scene;
     },
 
     setStatus(selector, message) {
@@ -109,6 +123,7 @@ const SceneCtrl = app => async params => {
         this.scene = replaceScene(result.scene);
         this.sceneFound = true;
         this.sceneMissing = false;
+        notifyScenePreview(this.sceneId, 'scene-updated');
         this.setStatus(
           '[data-vlm-analysis-status]',
           `Added ${result.created_object_count} draft ${objectLabel}.`
@@ -157,6 +172,7 @@ const SceneCtrl = app => async params => {
         this.setExtractionJob(job);
         if (job.status === 'succeeded') {
           await this.refreshScene();
+          notifyScenePreview(this.sceneId, 'mask-updated');
           return;
         }
         if (job.status === 'failed') {
@@ -186,6 +202,7 @@ const SceneCtrl = app => async params => {
         form.reset();
         if (status) status.textContent = '';
         await this.refreshScene();
+        notifyScenePreview(this.sceneId, 'scene-updated');
       } catch {
         if (status) status.textContent = 'Could not add object.';
       }
@@ -206,6 +223,7 @@ const SceneCtrl = app => async params => {
         });
         if (status) status.textContent = '';
         await this.refreshScene();
+        notifyScenePreview(this.sceneId, 'object-updated');
       } catch {
         if (status) status.textContent = 'Could not save prompt.';
       }
@@ -222,6 +240,7 @@ const SceneCtrl = app => async params => {
           method: 'DELETE'
         });
         await this.refreshScene();
+        notifyScenePreview(this.sceneId, 'object-updated');
       } catch {
         button.disabled = false;
         this.setStatus('[data-object-action-status]', 'Could not remove object.');
@@ -232,7 +251,7 @@ const SceneCtrl = app => async params => {
   };
 
   try {
-    controller.scene = replaceScene(await loadScene(sceneId));
+    await controller.loadSceneWithActions();
     controller.sceneFound = true;
     controller.sceneMissing = false;
     const activeJob = await loadActiveExtractionJob(sceneId);
@@ -254,6 +273,95 @@ async function loadActiveExtractionJob(sceneId) {
   } catch {
     return null;
   }
+}
+
+async function loadSceneInteractions(sceneId) {
+  try {
+    return await apiFetch(`/api/scenes/${sceneId}/interactions`);
+  } catch {
+    return [];
+  }
+}
+
+function annotateSceneActions(scene, interactions) {
+  const summariesByObjectId = new Map();
+  const sceneActionSummaries = [];
+  for (const interaction of interactions) {
+    const summary = summarizeInteraction(interaction);
+    const objectIds = relatedObjectIdsForInteraction(interaction);
+    if (!objectIds.size) {
+      sceneActionSummaries.push(summary);
+      continue;
+    }
+    for (const objectId of objectIds) {
+      if (!summariesByObjectId.has(objectId)) summariesByObjectId.set(objectId, []);
+      summariesByObjectId.get(objectId).push(summary);
+    }
+  }
+
+  const objects = (scene.objects ?? []).map(sceneObject => {
+    const actionSummaries = summariesByObjectId.get(sceneObject.id) ?? [];
+    return {
+      ...sceneObject,
+      actionSummaries,
+      actionSummaryCount: actionSummaries.length,
+      hasActionSummaries: Boolean(actionSummaries.length)
+    };
+  });
+
+  return {
+    ...scene,
+    objects,
+    actionCount: interactions.length,
+    hasActions: Boolean(interactions.length),
+    sceneActionSummaries,
+    hasSceneActionSummaries: Boolean(sceneActionSummaries.length)
+  };
+}
+
+function summarizeInteraction(interaction) {
+  const triggerType = labelFromType(interaction.trigger?.type ?? 'scene_enter');
+  const actionTypes = [...new Set(flattenActionTypes(interaction.action_tree ?? []))]
+    .slice(0, 3)
+    .map(labelFromType);
+  return {
+    id: interaction.id,
+    name: interaction.name,
+    href: `/actions/${interaction.scene_id}?interactionId=${interaction.id}`,
+    triggerType,
+    actionTypeSummary: actionTypes.join(', '),
+    label: actionTypes.length
+      ? `${interaction.name} · ${triggerType} -> ${actionTypes.join(', ')}`
+      : `${interaction.name} · ${triggerType}`,
+    enabled: interaction.enabled
+  };
+}
+
+function relatedObjectIdsForInteraction(interaction) {
+  const objectIds = new Set();
+  if (interaction.trigger?.object_id) objectIds.add(Number(interaction.trigger.object_id));
+  collectActionObjectIds(interaction.action_tree ?? [], objectIds);
+  return objectIds;
+}
+
+function collectActionObjectIds(steps, objectIds) {
+  for (const step of steps) {
+    if (step.target_object_id) objectIds.add(Number(step.target_object_id));
+    collectActionObjectIds(step.then_steps ?? [], objectIds);
+    collectActionObjectIds(step.else_steps ?? [], objectIds);
+  }
+}
+
+function flattenActionTypes(steps) {
+  return steps.flatMap(step => [
+    step.type,
+    ...flattenActionTypes(step.then_steps ?? []),
+    ...flattenActionTypes(step.else_steps ?? [])
+  ]).filter(Boolean);
+}
+
+function labelFromType(type) {
+  return String(type).replace(/_/g, ' ');
 }
 
 export {SceneCtrl};

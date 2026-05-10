@@ -5,6 +5,7 @@ import {
   replaceScene,
   scenes
 } from '../state/scenes.js';
+import {notifyScenePreview} from '../preview-sync.js';
 import {user} from '../state/user.js';
 import './mask-editor-element.js';
 
@@ -33,6 +34,7 @@ const MaskEditorCtrl = app => async params => {
       this.bind(this.editor, 'navigate-mask', event => this.navigateMask(event));
       this.bind(this.editor, 'save-mask', event => this.saveMask(event));
       this.bind(this.editor, 'process-mask', event => this.processMask(event));
+      this.bind(window, 'keydown', event => this.onKeyDown(event));
       await this.configureEditor();
     },
 
@@ -77,6 +79,24 @@ const MaskEditorCtrl = app => async params => {
       app.goto(`/mask-editor/${this.sceneId}/${this.objectId}/${event.detail.maskId}`);
     },
 
+    onKeyDown(event) {
+      if (shouldIgnoreShortcut(event)) return;
+      if (event.key === 'ArrowLeft' || event.key.toLowerCase() === 'a') {
+        event.preventDefault();
+        this.editor?.navigate(-1);
+        return;
+      }
+      if (event.key === 'ArrowRight' || event.key.toLowerCase() === 'd') {
+        event.preventDefault();
+        this.editor?.navigate(1);
+        return;
+      }
+      if (event.key.toLowerCase() === 's') {
+        event.preventDefault();
+        this.editor?.dispatchSave();
+      }
+    },
+
     async saveMask(event) {
       if (!this.editor || !this.currentMask) return;
       this.setStatus(event.detail.applyAll ? 'Saving edits to all frames...' : 'Saving mask...');
@@ -92,6 +112,7 @@ const MaskEditorCtrl = app => async params => {
         await this.refreshScene();
         app.refresh();
         await this.configureEditor();
+        notifyScenePreview(this.sceneId, 'mask-updated');
         this.setStatus('Saved.');
       } catch {
         this.setStatus('Could not save mask edits.');
@@ -114,6 +135,7 @@ const MaskEditorCtrl = app => async params => {
         await this.refreshScene();
         app.refresh();
         await this.configureEditor();
+        notifyScenePreview(this.sceneId, 'mask-updated');
         this.setStatus('Mask operation complete.');
       } catch {
         this.setStatus('Could not process mask.');
@@ -142,6 +164,14 @@ async function uploadMaskBlob(maskId, blob) {
     body: blob,
     headers: {'Content-Type': 'image/png'}
   });
+}
+
+function shouldIgnoreShortcut(event) {
+  if (event.defaultPrevented || event.metaKey || event.ctrlKey || event.altKey) return true;
+  const target = event.target;
+  if (!(target instanceof HTMLElement)) return false;
+  if (target.isContentEditable) return true;
+  return Boolean(target.closest('input, textarea, select, [contenteditable="true"]'));
 }
 
 export {MaskEditorCtrl};

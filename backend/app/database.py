@@ -430,6 +430,40 @@ def init_database(
         connection.execute(
             "CREATE INDEX IF NOT EXISTS idx_script_audio_status ON script_audio_candidates (language, source_type, review_status)"
         )
+        connection.execute(
+            """
+            CREATE TABLE IF NOT EXISTS game_variables (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                organization_id TEXT NOT NULL,
+                name TEXT NOT NULL,
+                value_type TEXT NOT NULL CHECK (value_type IN ('bool', 'string', 'number')),
+                default_value_json TEXT NOT NULL DEFAULT 'null',
+                description TEXT NOT NULL DEFAULT '',
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE (organization_id, name),
+                FOREIGN KEY (organization_id) REFERENCES organizations(id)
+            )
+            """
+        )
+        connection.execute(
+            """
+            CREATE TABLE IF NOT EXISTS scene_interactions (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                scene_id INTEGER NOT NULL,
+                name TEXT NOT NULL,
+                enabled INTEGER NOT NULL DEFAULT 1,
+                trigger_json TEXT NOT NULL DEFAULT '{}',
+                action_tree_json TEXT NOT NULL DEFAULT '[]',
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (scene_id) REFERENCES scenes(id)
+            )
+            """
+        )
+        connection.execute(
+            "CREATE INDEX IF NOT EXISTS idx_scene_interactions_scene ON scene_interactions (scene_id)"
+        )
 
 
 def list_assets(db_path: Path, organization_id: str) -> list[dict[str, Any]]:
@@ -449,6 +483,8 @@ def list_assets(db_path: Path, organization_id: str) -> list[dict[str, Any]]:
 
 def reset_workspace_tables(db_path: Path) -> list[str]:
     tables = [
+        "scene_interactions",
+        "game_variables",
         "script_audio_candidates",
         "script_translations",
         "script_lines",
@@ -1300,6 +1336,364 @@ def get_script_audio_candidate_by_id(
     with connect(db_path) as connection:
         row = _get_audio_candidate_row(connection, organization_id, candidate_id)
     return _audio_candidate_from_row(row) if row else None
+
+
+def list_game_variables(db_path: Path, organization_id: str) -> list[dict[str, Any]]:
+    with connect(db_path) as connection:
+        rows = connection.execute(
+            """
+            SELECT id,
+                   organization_id,
+                   name,
+                   value_type,
+                   default_value_json,
+                   description,
+                   created_at,
+                   updated_at
+            FROM game_variables
+            WHERE organization_id = ?
+            ORDER BY lower(name) ASC, id ASC
+            """,
+            (organization_id,),
+        ).fetchall()
+    return [_game_variable_from_row(row) for row in rows]
+
+
+def get_game_variable_by_id(
+    db_path: Path,
+    organization_id: str,
+    variable_id: int,
+) -> dict[str, Any] | None:
+    with connect(db_path) as connection:
+        row = connection.execute(
+            """
+            SELECT id,
+                   organization_id,
+                   name,
+                   value_type,
+                   default_value_json,
+                   description,
+                   created_at,
+                   updated_at
+            FROM game_variables
+            WHERE id = ?
+              AND organization_id = ?
+            """,
+            (variable_id, organization_id),
+        ).fetchone()
+    return _game_variable_from_row(row) if row else None
+
+
+def create_game_variable(
+    db_path: Path,
+    organization_id: str,
+    name: str,
+    value_type: str,
+    default_value: Any,
+    description: str = "",
+) -> dict[str, Any]:
+    with connect(db_path) as connection:
+        cursor = connection.execute(
+            """
+            INSERT INTO game_variables (
+                organization_id,
+                name,
+                value_type,
+                default_value_json,
+                description
+            )
+            VALUES (?, ?, ?, ?, ?)
+            """,
+            (
+                organization_id,
+                name.strip(),
+                value_type,
+                json.dumps(default_value, separators=(",", ":")),
+                description.strip(),
+            ),
+        )
+    created = get_game_variable_by_id(db_path, organization_id, int(cursor.lastrowid))
+    if created is None:
+        raise RuntimeError("Created variable could not be loaded")
+    return created
+
+
+def update_game_variable(
+    db_path: Path,
+    organization_id: str,
+    variable_id: int,
+    name: str,
+    value_type: str,
+    default_value: Any,
+    description: str = "",
+) -> dict[str, Any] | None:
+    with connect(db_path) as connection:
+        cursor = connection.execute(
+            """
+            UPDATE game_variables
+            SET name = ?,
+                value_type = ?,
+                default_value_json = ?,
+                description = ?,
+                updated_at = CURRENT_TIMESTAMP
+            WHERE id = ?
+              AND organization_id = ?
+            """,
+            (
+                name.strip(),
+                value_type,
+                json.dumps(default_value, separators=(",", ":")),
+                description.strip(),
+                variable_id,
+                organization_id,
+            ),
+        )
+    if cursor.rowcount == 0:
+        return None
+    return get_game_variable_by_id(db_path, organization_id, variable_id)
+
+
+def delete_game_variable(
+    db_path: Path,
+    organization_id: str,
+    variable_id: int,
+) -> None:
+    with connect(db_path) as connection:
+        connection.execute(
+            """
+            DELETE FROM game_variables
+            WHERE id = ?
+              AND organization_id = ?
+            """,
+            (variable_id, organization_id),
+        )
+
+
+def list_scene_interactions(
+    db_path: Path,
+    scene_id: int,
+    organization_id: str,
+) -> list[dict[str, Any]]:
+    with connect(db_path) as connection:
+        rows = connection.execute(
+            """
+            SELECT scene_interactions.id,
+                   scene_interactions.scene_id,
+                   scene_interactions.name,
+                   scene_interactions.enabled,
+                   scene_interactions.trigger_json,
+                   scene_interactions.action_tree_json,
+                   scene_interactions.created_at,
+                   scene_interactions.updated_at
+            FROM scene_interactions
+            JOIN scenes ON scenes.id = scene_interactions.scene_id
+            WHERE scene_interactions.scene_id = ?
+              AND scenes.organization_id = ?
+            ORDER BY lower(scene_interactions.name) ASC, scene_interactions.id ASC
+            """,
+            (scene_id, organization_id),
+        ).fetchall()
+    return [_scene_interaction_from_row(row) for row in rows]
+
+
+def get_scene_interaction(
+    db_path: Path,
+    scene_id: int,
+    interaction_id: int,
+    organization_id: str,
+) -> dict[str, Any] | None:
+    with connect(db_path) as connection:
+        row = connection.execute(
+            """
+            SELECT scene_interactions.id,
+                   scene_interactions.scene_id,
+                   scene_interactions.name,
+                   scene_interactions.enabled,
+                   scene_interactions.trigger_json,
+                   scene_interactions.action_tree_json,
+                   scene_interactions.created_at,
+                   scene_interactions.updated_at
+            FROM scene_interactions
+            JOIN scenes ON scenes.id = scene_interactions.scene_id
+            WHERE scene_interactions.id = ?
+              AND scene_interactions.scene_id = ?
+              AND scenes.organization_id = ?
+            """,
+            (interaction_id, scene_id, organization_id),
+        ).fetchone()
+    return _scene_interaction_from_row(row) if row else None
+
+
+def create_scene_interaction(
+    db_path: Path,
+    scene_id: int,
+    organization_id: str,
+    name: str,
+    enabled: bool,
+    trigger: dict[str, Any],
+    action_tree: list[dict[str, Any]],
+) -> dict[str, Any]:
+    with connect(db_path) as connection:
+        scene = connection.execute(
+            "SELECT id FROM scenes WHERE id = ? AND organization_id = ?",
+            (scene_id, organization_id),
+        ).fetchone()
+        if scene is None:
+            raise ValueError("Scene not found")
+        cursor = connection.execute(
+            """
+            INSERT INTO scene_interactions (
+                scene_id,
+                name,
+                enabled,
+                trigger_json,
+                action_tree_json
+            )
+            VALUES (?, ?, ?, ?, ?)
+            """,
+            (
+                scene_id,
+                name.strip(),
+                int(enabled),
+                json.dumps(trigger, separators=(",", ":")),
+                json.dumps(action_tree, separators=(",", ":")),
+            ),
+        )
+    created = get_scene_interaction(db_path, scene_id, int(cursor.lastrowid), organization_id)
+    if created is None:
+        raise RuntimeError("Created interaction could not be loaded")
+    return created
+
+
+def update_scene_interaction(
+    db_path: Path,
+    scene_id: int,
+    interaction_id: int,
+    organization_id: str,
+    name: str,
+    enabled: bool,
+    trigger: dict[str, Any],
+    action_tree: list[dict[str, Any]],
+) -> dict[str, Any] | None:
+    with connect(db_path) as connection:
+        cursor = connection.execute(
+            """
+            UPDATE scene_interactions
+            SET name = ?,
+                enabled = ?,
+                trigger_json = ?,
+                action_tree_json = ?,
+                updated_at = CURRENT_TIMESTAMP
+            WHERE id = ?
+              AND scene_id = ?
+              AND EXISTS (
+                  SELECT 1
+                  FROM scenes
+                  WHERE scenes.id = scene_interactions.scene_id
+                    AND scenes.organization_id = ?
+              )
+            """,
+            (
+                name.strip(),
+                int(enabled),
+                json.dumps(trigger, separators=(",", ":")),
+                json.dumps(action_tree, separators=(",", ":")),
+                interaction_id,
+                scene_id,
+                organization_id,
+            ),
+        )
+    if cursor.rowcount == 0:
+        return None
+    return get_scene_interaction(db_path, scene_id, interaction_id, organization_id)
+
+
+def delete_scene_interaction(
+    db_path: Path,
+    scene_id: int,
+    interaction_id: int,
+    organization_id: str,
+) -> None:
+    with connect(db_path) as connection:
+        connection.execute(
+            """
+            DELETE FROM scene_interactions
+            WHERE id = ?
+              AND scene_id = ?
+              AND EXISTS (
+                  SELECT 1
+                  FROM scenes
+                  WHERE scenes.id = scene_interactions.scene_id
+                    AND scenes.organization_id = ?
+              )
+            """,
+            (interaction_id, scene_id, organization_id),
+        )
+
+
+def scene_object_belongs_to_scene(
+    db_path: Path,
+    scene_id: int,
+    object_id: int,
+    organization_id: str,
+) -> bool:
+    with connect(db_path) as connection:
+        row = connection.execute(
+            """
+            SELECT 1
+            FROM scene_objects
+            JOIN scenes ON scenes.id = scene_objects.scene_id
+            WHERE scene_objects.id = ?
+              AND scene_objects.scene_id = ?
+              AND scenes.organization_id = ?
+            """,
+            (object_id, scene_id, organization_id),
+        ).fetchone()
+    return row is not None
+
+
+def object_animation_belongs_to_object(
+    db_path: Path,
+    animation_id: int,
+    object_id: int,
+    organization_id: str,
+) -> bool:
+    with connect(db_path) as connection:
+        row = connection.execute(
+            """
+            SELECT 1
+            FROM object_animations
+            JOIN scene_objects ON scene_objects.id = object_animations.scene_object_id
+            JOIN scenes ON scenes.id = scene_objects.scene_id
+            WHERE object_animations.id = ?
+              AND object_animations.scene_object_id = ?
+              AND scenes.organization_id = ?
+            """,
+            (animation_id, object_id, organization_id),
+        ).fetchone()
+    return row is not None
+
+
+def script_line_ids_exist(
+    db_path: Path,
+    organization_id: str,
+    line_ids: list[int],
+) -> bool:
+    if not line_ids:
+        return False
+    unique_ids = sorted(set(line_ids))
+    placeholders = ",".join("?" for _ in unique_ids)
+    with connect(db_path) as connection:
+        row = connection.execute(
+            f"""
+            SELECT COUNT(*) AS count
+            FROM script_lines
+            WHERE organization_id = ?
+              AND line_id IN ({placeholders})
+            """,
+            [organization_id, *unique_ids],
+        ).fetchone()
+    return int(row["count"] if row else 0) == len(unique_ids)
 
 
 def create_upload_batch(
@@ -3111,6 +3505,20 @@ def _audio_candidate_from_row(row: sqlite3.Row) -> dict[str, Any]:
     result["selected"] = bool(result["selected"])
     if result.get("rank") == -1:
         result["rank"] = None
+    return result
+
+
+def _game_variable_from_row(row: sqlite3.Row) -> dict[str, Any]:
+    result = dict(row)
+    result["default_value"] = _json_loads(result.pop("default_value_json", "null"), None)
+    return result
+
+
+def _scene_interaction_from_row(row: sqlite3.Row) -> dict[str, Any]:
+    result = dict(row)
+    result["enabled"] = bool(result["enabled"])
+    result["trigger"] = _json_loads(result.pop("trigger_json", "{}"), {})
+    result["action_tree"] = _json_loads(result.pop("action_tree_json", "[]"), [])
     return result
 
 

@@ -4,6 +4,7 @@ import {
   loadScene,
   replaceScene
 } from '../state/scenes.js';
+import {notifyScenePreview} from '../preview-sync.js';
 import {user} from '../state/user.js';
 import './animation-preview-element.js';
 
@@ -41,6 +42,7 @@ const AnimationsCtrl = app => async params => {
       this.bind(this.root, 'submit', event => this.onSubmit(event));
       this.bind(this.root, 'change', event => this.onChange(event));
       this.bind(this.preview, 'preview-error', event => this.onPreviewError(event));
+      this.bind(window, 'keydown', event => this.onKeyDown(event));
       this.setSelectValues();
       await this.configurePreview();
     },
@@ -215,6 +217,26 @@ const AnimationsCtrl = app => async params => {
       this.setStatus(`Could not load ${frameLabel} for preview.`);
     },
 
+    async onKeyDown(event) {
+      if (shouldIgnoreShortcut(event)) return;
+      if (event.key === 'ArrowLeft' || event.key.toLowerCase() === 'a') {
+        event.preventDefault();
+        await this.preview?.previous();
+        return;
+      }
+      if (event.key === 'ArrowRight' || event.key.toLowerCase() === 'd') {
+        event.preventDefault();
+        await this.preview?.next();
+        return;
+      }
+      if (event.key.toLowerCase() === 's') {
+        const form = this.root?.querySelector('[data-animation-edit-form]');
+        if (!form || !this.selectedAnimation) return;
+        event.preventDefault();
+        await this.saveAnimation(form);
+      }
+    },
+
     async createAnimation(form) {
       const formData = new FormData(form);
       const name = String(formData.get('name') ?? '').trim();
@@ -239,6 +261,7 @@ const AnimationsCtrl = app => async params => {
         form.reset();
         await this.refreshData();
         await this.refreshView();
+        notifyScenePreview(this.sceneId, 'animation-updated');
         this.setStatus('');
       } catch {
         this.setStatus('Could not create animation.');
@@ -261,6 +284,7 @@ const AnimationsCtrl = app => async params => {
         this.selectedAnimationId = animation.id;
         await this.refreshData();
         await this.refreshView();
+        notifyScenePreview(this.sceneId, 'animation-updated');
         this.setStatus('Saved.');
       } catch {
         this.setStatus('Could not save animation.');
@@ -308,6 +332,7 @@ const AnimationsCtrl = app => async params => {
         if (this.selectedAnimationId === animationId) this.selectedAnimationId = null;
         await this.refreshData();
         await this.refreshView();
+        notifyScenePreview(this.sceneId, 'animation-updated');
         this.setStatus('');
       } catch {
         button.disabled = false;
@@ -394,6 +419,14 @@ function formatDuration(value) {
   if (Math.abs(seconds - 1 / 30) < 0.001) return '1/30s';
   if (Number.isInteger(seconds)) return `${seconds}s`;
   return `${seconds.toFixed(3)}s`;
+}
+
+function shouldIgnoreShortcut(event) {
+  if (event.defaultPrevented || event.metaKey || event.ctrlKey || event.altKey) return true;
+  const target = event.target;
+  if (!(target instanceof HTMLElement)) return false;
+  if (target.isContentEditable) return true;
+  return Boolean(target.closest('input, textarea, select, [contenteditable="true"]'));
 }
 
 export {AnimationsCtrl};

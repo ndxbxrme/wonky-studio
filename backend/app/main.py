@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import sqlite3
 from io import BytesIO
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -21,26 +22,32 @@ from .config import Settings, get_settings
 from .database import (
     add_uploaded_file,
     create_asset,
+    create_game_variable,
     create_invite,
     create_object_animation,
     create_processing_job,
     create_object_mask,
     create_session,
+    create_scene_interaction,
     create_scene_object_if_missing,
     create_scene_object,
     create_scene_mask_prompt,
     create_upload_batch,
     delete_object_animation,
+    delete_game_variable,
     delete_scene_mask_prompt,
     delete_scene_object,
+    delete_scene_interaction,
     delete_session,
     fail_processing_job,
     get_available_invite,
     get_database_path,
     get_mask_candidate_by_id,
     get_object_mask_by_id,
+    get_game_variable_by_id,
     get_script_audio_candidate_by_id,
     get_script_line_detail,
+    get_scene_interaction,
     get_scene_object_for_organization,
     get_active_processing_job_for_scene,
     get_processing_job,
@@ -54,22 +61,29 @@ from .database import (
     init_database,
     link_identity,
     list_assets,
+    list_game_variables,
     list_object_animations_for_object,
     list_object_masks_for_object,
     list_script_lines,
     list_script_path_options,
     list_scene_objects_for_scene,
     list_scene_images_for_scene,
+    list_scene_interactions,
     list_scenes,
     list_upload_batches,
     object_mask_exists_for_prompt,
     mark_invite_used,
+    object_animation_belongs_to_object,
     claim_next_processing_job,
     complete_processing_job,
     requeue_interrupted_processing_jobs,
     reset_workspace_tables,
     scene_belongs_to_organization,
+    scene_object_belongs_to_scene,
+    script_line_ids_exist,
     touch_object_mask,
+    update_game_variable,
+    update_scene_interaction,
     update_script_audio_candidate,
     update_script_translation,
     update_object_animation,
@@ -495,6 +509,100 @@ class ScriptAudioCandidateUpdate(BaseModel):
     selected: bool | None = None
 
 
+class GameVariableCreate(BaseModel):
+    name: str = Field(min_length=1, max_length=120)
+    value_type: str = Field(pattern="^(bool|string|number)$")
+    default_value: Any = None
+    description: str = Field(default="", max_length=500)
+
+
+class GameVariable(GameVariableCreate):
+    id: int
+    organization_id: str
+    created_at: str
+    updated_at: str
+
+
+class InteractionTrigger(BaseModel):
+    type: str = Field(
+        pattern="^(scene_enter|scene_exit|object_hover|object_click|object_use|variable_changed)$"
+    )
+    object_id: int | None = None
+    variable_id: int | None = None
+
+
+class SceneInteractionCreate(BaseModel):
+    name: str = Field(min_length=1, max_length=160)
+    enabled: bool = True
+    trigger: InteractionTrigger
+    action_tree: list[dict[str, Any]] = Field(default_factory=list, max_length=500)
+
+
+class SceneInteraction(SceneInteractionCreate):
+    id: int
+    scene_id: int
+    created_at: str
+    updated_at: str
+
+
+class SceneInteractionsExport(BaseModel):
+    scene_id: int
+    variables: list[GameVariable]
+    interactions: list[SceneInteraction]
+
+
+class PreviewImageFrame(BaseModel):
+    frame_index: int
+    uploaded_file_id: int
+    original_filename: str
+    width: int
+    height: int
+
+
+class PreviewObjectRender(BaseModel):
+    frame_index: int | None = None
+    uploaded_file_id: int
+    object_mask_id: int
+    original_filename: str
+    left: int
+    top: int
+    width: int
+    height: int
+    url: str
+    cache_key: str
+
+
+class PreviewAnimationFrame(BaseModel):
+    frame_index: int
+    duration_seconds: float
+    original_filename: str
+    render: PreviewObjectRender | None = None
+
+
+class PreviewObjectAnimation(BaseModel):
+    id: int
+    name: str
+    frames: list[PreviewAnimationFrame] = []
+
+
+class PreviewObjectState(BaseModel):
+    id: int
+    name: str
+    visible: bool = True
+    default_render: PreviewObjectRender | None = None
+    animations: list[PreviewObjectAnimation] = []
+
+
+class ScenePreview(BaseModel):
+    scene_id: int
+    title: str
+    description: str
+    width: int
+    height: int
+    images: list[PreviewImageFrame] = []
+    objects: list[PreviewObjectState] = []
+
+
 def create_app(
     db_path: Path | None = None,
     settings: Settings | None = None,
@@ -816,6 +924,178 @@ def create_app(
             media_type="audio/ogg",
             headers={"Cache-Control": "public, max-age=3600"},
         )
+
+    @app.get("/api/variables", response_model=list[GameVariable])
+    def get_variables(user: dict[str, Any] = Depends(current_user)) -> list[dict[str, Any]]:
+        return list_game_variables(database_path, user["organization_id"])
+
+    @app.post("/api/variables", response_model=GameVariable, status_code=201)
+    def post_variable(
+        variable: GameVariableCreate,
+        user: dict[str, Any] = Depends(current_user),
+    ) -> dict[str, Any]:
+        default_value = _validate_variable_value(variable.value_type, variable.default_value)
+        try:
+            return create_game_variable(
+                database_path,
+                organization_id=user["organization_id"],
+                name=variable.name,
+                value_type=variable.value_type,
+                default_value=default_value,
+                description=variable.description,
+            )
+        except sqlite3.IntegrityError as exc:
+            raise HTTPException(status_code=409, detail="Variable name already exists") from exc
+
+    @app.patch("/api/variables/{variable_id}", response_model=GameVariable)
+    def patch_variable(
+        variable_id: int,
+        variable: GameVariableCreate,
+        user: dict[str, Any] = Depends(current_user),
+    ) -> dict[str, Any]:
+        default_value = _validate_variable_value(variable.value_type, variable.default_value)
+        try:
+            updated = update_game_variable(
+                database_path,
+                organization_id=user["organization_id"],
+                variable_id=variable_id,
+                name=variable.name,
+                value_type=variable.value_type,
+                default_value=default_value,
+                description=variable.description,
+            )
+        except sqlite3.IntegrityError as exc:
+            raise HTTPException(status_code=409, detail="Variable name already exists") from exc
+        if updated is None:
+            raise HTTPException(status_code=404, detail="Variable not found")
+        return updated
+
+    @app.delete("/api/variables/{variable_id}", status_code=204)
+    def delete_variable_endpoint(
+        variable_id: int,
+        user: dict[str, Any] = Depends(current_user),
+    ) -> Response:
+        delete_game_variable(database_path, user["organization_id"], variable_id)
+        return Response(status_code=204)
+
+    @app.get(
+        "/api/scenes/{scene_id}/interactions",
+        response_model=list[SceneInteraction],
+        response_model_exclude_none=True,
+    )
+    def get_scene_interactions_endpoint(
+        scene_id: int,
+        user: dict[str, Any] = Depends(current_user),
+    ) -> list[dict[str, Any]]:
+        _require_scene(database_path, scene_id, user["organization_id"])
+        return list_scene_interactions(database_path, scene_id, user["organization_id"])
+
+    @app.post(
+        "/api/scenes/{scene_id}/interactions",
+        response_model=SceneInteraction,
+        response_model_exclude_none=True,
+        status_code=201,
+    )
+    def post_scene_interaction(
+        scene_id: int,
+        interaction: SceneInteractionCreate,
+        user: dict[str, Any] = Depends(current_user),
+    ) -> dict[str, Any]:
+        _require_scene(database_path, scene_id, user["organization_id"])
+        trigger = _normalize_interaction_trigger(
+            database_path,
+            scene_id,
+            user["organization_id"],
+            interaction.trigger.model_dump(exclude_none=True),
+        )
+        action_tree = _normalize_action_tree(
+            database_path,
+            scene_id,
+            user["organization_id"],
+            interaction.action_tree,
+        )
+        return create_scene_interaction(
+            database_path,
+            scene_id=scene_id,
+            organization_id=user["organization_id"],
+            name=interaction.name,
+            enabled=interaction.enabled,
+            trigger=trigger,
+            action_tree=action_tree,
+        )
+
+    @app.get(
+        "/api/scenes/{scene_id}/interactions/validation-json",
+        response_model=SceneInteractionsExport,
+        response_model_exclude_none=True,
+    )
+    def get_scene_interactions_validation_json(
+        scene_id: int,
+        user: dict[str, Any] = Depends(current_user),
+    ) -> dict[str, Any]:
+        _require_scene(database_path, scene_id, user["organization_id"])
+        return {
+            "scene_id": scene_id,
+            "variables": list_game_variables(database_path, user["organization_id"]),
+            "interactions": list_scene_interactions(
+                database_path,
+                scene_id,
+                user["organization_id"],
+            ),
+        }
+
+    @app.patch(
+        "/api/scenes/{scene_id}/interactions/{interaction_id}",
+        response_model=SceneInteraction,
+        response_model_exclude_none=True,
+    )
+    def patch_scene_interaction(
+        scene_id: int,
+        interaction_id: int,
+        interaction: SceneInteractionCreate,
+        user: dict[str, Any] = Depends(current_user),
+    ) -> dict[str, Any]:
+        _require_scene(database_path, scene_id, user["organization_id"])
+        trigger = _normalize_interaction_trigger(
+            database_path,
+            scene_id,
+            user["organization_id"],
+            interaction.trigger.model_dump(exclude_none=True),
+        )
+        action_tree = _normalize_action_tree(
+            database_path,
+            scene_id,
+            user["organization_id"],
+            interaction.action_tree,
+        )
+        updated = update_scene_interaction(
+            database_path,
+            scene_id=scene_id,
+            interaction_id=interaction_id,
+            organization_id=user["organization_id"],
+            name=interaction.name,
+            enabled=interaction.enabled,
+            trigger=trigger,
+            action_tree=action_tree,
+        )
+        if updated is None:
+            raise HTTPException(status_code=404, detail="Interaction not found")
+        return updated
+
+    @app.delete("/api/scenes/{scene_id}/interactions/{interaction_id}", status_code=204)
+    def delete_scene_interaction_endpoint(
+        scene_id: int,
+        interaction_id: int,
+        user: dict[str, Any] = Depends(current_user),
+    ) -> Response:
+        _require_scene(database_path, scene_id, user["organization_id"])
+        delete_scene_interaction(
+            database_path,
+            scene_id=scene_id,
+            interaction_id=interaction_id,
+            organization_id=user["organization_id"],
+        )
+        return Response(status_code=204)
 
     @app.get("/api/uploads/batches", response_model=list[UploadBatchSummary])
     def get_upload_batches(user: dict[str, Any] = Depends(current_user)) -> list[dict]:
@@ -1457,6 +1737,59 @@ def create_app(
 
         raise HTTPException(status_code=404, detail="Object does not have a valid mask")
 
+    @app.get("/api/scene-objects/{object_id}/preview-renders/{uploaded_file_id}")
+    def get_scene_object_preview_render(
+        object_id: int,
+        uploaded_file_id: int,
+        user: dict[str, Any] = Depends(current_user),
+    ) -> FileResponse:
+        scene_object = get_scene_object_for_organization(
+            database_path,
+            object_id=object_id,
+            organization_id=user["organization_id"],
+        )
+        if scene_object is None:
+            raise HTTPException(status_code=404, detail="Object not found")
+        object_masks = list_object_masks_for_object(
+            database_path,
+            scene_object_id=object_id,
+            organization_id=user["organization_id"],
+        )
+        object_mask = _select_preview_mask_for_uploaded_file(
+            object_masks,
+            uploaded_file_id=uploaded_file_id,
+            prompt_text=scene_object.get("prompt") or "",
+        )
+        if object_mask is None:
+            raise HTTPException(status_code=404, detail="Preview render not found")
+        rendered = _ensure_preview_render(
+            storage_root=app_settings.storage_root,
+            organization_id=user["organization_id"],
+            object_mask=object_mask,
+        )
+        if rendered is None:
+            raise HTTPException(status_code=404, detail="Preview render not found")
+        return FileResponse(
+            rendered["output_path"],
+            media_type="image/png",
+            headers={"Cache-Control": "no-store, max-age=0"},
+        )
+
+    @app.get("/api/scenes/{scene_id}/preview-data", response_model=ScenePreview)
+    def get_scene_preview_data(
+        scene_id: int,
+        user: dict[str, Any] = Depends(current_user),
+    ) -> dict[str, Any]:
+        scene = get_scene_with_images(database_path, scene_id)
+        if scene is None or scene["organization_id"] != user["organization_id"]:
+            raise HTTPException(status_code=404, detail="Scene not found")
+        return _build_scene_preview_payload(
+            database_path=database_path,
+            storage_root=app_settings.storage_root,
+            organization_id=user["organization_id"],
+            scene=scene,
+        )
+
     @app.get("/api/assets", response_model=list[Asset])
     def get_assets(user: dict[str, Any] = Depends(current_user)) -> list[dict]:
         return list_assets(database_path, user["organization_id"])
@@ -1793,6 +2126,246 @@ def _top_segmentation_candidate(candidates):
     return max(candidates, key=lambda candidate: candidate.score if candidate.score is not None else -1)
 
 
+def _require_scene(db_path: Path, scene_id: int, organization_id: str) -> None:
+    if not scene_belongs_to_organization(
+        db_path,
+        scene_id=scene_id,
+        organization_id=organization_id,
+    ):
+        raise HTTPException(status_code=404, detail="Scene not found")
+
+
+def _validate_variable_value(value_type: str, value: Any) -> Any:
+    if value_type == "bool":
+        if isinstance(value, bool):
+            return value
+        raise HTTPException(status_code=400, detail="Boolean variables require true or false")
+    if value_type == "string":
+        if value is None:
+            return ""
+        if isinstance(value, str):
+            return value
+        raise HTTPException(status_code=400, detail="String variables require text")
+    if value_type == "number":
+        if isinstance(value, bool):
+            raise HTTPException(status_code=400, detail="Number variables require a number")
+        if isinstance(value, (int, float)):
+            return value
+        raise HTTPException(status_code=400, detail="Number variables require a number")
+    raise HTTPException(status_code=400, detail="Unsupported variable type")
+
+
+def _normalize_interaction_trigger(
+    db_path: Path,
+    scene_id: int,
+    organization_id: str,
+    trigger: dict[str, Any],
+) -> dict[str, Any]:
+    trigger_type = str(trigger.get("type") or "")
+    normalized: dict[str, Any] = {"type": trigger_type}
+    if trigger_type in {"scene_enter", "scene_exit"}:
+        return normalized
+    if trigger_type in {"object_hover", "object_click", "object_use"}:
+        object_id = _required_int(trigger.get("object_id"), "Trigger object is required")
+        if not scene_object_belongs_to_scene(db_path, scene_id, object_id, organization_id):
+            raise HTTPException(status_code=400, detail="Trigger object is not in this scene")
+        normalized["object_id"] = object_id
+        return normalized
+    if trigger_type == "variable_changed":
+        variable_id = _required_int(trigger.get("variable_id"), "Trigger variable is required")
+        if get_game_variable_by_id(db_path, organization_id, variable_id) is None:
+            raise HTTPException(status_code=400, detail="Trigger variable does not exist")
+        normalized["variable_id"] = variable_id
+        return normalized
+    raise HTTPException(status_code=400, detail="Unsupported trigger type")
+
+
+def _normalize_action_tree(
+    db_path: Path,
+    scene_id: int,
+    organization_id: str,
+    steps: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    if not isinstance(steps, list):
+        raise HTTPException(status_code=400, detail="Action tree must be a list")
+    return [
+        _normalize_action_step(db_path, scene_id, organization_id, step)
+        for step in steps
+    ]
+
+
+def _normalize_action_step(
+    db_path: Path,
+    scene_id: int,
+    organization_id: str,
+    step: dict[str, Any],
+) -> dict[str, Any]:
+    if not isinstance(step, dict):
+        raise HTTPException(status_code=400, detail="Action step must be an object")
+    step_type = str(step.get("type") or "")
+    normalized: dict[str, Any] = {
+        "id": str(step.get("id") or uuid4().hex),
+        "type": step_type,
+    }
+    if step_type == "play_animation":
+        object_id = _required_int(step.get("target_object_id"), "Animation target object is required")
+        animation_id = _required_int(step.get("animation_id"), "Animation is required")
+        if not scene_object_belongs_to_scene(db_path, scene_id, object_id, organization_id):
+            raise HTTPException(status_code=400, detail="Animation target object is not in this scene")
+        if not object_animation_belongs_to_object(db_path, animation_id, object_id, organization_id):
+            raise HTTPException(status_code=400, detail="Animation does not belong to the target object")
+        normalized.update(
+            {
+                "target_object_id": object_id,
+                "animation_id": animation_id,
+                "mode": _choice(step.get("mode"), {"queued", "immediate"}, "queued"),
+                "wait": _choice(step.get("wait"), {"wait", "continue"}, "wait"),
+            }
+        )
+        return normalized
+    if step_type == "set_object_property":
+        object_id = _required_int(step.get("target_object_id"), "Property target object is required")
+        if not scene_object_belongs_to_scene(db_path, scene_id, object_id, organization_id):
+            raise HTTPException(status_code=400, detail="Property target object is not in this scene")
+        property_name = _choice(step.get("property"), {"visible", "enabled", "label"}, "")
+        value = step.get("value")
+        if property_name in {"visible", "enabled"} and not isinstance(value, bool):
+            raise HTTPException(status_code=400, detail=f"{property_name} requires a boolean value")
+        if property_name == "label" and not isinstance(value, str):
+            raise HTTPException(status_code=400, detail="label requires text")
+        normalized.update(
+            {
+                "target_object_id": object_id,
+                "property": property_name,
+                "value": value,
+                "wait": _choice(step.get("wait"), {"wait", "continue"}, "continue"),
+            }
+        )
+        return normalized
+    if step_type == "show_subtitle":
+        line_ids = [
+            _required_int(line_id, "Subtitle line IDs must be integers")
+            for line_id in (step.get("script_line_ids") or [])
+        ]
+        if not script_line_ids_exist(db_path, organization_id, line_ids):
+            raise HTTPException(status_code=400, detail="One or more subtitle lines do not exist")
+        normalized.update(
+            {
+                "script_line_ids": sorted(set(line_ids)),
+                "selection": "random" if len(set(line_ids)) > 1 else "single",
+                "duration_seconds": _positive_float(step.get("duration_seconds"), "Subtitle duration is required"),
+                "wait": _choice(step.get("wait"), {"wait", "continue"}, "wait"),
+            }
+        )
+        return normalized
+    if step_type == "play_audio":
+        line_ids = [
+            _required_int(line_id, "Audio line IDs must be integers")
+            for line_id in (step.get("script_line_ids") or [])
+        ]
+        if not script_line_ids_exist(db_path, organization_id, line_ids):
+            raise HTTPException(status_code=400, detail="One or more script lines do not exist")
+        normalized.update(
+            {
+                "script_line_ids": sorted(set(line_ids)),
+                "selection": "random" if len(set(line_ids)) > 1 else "single",
+                "wait": _choice(step.get("wait"), {"wait", "continue"}, "wait"),
+            }
+        )
+        return normalized
+    if step_type == "set_variable":
+        variable = _require_variable(
+            db_path,
+            organization_id,
+            _required_int(step.get("variable_id"), "Variable is required"),
+        )
+        normalized.update(
+            {
+                "variable_id": variable["id"],
+                "value": _validate_variable_value(variable["value_type"], step.get("value")),
+                "wait": _choice(step.get("wait"), {"wait", "continue"}, "continue"),
+            }
+        )
+        return normalized
+    if step_type == "if_variable":
+        variable = _require_variable(
+            db_path,
+            organization_id,
+            _required_int(step.get("variable_id"), "Condition variable is required"),
+        )
+        comparator = _choice(
+            step.get("operator"),
+            {"equals", "not_equals", "greater_than", "less_than", "greater_or_equal", "less_or_equal"},
+            "equals",
+        )
+        if variable["value_type"] != "number" and comparator not in {"equals", "not_equals"}:
+            raise HTTPException(status_code=400, detail="Only number variables support ordering comparisons")
+        normalized.update(
+            {
+                "variable_id": variable["id"],
+                "operator": comparator,
+                "value": _validate_variable_value(variable["value_type"], step.get("value")),
+                "then_steps": _normalize_action_tree(
+                    db_path,
+                    scene_id,
+                    organization_id,
+                    step.get("then_steps") or [],
+                ),
+                "else_steps": _normalize_action_tree(
+                    db_path,
+                    scene_id,
+                    organization_id,
+                    step.get("else_steps") or [],
+                ),
+            }
+        )
+        return normalized
+    if step_type == "delay":
+        normalized.update(
+            {
+                "duration_seconds": _positive_float(step.get("duration_seconds"), "Delay duration is required"),
+                "wait": "wait",
+            }
+        )
+        return normalized
+    raise HTTPException(status_code=400, detail="Unsupported action type")
+
+
+def _require_variable(db_path: Path, organization_id: str, variable_id: int) -> dict[str, Any]:
+    variable = get_game_variable_by_id(db_path, organization_id, variable_id)
+    if variable is None:
+        raise HTTPException(status_code=400, detail="Variable does not exist")
+    return variable
+
+
+def _required_int(value: Any, detail: str) -> int:
+    if value is None or value == "":
+        raise HTTPException(status_code=400, detail=detail)
+    try:
+        return int(value)
+    except (TypeError, ValueError) as exc:
+        raise HTTPException(status_code=400, detail=detail) from exc
+
+
+def _positive_float(value: Any, detail: str) -> float:
+    if value is None or value == "":
+        raise HTTPException(status_code=400, detail=detail)
+    try:
+        number = float(value)
+    except (TypeError, ValueError) as exc:
+        raise HTTPException(status_code=400, detail=detail) from exc
+    if number <= 0:
+        raise HTTPException(status_code=400, detail=detail)
+    return number
+
+
+def _choice(value: Any, allowed: set[str], default: str) -> str:
+    selected = str(value or default)
+    if selected not in allowed:
+        raise HTTPException(status_code=400, detail=f"Unsupported value: {selected}")
+    return selected
+
+
 def _count_mask_extraction_work(
     database_path: Path,
     scene_objects: list[dict[str, Any]],
@@ -1891,6 +2464,283 @@ def _derived_file_is_stale(output_path: Path, source_paths: list[Path]) -> bool:
         return True
     output_mtime = output_path.stat().st_mtime
     return any(source_path.stat().st_mtime > output_mtime for source_path in source_paths)
+
+
+def _build_scene_preview_payload(
+    database_path: Path,
+    storage_root: Path,
+    organization_id: str,
+    scene: dict[str, Any],
+) -> dict[str, Any]:
+    scene_images = scene.get("images", [])
+    preview_images = [
+        {
+            "frame_index": index,
+            "uploaded_file_id": image["uploaded_file_id"],
+            "original_filename": image["original_filename"],
+            "width": image["width"],
+            "height": image["height"],
+        }
+        for index, image in enumerate(scene_images)
+    ]
+    scene_width = int(scene_images[0]["width"]) if scene_images else 0
+    scene_height = int(scene_images[0]["height"]) if scene_images else 0
+    preview_objects = []
+
+    for scene_object in scene.get("objects", []):
+        object_masks = list_object_masks_for_object(
+            database_path,
+            scene_object_id=scene_object["id"],
+            organization_id=organization_id,
+        )
+        default_render = None
+        for object_mask in object_masks:
+            default_render = _preview_render_payload_for_mask(
+                storage_root=storage_root,
+                organization_id=organization_id,
+                object_mask=object_mask,
+                frame_index=next(
+                    (
+                        index
+                        for index, image in enumerate(scene_images)
+                        if image["uploaded_file_id"] == object_mask["uploaded_file_id"]
+                    ),
+                    None,
+                ),
+            )
+            if default_render is not None:
+                break
+
+        animations = []
+        object_animations = list_object_animations_for_object(
+            database_path,
+            scene_object_id=scene_object["id"],
+            organization_id=organization_id,
+        )
+        for animation in object_animations:
+            frames = []
+            for segment in animation.get("segments", []):
+                start = int(segment["start_frame"])
+                end = int(segment["end_frame"])
+                step = 1 if start <= end else -1
+                for frame_index in range(start, end + step, step):
+                    scene_image = scene_images[frame_index] if 0 <= frame_index < len(scene_images) else None
+                    render = None
+                    original_filename = "missing frame"
+                    if scene_image is not None:
+                        original_filename = scene_image["original_filename"]
+                        object_mask = _select_preview_mask_for_uploaded_file(
+                            object_masks,
+                            uploaded_file_id=scene_image["uploaded_file_id"],
+                            prompt_text=scene_object.get("prompt") or "",
+                        )
+                        if object_mask is not None:
+                            render = _preview_render_payload_for_mask(
+                                storage_root=storage_root,
+                                organization_id=organization_id,
+                                object_mask=object_mask,
+                                frame_index=frame_index,
+                            )
+                    frames.append(
+                        {
+                            "frame_index": frame_index,
+                            "duration_seconds": float(segment["frame_duration_seconds"]),
+                            "original_filename": original_filename,
+                            "render": render,
+                        }
+                    )
+            animations.append(
+                {
+                    "id": animation["id"],
+                    "name": animation["name"],
+                    "frames": frames,
+                }
+            )
+
+        preview_objects.append(
+            {
+                "id": scene_object["id"],
+                "name": scene_object["name"],
+                "visible": True,
+                "default_render": default_render,
+                "animations": animations,
+            }
+        )
+
+    return {
+        "scene_id": scene["id"],
+        "title": scene["title"],
+        "description": scene["description"],
+        "width": scene_width,
+        "height": scene_height,
+        "images": preview_images,
+        "objects": preview_objects,
+    }
+
+
+def _preview_render_payload_for_mask(
+    storage_root: Path,
+    organization_id: str,
+    object_mask: dict[str, Any],
+    frame_index: int | None,
+) -> dict[str, Any] | None:
+    rendered = _ensure_preview_render(
+        storage_root=storage_root,
+        organization_id=organization_id,
+        object_mask=object_mask,
+    )
+    if rendered is None:
+        return None
+    cache_key = rendered["cache_key"]
+    return {
+        "frame_index": frame_index,
+        "uploaded_file_id": object_mask["uploaded_file_id"],
+        "object_mask_id": object_mask["id"],
+        "original_filename": object_mask.get("original_filename") or "",
+        "left": rendered["left"],
+        "top": rendered["top"],
+        "width": rendered["width"],
+        "height": rendered["height"],
+        "url": _preview_render_url(
+            object_id=object_mask["scene_object_id"],
+            uploaded_file_id=object_mask["uploaded_file_id"],
+            cache_key=cache_key,
+        ),
+        "cache_key": cache_key,
+    }
+
+
+def _ensure_preview_render(
+    storage_root: Path,
+    organization_id: str,
+    object_mask: dict[str, Any],
+) -> dict[str, Any] | None:
+    original_path = storage_root / object_mask["original_relative_path"]
+    mask_relative_path = object_mask["soft_relative_path"] or object_mask["relative_path"]
+    mask_path = storage_root / mask_relative_path
+    if not original_path.exists() or not mask_path.exists():
+        return None
+    cache_key = _preview_render_cache_key(
+        object_mask=object_mask,
+        original_path=original_path,
+        mask_path=mask_path,
+    )
+
+    output_path = (
+        storage_root
+        / _safe_path_segment(organization_id)
+        / "derived"
+        / "scenes"
+        / str(object_mask["scene_id"])
+        / "objects"
+        / str(object_mask["scene_object_id"])
+        / "preview"
+        / f"{object_mask['uploaded_file_id']}.png"
+    )
+    metadata_path = output_path.with_suffix(".json")
+    metadata = _read_preview_render_metadata(metadata_path)
+    should_render = metadata.get("cache_key") != cache_key or not output_path.exists()
+    bbox: tuple[int, int, int, int] | None = None
+    if should_render:
+        rendered = render_masked_object_crop(
+            original_path=original_path,
+            mask_path=mask_path,
+            output_path=output_path,
+            max_size=0,
+        )
+        if rendered is None:
+            return None
+        bbox = rendered.bbox
+        metadata_path.parent.mkdir(parents=True, exist_ok=True)
+        metadata_path.write_text(
+            json.dumps({"bbox": list(bbox), "cache_key": cache_key}),
+            encoding="utf-8",
+        )
+    else:
+        raw_bbox = metadata.get("bbox")
+        if isinstance(raw_bbox, list) and len(raw_bbox) == 4:
+            bbox = tuple(int(value) for value in raw_bbox)
+    if bbox is None:
+        rendered = render_masked_object_crop(
+            original_path=original_path,
+            mask_path=mask_path,
+            output_path=output_path,
+            max_size=0,
+        )
+        if rendered is None:
+            return None
+        bbox = rendered.bbox
+        metadata_path.parent.mkdir(parents=True, exist_ok=True)
+        metadata_path.write_text(
+            json.dumps({"bbox": list(bbox), "cache_key": cache_key}),
+            encoding="utf-8",
+        )
+    left, top, right, bottom = bbox
+    return {
+        "output_path": output_path,
+        "left": left,
+        "top": top,
+        "width": max(0, right - left),
+        "height": max(0, bottom - top),
+        "cache_key": cache_key,
+    }
+
+
+def _select_preview_mask_for_uploaded_file(
+    object_masks: list[dict[str, Any]],
+    uploaded_file_id: int,
+    prompt_text: str,
+) -> dict[str, Any] | None:
+    candidates = [
+        object_mask
+        for object_mask in object_masks
+        if int(object_mask["uploaded_file_id"]) == int(uploaded_file_id)
+    ]
+    if not candidates:
+        return None
+    prompt_matches = [
+        object_mask for object_mask in candidates if object_mask.get("prompt_text") == prompt_text
+    ]
+    ranked = prompt_matches or candidates
+    return max(ranked, key=lambda object_mask: int(object_mask["id"]))
+
+
+def _preview_render_cache_key(
+    object_mask: dict[str, Any],
+    original_path: Path,
+    mask_path: Path,
+) -> str:
+    original_stat = original_path.stat()
+    mask_stat = mask_path.stat()
+    return "|".join(
+        [
+            str(object_mask.get("id") or ""),
+            str(object_mask.get("created_at") or ""),
+            str(object_mask.get("updated_at") or ""),
+            str(object_mask.get("relative_path") or ""),
+            str(object_mask.get("soft_relative_path") or ""),
+            str(object_mask.get("prompt_text") or ""),
+            str(original_stat.st_mtime_ns),
+            str(original_stat.st_size),
+            str(mask_stat.st_mtime_ns),
+            str(mask_stat.st_size),
+        ]
+    )
+
+
+def _preview_render_url(object_id: int, uploaded_file_id: int, cache_key: str) -> str:
+    query = f"?v={cache_key}" if cache_key else ""
+    return f"/api/scene-objects/{object_id}/preview-renders/{uploaded_file_id}{query}"
+
+
+def _read_preview_render_metadata(metadata_path: Path) -> dict[str, Any]:
+    if not metadata_path.exists():
+        return {}
+    try:
+        metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+    except (OSError, TypeError, ValueError):
+        return {}
+    return metadata if isinstance(metadata, dict) else {}
 
 
 def _batch_storage_root(storage_root: Path, organization_id: str, batch_id: int) -> Path:

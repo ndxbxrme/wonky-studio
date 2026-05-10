@@ -1,0 +1,362 @@
+<main class="actions-page" data-actions-page>
+  {{#if editorReady}}
+    <header class="scene-header actions-header">
+      <div>
+        <a class="back-link" href="/scene/{{scene.id}}">Scene {{scene.id}}</a>
+        <p class="eyebrow">Actions</p>
+        <h1>{{scene.title}}</h1>
+        <p>Author interaction triggers and validated action sequences.</p>
+      </div>
+      <div class="scene-header__actions">
+        <button class="button secondary compact" type="button" data-action="open-preview">Open preview</button>
+        <p class="form-status" data-actions-status aria-live="polite">{{status}}</p>
+      </div>
+    </header>
+
+    <section class="actions-grid">
+      <aside class="actions-sidebar">
+        <section class="actions-panel">
+          <div class="actions-panel__header">
+            <div>
+              <p class="eyebrow">Interactions</p>
+              <h2>Triggers</h2>
+            </div>
+          </div>
+          <form class="stack-form" data-interaction-create-form>
+            <label>
+              Name
+              <input name="name" type="text" placeholder="Click clock" required />
+            </label>
+            <label>
+              Trigger
+              <select name="trigger_type">
+                <option value="scene_enter">Scene enter</option>
+                <option value="scene_exit">Scene exit</option>
+                <option value="object_hover">Object hover</option>
+                <option value="object_click">Object click</option>
+                <option value="object_use">Object use</option>
+                <option value="variable_changed">Variable changed</option>
+              </select>
+            </label>
+            <label>
+              Object
+              <select name="trigger_object_id">
+                <option value="">None</option>
+                {{#each objectOptions as object}}
+                  <option value="{{object.id}}">{{object.name}}</option>
+                {{/each}}
+              </select>
+            </label>
+            <label>
+              Variable
+              <select name="trigger_variable_id">
+                <option value="">None</option>
+                {{#each variables as variable}}
+                  <option value="{{variable.id}}">{{variable.name}}</option>
+                {{/each}}
+              </select>
+            </label>
+            <button class="button primary compact" type="submit">Add interaction</button>
+          </form>
+
+          {{#if hasInteractions}}
+            <div class="interaction-list">
+              {{#each interactions as interaction}}
+                <button
+                  class="interaction-list__item {{#if interaction.isSelected}}is-selected{{/if}}"
+                  type="button"
+                  data-action="select-interaction"
+                  data-interaction-id="{{interaction.id}}"
+                >
+                  <strong>{{interaction.name}}</strong>
+                  <span>{{interaction.triggerLabel}}</span>
+                  <span>{{interaction.stepCount}} steps</span>
+                </button>
+              {{/each}}
+            </div>
+          {{/if}}
+        </section>
+
+        <section class="actions-panel">
+          <div>
+            <p class="eyebrow">Globals</p>
+            <h2>Variables</h2>
+          </div>
+          <form class="stack-form" data-variable-form>
+            <label>
+              Name
+              <input name="name" type="text" placeholder="has_clock_key" required />
+            </label>
+            <label>
+              Type
+              <select name="value_type">
+                <option value="bool">Bool</option>
+                <option value="string">String</option>
+                <option value="number">Number</option>
+              </select>
+            </label>
+            <label>
+              Default value
+              <input name="default_value" type="text" value="false" />
+            </label>
+            <label>
+              Description
+              <input name="description" type="text" placeholder="Optional note" />
+            </label>
+            <button class="button secondary compact" type="submit">Add variable</button>
+          </form>
+          {{#if hasVariables}}
+            <div class="variable-list">
+              {{#each variables as variable}}
+                <span>{{variable.name}} · {{variable.value_type}} · {{variable.defaultValueText}}</span>
+              {{/each}}
+            </div>
+          {{/if}}
+        </section>
+      </aside>
+
+      <section class="actions-workbench">
+        {{#if hasSelectedInteraction}}
+          <form class="actions-panel interaction-editor" data-interaction-edit-form>
+            <div class="interaction-editor__header">
+              <div>
+                <p class="eyebrow">Selected interaction</p>
+                <h2>{{selectedInteraction.name}}</h2>
+              </div>
+              <button
+                class="button danger compact"
+                type="button"
+                data-action="delete-interaction"
+                data-interaction-id="{{selectedInteraction.id}}"
+                data-interaction-name="{{selectedInteraction.name}}"
+              >Remove</button>
+            </div>
+            <div class="interaction-editor__fields">
+              <label>
+                Name
+                <input name="name" type="text" value="{{selectedInteraction.name}}" required />
+              </label>
+              <label class="checkbox-label">
+                <input name="enabled" type="checkbox" />
+                Enabled
+              </label>
+              <label>
+                Trigger
+                <select name="trigger_type">
+                  <option value="scene_enter">Scene enter</option>
+                  <option value="scene_exit">Scene exit</option>
+                  <option value="object_hover">Object hover</option>
+                  <option value="object_click">Object click</option>
+                  <option value="object_use">Object use</option>
+                  <option value="variable_changed">Variable changed</option>
+                </select>
+              </label>
+              <label>
+                Object
+                <select name="trigger_object_id">
+                  <option value="">None</option>
+                  {{#each objectOptions as object}}
+                    <option value="{{object.id}}">{{object.name}}</option>
+                  {{/each}}
+                </select>
+              </label>
+              <label>
+                Variable
+                <select name="trigger_variable_id">
+                  <option value="">None</option>
+                  {{#each variables as variable}}
+                    <option value="{{variable.id}}">{{variable.name}}</option>
+                  {{/each}}
+                </select>
+              </label>
+              <button class="button primary compact" type="submit">Save trigger</button>
+            </div>
+          </form>
+
+          <section class="actions-panel">
+            <div>
+              <p class="eyebrow">Sequence</p>
+              <h2>Action steps</h2>
+            </div>
+            <form class="action-step-form" data-action-step-form>
+              <label data-form-field="branch">
+                Add to
+                <select name="branch">
+                  {{#each branchOptions as branch}}
+                    <option value="{{branch.value}}">{{branch.label}}</option>
+                  {{/each}}
+                </select>
+              </label>
+              <label data-form-field="action-type">
+                Action
+                <select name="action_type">
+                  {{#each actionTypes as actionType}}
+                    <option value="{{actionType.value}}">{{actionType.label}}</option>
+                  {{/each}}
+                </select>
+              </label>
+              <label data-form-field="wait" data-visible-for="play_animation set_object_property show_subtitle play_audio set_variable">
+                Wait
+                <select name="wait">
+                  <option value="wait">Wait for completion</option>
+                  <option value="continue">Continue immediately</option>
+                </select>
+              </label>
+              <label data-form-field="animation" data-visible-for="play_animation">
+                Animation
+                <select name="animation_ref">
+                  <option value="">Choose animation</option>
+                  {{#each animationOptions as animation}}
+                    <option value="{{animation.objectId}}:{{animation.animationId}}">{{animation.label}}</option>
+                  {{/each}}
+                </select>
+              </label>
+              <label data-form-field="target-object" data-visible-for="set_object_property">
+                Target object
+                <select name="target_object_id">
+                  <option value="">Choose object</option>
+                  {{#each objectOptions as object}}
+                    <option value="{{object.id}}">{{object.name}}</option>
+                  {{/each}}
+                </select>
+              </label>
+              <label data-form-field="property" data-visible-for="set_object_property">
+                Property
+                <select name="property">
+                  <option value="visible">Visible</option>
+                  <option value="enabled">Enabled</option>
+                  <option value="label">Label</option>
+                </select>
+              </label>
+              <label data-form-field="boolean-value" data-property-visible-for="visible enabled">
+                Boolean value
+                <select name="value_bool">
+                  <option value="true">True</option>
+                  <option value="false">False</option>
+                </select>
+              </label>
+              <label data-form-field="text-value" data-property-visible-for="label">
+                Text value
+                <input name="value_text" type="text" placeholder="Label text" />
+              </label>
+              <label data-form-field="duration" data-visible-for="show_subtitle delay">
+                Duration
+                <input name="duration_seconds" type="number" min="0.001" step="0.001" value="1" />
+              </label>
+              <label data-form-field="script-lines" data-visible-for="show_subtitle play_audio">
+                Script line IDs
+                <input name="script_line_ids" type="text" placeholder="12, 15, 22" />
+              </label>
+              <label data-form-field="variable" data-visible-for="set_variable if_variable">
+                Variable
+                <select name="variable_id">
+                  <option value="">Choose variable</option>
+                  {{#each variables as variable}}
+                    <option value="{{variable.id}}">{{variable.name}}</option>
+                  {{/each}}
+                </select>
+              </label>
+              <label data-form-field="variable-value-type" data-visible-for="set_variable if_variable">
+                Variable value type
+                <select name="variable_value_type">
+                  <option value="bool">Bool</option>
+                  <option value="string">String</option>
+                  <option value="number">Number</option>
+                </select>
+              </label>
+              <label data-form-field="variable-value" data-visible-for="set_variable if_variable">
+                Variable value
+                <input name="variable_value" type="text" placeholder="true" />
+              </label>
+              <label data-form-field="operator" data-visible-for="if_variable">
+                Operator
+                <select name="operator">
+                  <option value="equals">Equals</option>
+                  <option value="not_equals">Not equals</option>
+                  <option value="greater_than">Greater than</option>
+                  <option value="less_than">Less than</option>
+                  <option value="greater_or_equal">Greater or equal</option>
+                  <option value="less_or_equal">Less or equal</option>
+                </select>
+              </label>
+              <p class="muted" data-action-type-help>Uses the animation picker. Mode controls queued vs immediate playback.</p>
+              <label data-form-field="animation-mode" data-visible-for="play_animation">
+                Animation mode
+                <select name="animation_mode">
+                  <option value="queued">Queued</option>
+                  <option value="immediate">Immediate</option>
+                </select>
+              </label>
+              <button class="button secondary compact" type="submit">Add step</button>
+            </form>
+
+            <div class="action-step-list">
+              {{#each actionRows as row}}
+                <article class="action-step-row" style="margin-left: {{row.indent}}">
+                  <div>
+                    <strong>{{row.index}}. {{row.label}}</strong>
+                    <p>{{row.branch}} {{row.meta}}</p>
+                  </div>
+                  <div class="action-step-row__actions">
+                    <button class="button secondary compact" type="button" data-action="move-step" data-direction="up" data-step-id="{{row.id}}">Up</button>
+                    <button class="button secondary compact" type="button" data-action="move-step" data-direction="down" data-step-id="{{row.id}}">Down</button>
+                    <button class="button danger compact" type="button" data-action="remove-step" data-step-id="{{row.id}}">Remove</button>
+                  </div>
+                </article>
+              {{/each}}
+            </div>
+          </section>
+
+          <section class="actions-panel">
+            <div>
+              <p class="eyebrow">Audio picker</p>
+              <h2>Find script lines</h2>
+            </div>
+            <form class="script-line-picker" data-script-line-search-form>
+              <label>
+                Search
+                <input name="q" type="search" placeholder="clock, bedroom, hello" />
+              </label>
+              <label>
+                Language
+                <select name="language">
+                  <option value="en">EN</option>
+                  <option value="de">DE</option>
+                  <option value="es">ES</option>
+                  <option value="fr">FR</option>
+                  <option value="it">IT</option>
+                  <option value="pt">PT</option>
+                </select>
+              </label>
+              <button class="button secondary compact" type="submit">Search lines</button>
+            </form>
+            {{#if hasScriptSearchResults}}
+              <div class="script-line-search-results">
+                {{#each scriptSearchResults as line}}
+                  <article class="script-line-search-row">
+                    <div>
+                      <strong>#{{line.line_id}} {{line.source_text}}</strong>
+                      <p>{{line.path_text}}</p>
+                      <p>{{line.selected_translation.text}}</p>
+                    </div>
+                    {{#if line.hasAudio}}
+                      <audio controls preload="metadata" src="{{line.audioUrl}}"></audio>
+                    {{/if}}
+                    <button class="button secondary compact" type="button" data-action="add-script-line" data-line-id="{{line.line_id}}">Add line</button>
+                  </article>
+                {{/each}}
+              </div>
+            {{/if}}
+          </section>
+        {{/if}}
+      </section>
+    </section>
+  {{/if}}
+
+  {{#if editorMissing}}
+    <section class="empty-state">
+      <p>Scene not found.</p>
+      <a class="button secondary" href="/">Back to scenes</a>
+    </section>
+  {{/if}}
+</main>
