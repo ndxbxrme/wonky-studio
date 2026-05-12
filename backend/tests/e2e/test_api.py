@@ -9,7 +9,7 @@ from fastapi.testclient import TestClient
 from PIL import Image, ImageDraw
 
 from app.config import Settings
-from app.database import create_or_promote_admin, create_session, upsert_user
+from app.database import create_or_promote_admin, create_session, upsert_script_audio_candidate, upsert_user
 from app.main import create_app
 from app.segmentation import SegmentationCandidate, SegmentationPromptResult
 from app.vlm import SceneDraft, SceneDraftObject
@@ -323,6 +323,43 @@ def test_assets_can_be_created_and_listed_by_authenticated_user(tmp_path):
     assert list_response.json() == [created_asset]
 
 
+def test_audio_assets_can_be_uploaded_listed_updated_served_and_deleted(tmp_path):
+    with api_client(tmp_path) as (client, db_path, settings):
+        authenticate(client, db_path, settings, role="user")
+        create_response = client.post(
+            "/api/audio-assets",
+            data={"name": "Bedroom loop", "kind": "bgm"},
+            files={"file": ("bedroom-loop.ogg", b"OggS bgm bytes", "audio/ogg")},
+        )
+        list_response = client.get("/api/audio-assets")
+
+        assert create_response.status_code == 201
+        created_asset = create_response.json()
+        assert created_asset["name"] == "Bedroom loop"
+        assert created_asset["kind"] == "bgm"
+        assert created_asset["content_type"] == "audio/ogg"
+        assert created_asset["file_size"] == len(b"OggS bgm bytes")
+
+        content_response = client.get(f"/api/audio-assets/{created_asset['id']}/content")
+        assert content_response.status_code == 200
+        assert content_response.content.startswith(b"OggS")
+
+        update_response = client.patch(
+            f"/api/audio-assets/{created_asset['id']}",
+            json={"name": "Menu click", "kind": "sfx"},
+        )
+        assert update_response.status_code == 200
+        assert update_response.json()["name"] == "Menu click"
+        assert update_response.json()["kind"] == "sfx"
+
+        assert list_response.status_code == 200
+        assert list_response.json()[0]["id"] == created_asset["id"]
+
+        delete_response = client.delete(f"/api/audio-assets/{created_asset['id']}")
+        assert delete_response.status_code == 204
+        assert client.get("/api/audio-assets").json() == []
+
+
 def test_upload_batch_requires_authentication(tmp_path):
     with api_client(tmp_path) as (client, _, _):
         response = client.post(
@@ -587,6 +624,23 @@ def test_scene_interactions_validate_actions_and_export_json(tmp_path):
         scene = client.post(
             f"/api/uploads/batches/{upload_response.json()['id']}/process-scene"
         ).json()["scene"]
+        second_upload_response = client.post(
+            "/api/uploads/batches",
+            files=[("files", ("hallway.png", png_bytes(draw_flower=False), "image/png"))],
+        )
+        next_scene = client.post(
+            f"/api/uploads/batches/{second_upload_response.json()['id']}/process-scene"
+        ).json()["scene"]
+        bgm_asset = client.post(
+            "/api/audio-assets",
+            data={"name": "Bedroom loop", "kind": "bgm"},
+            files={"file": ("bedroom-loop.ogg", b"OggS bgm bytes", "audio/ogg")},
+        ).json()
+        sfx_asset = client.post(
+            "/api/audio-assets",
+            data={"name": "Clock click", "kind": "sfx"},
+            files={"file": ("clock-click.ogg", b"OggS sfx bytes", "audio/ogg")},
+        ).json()
         clock = client.post(
             f"/api/scenes/{scene['id']}/objects",
             json={"name": "clock", "prompt": "clock"},
@@ -614,6 +668,16 @@ def test_scene_interactions_validate_actions_and_export_json(tmp_path):
             },
         )
         variable = variable_response.json()
+        counter_response = client.post(
+            "/api/variables",
+            json={
+                "name": "painting_clicks",
+                "value_type": "number",
+                "default_value": 0,
+                "description": "Counts painting clicks.",
+            },
+        )
+        counter = counter_response.json()
 
         create_response = client.post(
             f"/api/scenes/{scene['id']}/interactions",
@@ -659,6 +723,43 @@ def test_scene_interactions_validate_actions_and_export_json(tmp_path):
                                 "duration_seconds": 1.5,
                             }
                         ],
+                    },
+                    {
+                        "type": "increment_variable",
+                        "variable_id": counter["id"],
+                        "amount": 1,
+                    },
+                    {
+                        "type": "toggle_variable",
+                        "variable_id": variable["id"],
+                    },
+                    {
+                        "type": "fade_out",
+                        "duration_seconds": 0.4,
+                        "color": "#000000",
+                        "affect_audio": True,
+                        "wait": "wait",
+                    },
+                    {
+                        "type": "fade_in",
+                        "duration_seconds": 0.25,
+                        "color": "#000000",
+                        "affect_audio": False,
+                        "wait": "continue",
+                    },
+                    {
+                        "type": "crossfade_bgm",
+                        "audio_asset_id": bgm_asset["id"],
+                        "duration_seconds": 1.2,
+                    },
+                    {
+                        "type": "play_sfx",
+                        "audio_asset_id": sfx_asset["id"],
+                        "wait": "continue",
+                    },
+                    {
+                        "type": "change_scene",
+                        "scene_id": next_scene["id"],
                     },
                 ],
             },
@@ -712,9 +813,54 @@ def test_scene_interactions_validate_actions_and_export_json(tmp_path):
                 ],
             },
         )
+        missing_scene_response = client.post(
+            f"/api/scenes/{scene['id']}/interactions",
+            json={
+                "name": "Missing scene",
+                "enabled": True,
+                "trigger": {"type": "scene_enter"},
+                "action_tree": [
+                    {
+                        "type": "change_scene",
+                        "scene_id": 99999,
+                    }
+                ],
+            },
+        )
+        wrong_bgm_kind_response = client.post(
+            f"/api/scenes/{scene['id']}/interactions",
+            json={
+                "name": "Wrong BGM kind",
+                "enabled": True,
+                "trigger": {"type": "scene_enter"},
+                "action_tree": [
+                    {
+                        "type": "crossfade_bgm",
+                        "audio_asset_id": sfx_asset["id"],
+                        "duration_seconds": 1,
+                    }
+                ],
+            },
+        )
+        wrong_sfx_kind_response = client.post(
+            f"/api/scenes/{scene['id']}/interactions",
+            json={
+                "name": "Wrong SFX kind",
+                "enabled": True,
+                "trigger": {"type": "scene_enter"},
+                "action_tree": [
+                    {
+                        "type": "play_sfx",
+                        "audio_asset_id": bgm_asset["id"],
+                    }
+                ],
+            },
+        )
 
     assert variable_response.status_code == 201
     assert variable["default_value"] is False
+    assert counter_response.status_code == 201
+    assert counter["default_value"] == 0
 
     assert create_response.status_code == 201
     interaction = create_response.json()
@@ -723,6 +869,19 @@ def test_scene_interactions_validate_actions_and_export_json(tmp_path):
     assert interaction["action_tree"][0]["script_line_ids"] == [1, 2]
     assert interaction["action_tree"][0]["id"]
     assert interaction["action_tree"][3]["then_steps"][0]["type"] == "set_variable"
+    assert interaction["action_tree"][4]["type"] == "increment_variable"
+    assert interaction["action_tree"][4]["amount"] == 1
+    assert interaction["action_tree"][5]["type"] == "toggle_variable"
+    assert interaction["action_tree"][6]["type"] == "fade_out"
+    assert interaction["action_tree"][6]["affect_audio"] is True
+    assert interaction["action_tree"][7]["type"] == "fade_in"
+    assert interaction["action_tree"][7]["wait"] == "continue"
+    assert interaction["action_tree"][8]["type"] == "crossfade_bgm"
+    assert interaction["action_tree"][8]["audio_asset_id"] == bgm_asset["id"]
+    assert interaction["action_tree"][9]["type"] == "play_sfx"
+    assert interaction["action_tree"][9]["audio_asset_id"] == sfx_asset["id"]
+    assert interaction["action_tree"][10]["type"] == "change_scene"
+    assert interaction["action_tree"][10]["scene_id"] == next_scene["id"]
 
     assert list_response.status_code == 200
     assert list_response.json()[0]["id"] == interaction["id"]
@@ -736,6 +895,165 @@ def test_scene_interactions_validate_actions_and_export_json(tmp_path):
     assert wrong_animation_response.status_code == 400
     assert bad_variable_response.status_code == 400
     assert missing_audio_response.status_code == 400
+    assert missing_scene_response.status_code == 400
+    assert wrong_bgm_kind_response.status_code == 400
+    assert wrong_sfx_kind_response.status_code == 400
+
+
+def test_scene_interactions_validate_increment_and_toggle_variable_types(tmp_path):
+    with api_client(tmp_path) as (client, db_path, settings):
+        authenticate(client, db_path, settings, role="user")
+        upload_response = client.post(
+            "/api/uploads/batches",
+            files=[("files", ("bedroom.png", png_bytes(draw_flower=True), "image/png"))],
+        )
+        scene = client.post(
+            f"/api/uploads/batches/{upload_response.json()['id']}/process-scene"
+        ).json()["scene"]
+        scene_object = client.post(
+            f"/api/scenes/{scene['id']}/objects",
+            json={"name": "painting", "prompt": "painting"},
+        ).json()
+        bool_variable = client.post(
+            "/api/variables",
+            json={
+                "name": "light_on",
+                "value_type": "bool",
+                "default_value": False,
+                "description": "",
+            },
+        ).json()
+        number_variable = client.post(
+            "/api/variables",
+            json={
+                "name": "painting_clicks",
+                "value_type": "number",
+                "default_value": 0,
+                "description": "",
+            },
+        ).json()
+
+        valid_response = client.post(
+            f"/api/scenes/{scene['id']}/interactions",
+            json={
+                "name": "Count painting clicks",
+                "enabled": True,
+                "trigger": {"type": "object_click", "object_id": scene_object["id"]},
+                "action_tree": [
+                    {
+                        "type": "increment_variable",
+                        "variable_id": number_variable["id"],
+                        "amount": 1,
+                    },
+                    {
+                        "type": "toggle_variable",
+                        "variable_id": bool_variable["id"],
+                    },
+                ],
+            },
+        )
+        invalid_increment_response = client.post(
+            f"/api/scenes/{scene['id']}/interactions",
+            json={
+                "name": "Bad increment",
+                "enabled": True,
+                "trigger": {"type": "object_click", "object_id": scene_object["id"]},
+                "action_tree": [
+                    {
+                        "type": "increment_variable",
+                        "variable_id": bool_variable["id"],
+                        "amount": 1,
+                    }
+                ],
+            },
+        )
+        invalid_toggle_response = client.post(
+            f"/api/scenes/{scene['id']}/interactions",
+            json={
+                "name": "Bad toggle",
+                "enabled": True,
+                "trigger": {"type": "object_click", "object_id": scene_object["id"]},
+                "action_tree": [
+                    {
+                        "type": "toggle_variable",
+                        "variable_id": number_variable["id"],
+                    }
+                ],
+            },
+        )
+
+    assert valid_response.status_code == 201
+    assert valid_response.json()["action_tree"][0]["type"] == "increment_variable"
+    assert valid_response.json()["action_tree"][1]["type"] == "toggle_variable"
+    assert invalid_increment_response.status_code == 400
+    assert invalid_toggle_response.status_code == 400
+
+
+def test_script_audio_candidates_allow_multiple_selected_and_keep_order(tmp_path):
+    with api_client(tmp_path) as (client, db_path, settings):
+        authenticate(client, db_path, settings, role="admin")
+        create_script_audio_fixture(settings.script_audio_root)
+        import_response = client.post("/api/admin/import-script-audio", json={})
+        detail_before = client.get("/api/script-lines/1")
+        assert import_response.status_code == 200
+        assert detail_before.status_code == 200
+        inserted_candidate = upsert_script_audio_candidate(
+            db_path,
+            organization_id=settings.organization_id,
+            line_id=1,
+            language="en",
+            source_type="tts",
+            manifest_status="ready",
+            relative_path="clips_ogg/en-extra.ogg",
+            original_path="clips_ogg/en-extra.ogg",
+            rank=99,
+            duration_seconds=1.2,
+            source_file="test",
+            review_status="candidate",
+        )
+        assert inserted_candidate is not None
+        detail_before = client.get("/api/script-lines/1")
+        assert detail_before.status_code == 200
+
+        english_candidates_before = [
+            candidate for candidate in detail_before.json()["audio_candidates"]
+            if candidate["language"] == "en"
+        ]
+        assert len(english_candidates_before) >= 2
+        first_candidate_id = english_candidates_before[0]["id"]
+        second_candidate_id = english_candidates_before[1]["id"]
+
+        first_update = client.patch(
+            f"/api/script-audio-candidates/{first_candidate_id}",
+            json={
+                "review_status": english_candidates_before[0]["review_status"],
+                "notes": english_candidates_before[0]["notes"],
+                "selected": True,
+            },
+        )
+        second_update = client.patch(
+            f"/api/script-audio-candidates/{second_candidate_id}",
+            json={
+                "review_status": english_candidates_before[1]["review_status"],
+                "notes": english_candidates_before[1]["notes"],
+                "selected": True,
+            },
+        )
+        detail_after = client.get("/api/script-lines/1")
+
+    assert first_update.status_code == 200
+    assert second_update.status_code == 200
+    assert detail_after.status_code == 200
+    english_candidates_after = [
+        candidate for candidate in detail_after.json()["audio_candidates"]
+        if candidate["language"] == "en"
+    ]
+    assert [candidate["id"] for candidate in english_candidates_after[:2]] == [
+        first_candidate_id,
+        second_candidate_id,
+    ]
+    assert english_candidates_after[0]["selected"] is True
+    assert english_candidates_after[1]["selected"] is True
 
 
 def test_scene_vlm_analysis_updates_description_and_adds_missing_draft_objects(tmp_path):
@@ -866,7 +1184,9 @@ def test_scene_preview_data_renders_default_and_animation_frames_only(tmp_path):
         tmp_path,
         segmentation_provider=fake_segmentation,
     ) as (client, db_path, settings):
-        authenticate(client, db_path, settings, role="user")
+        authenticate(client, db_path, settings, role="admin")
+        create_script_audio_fixture(settings.script_audio_root)
+        client.post("/api/admin/import-script-audio", json={})
         upload_response = client.post(
             "/api/uploads/batches",
             files=[
@@ -881,6 +1201,10 @@ def test_scene_preview_data_renders_default_and_animation_frames_only(tmp_path):
             f"/api/scenes/{scene['id']}/objects",
             json={"name": "bed", "prompt": "bed"},
         ).json()
+        hidden_object = client.post(
+            f"/api/scenes/{scene['id']}/objects",
+            json={"name": "clock", "prompt": "clock"},
+        ).json()
         extract_response = client.post(f"/api/scenes/{scene['id']}/extract-masks")
         extract_job = wait_for_job(client, extract_response.json()["id"])
         assert extract_job["status"] == "succeeded"
@@ -894,11 +1218,67 @@ def test_scene_preview_data_renders_default_and_animation_frames_only(tmp_path):
                 ],
             },
         )
+        variable_response = client.post(
+            "/api/variables",
+            json={
+                "name": "clock_opened",
+                "value_type": "bool",
+                "default_value": False,
+                "description": "Tracks whether the clock is open.",
+            },
+        )
+        enabled_interaction_response = client.post(
+            f"/api/scenes/{scene['id']}/interactions",
+            json={
+                "name": "Click bed",
+                "enabled": True,
+                "trigger": {"type": "object_click", "object_id": scene_object["id"]},
+                "action_tree": [
+                    {
+                        "type": "play_audio",
+                        "script_line_ids": [1, 2],
+                        "wait": "wait",
+                    },
+                    {
+                        "type": "set_variable",
+                        "variable_id": variable_response.json()["id"],
+                        "value": True,
+                    },
+                    {
+                        "type": "set_object_property",
+                        "target_object_id": hidden_object["id"],
+                        "property": "visible",
+                        "value": False,
+                    },
+                ],
+            },
+        )
+        disabled_interaction_response = client.post(
+            f"/api/scenes/{scene['id']}/interactions",
+            json={
+                "name": "Disabled interaction",
+                "enabled": False,
+                "trigger": {"type": "scene_enter"},
+                "action_tree": [
+                    {
+                        "type": "set_variable",
+                        "variable_id": variable_response.json()["id"],
+                        "value": True,
+                    }
+                ],
+            },
+        )
         preview_response = client.get(f"/api/scenes/{scene['id']}/preview-data")
 
         assert animation_response.status_code == 201
+        assert variable_response.status_code == 201
+        assert enabled_interaction_response.status_code == 201
+        assert disabled_interaction_response.status_code == 201
         assert preview_response.status_code == 200
         preview = preview_response.json()
+        assert preview["available_scenes"] == [
+            {"id": scene["id"], "title": scene["title"]}
+        ]
         assert [image["original_filename"] for image in preview["images"]] == [
             "bedroom_0000.png",
             "bedroom_0001.png",
@@ -909,6 +1289,9 @@ def test_scene_preview_data_renders_default_and_animation_frames_only(tmp_path):
 
         preview_object = preview["objects"][0]
         assert preview_object["name"] == "bed"
+        assert preview_object["visible"] is True
+        assert preview_object["enabled"] is True
+        assert preview_object["label"] == "bed"
         assert preview_object["default_render"]["original_filename"] == "bedroom_0000.png"
         assert preview_object["default_render"]["frame_index"] == 0
         assert preview_object["default_render"]["url"].startswith(
@@ -923,6 +1306,25 @@ def test_scene_preview_data_renders_default_and_animation_frames_only(tmp_path):
             "bedroom_0001.png",
         ]
         assert all(frame["render"] for frame in animation["frames"])
+        assert preview["variables"] == [
+            {
+                "id": variable_response.json()["id"],
+                "organization_id": settings.organization_id,
+                "name": "clock_opened",
+                "value_type": "bool",
+                "default_value": False,
+                "description": "Tracks whether the clock is open.",
+                "created_at": variable_response.json()["created_at"],
+                "updated_at": variable_response.json()["updated_at"],
+            }
+        ]
+        assert [interaction["name"] for interaction in preview["interactions"]] == ["Click bed"]
+        assert preview["interactions"][0]["trigger"] == {
+            "type": "object_click",
+            "object_id": scene_object["id"],
+            "variable_id": None,
+        }
+        assert [line["line_id"] for line in preview["script_lines"]] == [1, 2]
 
         preview_root = (
             settings.storage_root

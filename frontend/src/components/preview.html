@@ -5,7 +5,7 @@
         <a class="back-link" href="/scene/{{sceneId}}">Scene {{sceneId}}</a>
         <p class="eyebrow">Preview</p>
         <h1>{{previewData.title}}</h1>
-        <p>{{previewData.images.length}} frames · {{previewObjects.length}} objects</p>
+        <p>{{previewData.images.length}} frames · {{previewObjects.length}} objects · click the scene to trigger actions</p>
       </div>
       <div class="scene-header__actions">
         <button class="button secondary compact" type="button" data-action="refresh-preview">Refresh</button>
@@ -13,6 +13,7 @@
           {{#if showBackground}}Hide background{{/if}}
           {{#if not showBackground}}Show background{{/if}}
         </button>
+        <button class="button secondary compact" type="button" data-action="reset-preview-variables">Reset variables</button>
         <button class="button secondary compact" type="button" data-action="reset-preview">Reset pose</button>
       </div>
     </header>
@@ -20,6 +21,8 @@
     <section class="scene-runtime-grid">
       <section class="scene-runtime-stage">
         <wonky-scene-preview></wonky-scene-preview>
+        <div class="scene-runtime-fade" data-preview-fade></div>
+        <div class="scene-runtime-subtitles" data-preview-subtitles></div>
       </section>
 
       <aside class="scene-runtime-sidebar">
@@ -37,22 +40,17 @@
         <div class="actions-panel">
           <div class="actions-panel__header">
             <div>
-              <p class="eyebrow">Objects</p>
-              <h2>Animations</h2>
+              <p class="eyebrow">Runtime</p>
+              <h2>Objects</h2>
             </div>
           </div>
-          <div class="preview-object-list">
+          <div class="preview-object-list" data-preview-objects>
             {{#each previewObjects as object}}
-              <section class="preview-object-card {{#if object.isSelected}}is-selected{{/if}}">
-                <button
-                  class="preview-object-card__header"
-                  type="button"
-                  data-action="select-preview-object"
-                  data-object-id="{{object.id}}"
-                >
+              <section class="preview-object-card">
+                <div class="preview-object-card__header">
                   <strong>{{object.name}}</strong>
-                  <span>{{object.animationCount}} animations</span>
-                </button>
+                  <span>{{#if object.visible}}visible{{/if}}{{#if not object.visible}}hidden{{/if}} · {{#if object.enabled}}enabled{{/if}}{{#if not object.enabled}}disabled{{/if}}</span>
+                </div>
                 {{#if object.hasAnimations}}
                   <div class="preview-animation-list">
                     {{#each object.animations as animation}}
@@ -73,6 +71,20 @@
                   <p class="muted">No saved animations.</p>
                 {{/if}}
               </section>
+            {{/each}}
+          </div>
+        </div>
+
+        <div class="actions-panel">
+          <div class="actions-panel__header">
+            <div>
+              <p class="eyebrow">Runtime</p>
+              <h2>Variables</h2>
+            </div>
+          </div>
+          <div class="variable-list" data-preview-variables>
+            {{#each runtimeVariables as variable}}
+              <span>{{variable.name}} · {{variable.valueType}} · {{variable.valueText}}</span>
             {{/each}}
           </div>
         </div>

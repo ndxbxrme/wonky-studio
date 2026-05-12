@@ -9,7 +9,14 @@ const ACTION_TYPES = [
   {value: 'show_subtitle', label: 'Show subtitle'},
   {value: 'play_audio', label: 'Play audio'},
   {value: 'set_variable', label: 'Set variable'},
+  {value: 'increment_variable', label: 'Increment variable'},
+  {value: 'toggle_variable', label: 'Toggle variable'},
   {value: 'if_variable', label: 'If variable'},
+  {value: 'fade_out', label: 'Fade out'},
+  {value: 'fade_in', label: 'Fade in'},
+  {value: 'crossfade_bgm', label: 'Crossfade BGM'},
+  {value: 'play_sfx', label: 'Play SFX'},
+  {value: 'change_scene', label: 'Change scene'},
   {value: 'delay', label: 'Delay'}
 ];
 
@@ -22,11 +29,16 @@ const ActionsCtrl = app => async params => {
     sceneId,
     scene: findScene(sceneId),
     variables: [],
+    selectedVariableId: null,
     interactions: [],
     selectedInteractionId: routeOptions.interactionId,
     preselectedObjectId: routeOptions.objectId,
     selectedInteraction: null,
     objectOptions: [],
+    sceneOptions: [],
+    audioAssetOptions: [],
+    bgmOptions: [],
+    sfxOptions: [],
     animationOptions: [],
     actionTypes: ACTION_TYPES,
     branchOptions: [],
@@ -38,6 +50,8 @@ const ActionsCtrl = app => async params => {
     hasSelectedInteraction: false,
     hasVariables: false,
     hasScriptSearchResults: false,
+    isEditingVariable: false,
+    variableSubmitLabel: 'Add variable',
     editorReady: false,
     editorMissing: false,
     unloadHandlers: [],
@@ -64,7 +78,15 @@ const ActionsCtrl = app => async params => {
     async refreshData() {
       try {
         this.scene = replaceScene(await loadScene(this.sceneId));
+        this.sceneOptions = [{
+          id: this.scene.id,
+          title: this.scene.title
+        }];
         this.variables = await apiFetch('/api/variables');
+        this.sceneOptions = await apiFetch('/api/scenes');
+        this.audioAssetOptions = await apiFetch('/api/audio-assets');
+        this.bgmOptions = this.audioAssetOptions.filter(asset => asset.kind === 'bgm');
+        this.sfxOptions = this.audioAssetOptions.filter(asset => asset.kind === 'sfx');
         await this.loadAnimations();
         this.interactions = await apiFetch(`/api/scenes/${this.sceneId}/interactions`);
         if (!this.selectedInteractionId && this.interactions.length) {
@@ -105,9 +127,16 @@ const ActionsCtrl = app => async params => {
     prepareState() {
       this.variables = this.variables.map(variable => ({
         ...variable,
-        defaultValueText: String(variable.default_value ?? '')
+        defaultValueText: String(variable.default_value ?? ''),
+        isSelected: variable.id === this.selectedVariableId
       }));
+      if (!this.variables.some(variable => variable.id === this.selectedVariableId)) {
+        this.selectedVariableId = null;
+        this.variables = this.variables.map(variable => ({...variable, isSelected: false}));
+      }
       this.hasVariables = Boolean(this.variables.length);
+      this.isEditingVariable = Boolean(this.selectedVariableId);
+      this.variableSubmitLabel = this.isEditingVariable ? 'Update variable' : 'Add variable';
       this.interactions = this.interactions.map(interaction => ({
         ...interaction,
         triggerLabel: triggerLabel(interaction, this.scene, this.variables),
@@ -129,6 +158,22 @@ const ActionsCtrl = app => async params => {
       const selectButton = event.target.closest('[data-action="select-interaction"]');
       if (selectButton) {
         this.selectedInteractionId = Number(selectButton.dataset.interactionId);
+        this.prepareState();
+        this.refreshView();
+        return;
+      }
+
+      const selectVariableButton = event.target.closest('[data-action="select-variable"]');
+      if (selectVariableButton) {
+        this.selectedVariableId = Number(selectVariableButton.dataset.variableId);
+        this.prepareState();
+        this.refreshView();
+        return;
+      }
+
+      const cancelVariableEditButton = event.target.closest('[data-action="cancel-variable-edit"]');
+      if (cancelVariableEditButton) {
+        this.selectedVariableId = null;
         this.prepareState();
         this.refreshView();
         return;
@@ -211,27 +256,45 @@ const ActionsCtrl = app => async params => {
     },
 
     async createVariable(form) {
-      const formData = new FormData(form);
-      const payload = {
-        name: String(formData.get('name') ?? '').trim(),
-        value_type: String(formData.get('value_type') ?? 'bool'),
-        default_value: parseTypedValue(
-          String(formData.get('value_type') ?? 'bool'),
-          String(formData.get('default_value') ?? '')
-        ),
-        description: String(formData.get('description') ?? '')
-      };
+      const variableId = Number(form.elements.variable_id?.value);
+      if (variableId) {
+        await this.saveVariable(form);
+        return;
+      }
+      const payload = readVariableForm(form);
       if (!payload.name) return;
       this.setStatus('Creating variable...');
       try {
         await apiFetch('/api/variables', {method: 'POST', body: JSON.stringify(payload)});
         form.reset();
+        this.selectedVariableId = null;
         await this.refreshData();
         this.refreshView();
         notifyScenePreview(this.sceneId, 'variable-updated');
         this.setStatus('Variable created.');
       } catch {
         this.setStatus('Could not create variable.');
+      }
+    },
+
+    async saveVariable(form) {
+      const variableId = Number(form.elements.variable_id?.value);
+      if (!variableId) return;
+      const payload = readVariableForm(form);
+      if (!payload.name) return;
+      this.setStatus('Saving variable...');
+      try {
+        await apiFetch(`/api/variables/${variableId}`, {
+          method: 'PATCH',
+          body: JSON.stringify(payload)
+        });
+        this.selectedVariableId = null;
+        await this.refreshData();
+        this.refreshView();
+        notifyScenePreview(this.sceneId, 'variable-updated');
+        this.setStatus('Variable saved.');
+      } catch {
+        this.setStatus('Could not save variable.');
       }
     },
 
@@ -365,6 +428,15 @@ const ActionsCtrl = app => async params => {
     },
 
     setControlValues() {
+      const variableForm = this.root?.querySelector('[data-variable-form]');
+      if (variableForm) {
+        const selectedVariable = this.variables.find(item => item.id === this.selectedVariableId) ?? null;
+        variableForm.elements.variable_id.value = selectedVariable?.id ?? '';
+        variableForm.elements.name.value = selectedVariable?.name ?? '';
+        variableForm.elements.value_type.value = selectedVariable?.value_type ?? 'bool';
+        variableForm.elements.default_value.value = selectedVariable?.defaultValueText ?? 'false';
+        variableForm.elements.description.value = selectedVariable?.description ?? '';
+      }
       const createForm = this.root?.querySelector('[data-interaction-create-form]');
       if (createForm && this.preselectedObjectId) {
         createForm.elements.trigger_type.value = 'object_click';
@@ -433,6 +505,20 @@ function readRouteOptions() {
 function numericSearchParam(searchParams, name) {
   const value = Number(searchParams.get(name));
   return Number.isFinite(value) && value > 0 ? value : null;
+}
+
+function readVariableForm(form) {
+  const formData = new FormData(form);
+  const valueType = String(formData.get('value_type') ?? 'bool');
+  return {
+    name: String(formData.get('name') ?? '').trim(),
+    value_type: valueType,
+    default_value: parseTypedValue(
+      valueType,
+      String(formData.get('default_value') ?? '')
+    ),
+    description: String(formData.get('description') ?? '')
+  };
 }
 
 function readInteractionForm(form, currentInteraction) {
@@ -512,6 +598,21 @@ function readActionStepForm(form) {
       wait
     };
   }
+  if (type === 'increment_variable') {
+    return {
+      type,
+      variable_id: Number(formData.get('variable_id')),
+      amount: Number(formData.get('variable_delta') || 1),
+      wait
+    };
+  }
+  if (type === 'toggle_variable') {
+    return {
+      type,
+      variable_id: Number(formData.get('variable_id')),
+      wait
+    };
+  }
   if (type === 'if_variable') {
     const valueType = String(formData.get('variable_value_type') ?? 'bool');
     return {
@@ -521,6 +622,37 @@ function readActionStepForm(form) {
       value: parseTypedValue(valueType, String(formData.get('variable_value') ?? '')),
       then_steps: [],
       else_steps: []
+    };
+  }
+  if (type === 'fade_out' || type === 'fade_in') {
+    return {
+      type,
+      duration_seconds: Number(formData.get('duration_seconds') || 1),
+      color: String(formData.get('fade_color') ?? '#000000').trim() || '#000000',
+      affect_audio: formData.get('affect_audio') === 'on',
+      wait
+    };
+  }
+  if (type === 'crossfade_bgm') {
+    return {
+      type,
+      audio_asset_id: Number(formData.get('bgm_audio_asset_id')),
+      duration_seconds: Number(formData.get('duration_seconds') || 1),
+      wait
+    };
+  }
+  if (type === 'play_sfx') {
+    return {
+      type,
+      audio_asset_id: Number(formData.get('sfx_audio_asset_id')),
+      wait
+    };
+  }
+  if (type === 'change_scene') {
+    return {
+      type,
+      scene_id: Number(formData.get('scene_id')),
+      wait: 'wait'
     };
   }
   return {
@@ -667,7 +799,13 @@ function actionMeta(step) {
   if (step.type === 'show_subtitle') return `subtitle lines ${step.script_line_ids?.join(', ')}`;
   if (step.type === 'set_object_property') return `${step.property} = ${step.value}`;
   if (step.type === 'set_variable') return `variable ${step.variable_id} = ${step.value}`;
+  if (step.type === 'increment_variable') return `variable ${step.variable_id} += ${step.amount}`;
+  if (step.type === 'toggle_variable') return `toggle variable ${step.variable_id}`;
   if (step.type === 'if_variable') return `if variable ${step.variable_id} ${step.operator} ${step.value}`;
+  if (step.type === 'fade_out' || step.type === 'fade_in') return `${step.color} · ${step.duration_seconds}s${step.affect_audio ? ' · audio' : ''}`;
+  if (step.type === 'crossfade_bgm') return `audio ${step.audio_asset_id} · ${step.duration_seconds}s`;
+  if (step.type === 'play_sfx') return `audio ${step.audio_asset_id}`;
+  if (step.type === 'change_scene') return `scene ${step.scene_id}`;
   if (step.type === 'delay') return `${step.duration_seconds}s`;
   return step.wait ? `${step.wait}` : '';
 }
@@ -679,7 +817,14 @@ function actionTypeHelp(type) {
     show_subtitle: 'Uses script line IDs and duration. Search below and add matching lines.',
     play_audio: 'Uses script line IDs. Search below and add matching lines.',
     set_variable: 'Uses variable, value type, and value.',
+    increment_variable: 'Uses a number variable and a positive or negative amount.',
+    toggle_variable: 'Uses a bool variable and flips true/false.',
     if_variable: 'Creates a branch target; add child steps into then/else after saving it.',
+    fade_out: 'Fades the preview to a color. Optionally ramps active narration audio down too.',
+    fade_in: 'Fades the preview back in from a color. Optionally ramps active narration audio up too.',
+    crossfade_bgm: 'Crossfades looping background music to a target BGM asset.',
+    play_sfx: 'Plays a one-shot sound effect asset.',
+    change_scene: 'Uses a target scene and transfers preview flow into that scene.',
     delay: 'Uses duration only.'
   }[type] ?? '';
 }

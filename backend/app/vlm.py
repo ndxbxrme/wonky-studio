@@ -42,9 +42,16 @@ class SceneVlmProvider(Protocol):
 
 
 class OllamaSceneVlmProvider:
-    def __init__(self, base_url: str, model: str, timeout_seconds: float = 60.0) -> None:
+    def __init__(
+        self,
+        base_url: str,
+        model: str,
+        keep_alive: str = "0",
+        timeout_seconds: float = 60.0,
+    ) -> None:
         self.base_url = base_url.rstrip("/")
         self.model = model
+        self.keep_alive = keep_alive
         self.timeout_seconds = timeout_seconds
 
     async def analyze_scene(self, image_path: Path) -> SceneDraft:
@@ -55,6 +62,7 @@ class OllamaSceneVlmProvider:
             "images": [image_b64],
             "stream": False,
             "format": "json",
+            "keep_alive": self.keep_alive,
             "options": {"temperature": 0.1},
         }
         async with httpx.AsyncClient(timeout=self.timeout_seconds) as client:
@@ -76,6 +84,7 @@ def build_scene_vlm_provider(settings: Settings) -> SceneVlmProvider | None:
         return OllamaSceneVlmProvider(
             base_url=settings.vlm_base_url,
             model=settings.vlm_model,
+            keep_alive=settings.vlm_keep_alive,
             timeout_seconds=settings.vlm_timeout_seconds,
         )
     raise ValueError(f"Unsupported VLM provider: {settings.vlm_provider}")

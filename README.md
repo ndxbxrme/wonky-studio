@@ -47,6 +47,7 @@ WONKY_STUDIO_GOOGLE_CLIENT_SECRET=...
 WONKY_STUDIO_GOOGLE_REDIRECT_URI=http://127.0.0.1:8000/api/auth/google/callback
 WONKY_STUDIO_VLM_PROVIDER=ollama
 WONKY_STUDIO_VLM_MODEL=gemma3:4b
+WONKY_STUDIO_VLM_KEEP_ALIVE=0
 WONKY_STUDIO_SEGMENTATION_PROVIDER=sam3-subprocess
 WONKY_STUDIO_SEGMENTATION_CONDA_ENV=sam3
 ```
@@ -126,13 +127,19 @@ Script/audio review:
 - Script lines are searchable by path/text/language.
 - Each translation and audio candidate has review state, notes, and audio preview.
 
+Audio library:
+
+- Route: `/audio-library`.
+- Upload and organize looping background music (`bgm`) and one-shot sound effects (`sfx`).
+- These assets are used by preview/runtime actions rather than subtitle-bearing script playback.
+
 Actions:
 
 - Route: `/actions/{sceneId}`.
 - Global variables: `bool`, `string`, `number`.
 - Scene interactions support scene/object/variable triggers.
 - Action steps are structured and validated, not free-form script text.
-- Supported steps today: `play_animation`, `set_object_property`, `show_subtitle`, `play_audio`, `set_variable`, `if_variable`, `delay`.
+- Supported steps today: `play_animation`, `set_object_property`, `show_subtitle`, `play_audio`, `set_variable`, `increment_variable`, `toggle_variable`, `if_variable`, `fade_out`, `fade_in`, `crossfade_bgm`, `play_sfx`, `change_scene`, `delay`.
 - Scene pages show action counts plus per-object action summaries with links back into the action editor.
 
 Scene preview:

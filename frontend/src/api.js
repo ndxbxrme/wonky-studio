@@ -42,6 +42,10 @@ function scriptAudioCandidateUrl(candidateId) {
   return resolveApiPath(`/api/script-audio-candidates/${candidateId}/content`);
 }
 
+function audioAssetUrl(audioAssetId) {
+  return resolveApiPath(`/api/audio-assets/${audioAssetId}/content`);
+}
+
 function resolveApiPath(path) {
   if (!path.startsWith('/')) path = `/${path}`;
   return API_BASE_URL ? `${API_BASE_URL}${path}` : path;
@@ -53,6 +57,7 @@ export {
   apiFetch,
   objectMaskUrl,
   objectThumbnailUrl,
+  audioAssetUrl,
   scriptAudioCandidateUrl,
   uploadedFileUrl
 };

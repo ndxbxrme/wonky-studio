@@ -1061,6 +1061,20 @@ textarea {
   background: #fbfcfa;
 }
 
+.form-actions {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+
+.form-actions .button:first-child {
+  flex: 1 1 auto;
+}
+
+.form-actions__cancel {
+  flex: 0 0 auto;
+}
+
 .interaction-editor__fields,
 .action-step-form,
 .script-line-picker {
@@ -1141,10 +1155,84 @@ textarea {
   background: #ffffff;
   box-shadow: 0 16px 36px rgba(17, 24, 39, 0.08);
   display: grid;
+  position: relative;
 }
 
 .scene-runtime-stage wonky-scene-preview {
   min-height: min(70vh, 820px);
+}
+
+.scene-runtime-fade {
+  position: absolute;
+  inset: 18px;
+  border-radius: 8px;
+  pointer-events: none;
+  opacity: 0;
+  background: #000000;
+  transition: none;
+}
+
+.scene-runtime-subtitles {
+  position: absolute;
+  left: 32px;
+  right: 32px;
+  bottom: 26px;
+  display: grid;
+  justify-items: center;
+  pointer-events: none;
+}
+
+.preview-subtitles {
+  max-width: min(100%, 900px);
+  padding: 12px 18px 14px;
+  border-radius: 12px;
+  background: rgba(12, 18, 24, 0.82);
+  box-shadow: 0 16px 36px rgba(0, 0, 0, 0.28);
+  text-align: center;
+  color: #f7fbff;
+}
+
+.preview-subtitles__primary,
+.preview-subtitles__secondary {
+  margin: 0;
+  line-height: 1.25;
+}
+
+.preview-subtitles__secondary {
+  margin-top: 4px;
+  color: #c8e2ff;
+}
+
+.preview-subtitles.is-large .preview-subtitles__primary {
+  font-size: 1.55rem;
+}
+
+.preview-subtitles.is-large .preview-subtitles__secondary {
+  font-size: 1.2rem;
+}
+
+.preview-subtitles.is-medium .preview-subtitles__primary {
+  font-size: 1.35rem;
+}
+
+.preview-subtitles.is-medium .preview-subtitles__secondary {
+  font-size: 1.05rem;
+}
+
+.preview-subtitles.is-small .preview-subtitles__primary {
+  font-size: 1.12rem;
+}
+
+.preview-subtitles.is-small .preview-subtitles__secondary {
+  font-size: 0.94rem;
+}
+
+.preview-subtitles.is-xsmall .preview-subtitles__primary {
+  font-size: 0.98rem;
+}
+
+.preview-subtitles.is-xsmall .preview-subtitles__secondary {
+  font-size: 0.84rem;
 }
 
 .scene-runtime-sidebar {
@@ -1181,16 +1269,22 @@ textarea {
 .preview-animation-button {
   width: 100%;
   min-width: 0;
-  border: 0;
-  background: transparent;
   text-align: left;
   color: inherit;
   padding: 0;
-  cursor: pointer;
   display: flex;
   align-items: baseline;
   justify-content: space-between;
   gap: 10px;
+}
+
+.preview-object-card__header {
+  cursor: default;
+}
+
+.preview-animation-button {
+  border: 0;
+  cursor: pointer;
 }
 
 .preview-object-card__header span,

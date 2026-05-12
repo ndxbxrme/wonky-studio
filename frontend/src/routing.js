@@ -14,10 +14,13 @@ import {ActionsCtrl} from './components/actions.ctrl.js';
 import actionsTemplate from './components/actions.html?raw';
 import {PreviewCtrl} from './components/preview.ctrl.js';
 import previewTemplate from './components/preview.html?raw';
+import {AudioLibraryCtrl} from './components/audio-library.ctrl.js';
+import audioLibraryTemplate from './components/audio-library.html?raw';
 import {authMiddleware} from './auth-middleware.js';
 
 const initRoutes = async (app) => {
   app.registerHelper('not', value => !value);
+  app.registerHelper('eq', (left, right) => left === right);
   app.registerHelper('formatBytes', value => formatBytes(Number(value || 0)));
   app.addMiddleware(authMiddleware(app));
   app.template('default', defaultTemplate);
@@ -36,6 +39,8 @@ const initRoutes = async (app) => {
   app.controller('actions', ActionsCtrl(app));
   app.template('preview', previewTemplate);
   app.controller('preview', PreviewCtrl(app));
+  app.template('audio-library', audioLibraryTemplate);
+  app.controller('audio-library', AudioLibraryCtrl(app));
 }
 
 function formatBytes(bytes) {

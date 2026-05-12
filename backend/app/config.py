@@ -21,6 +21,7 @@ class Settings:
     vlm_provider: str = "ollama"
     vlm_base_url: str = "http://127.0.0.1:11434"
     vlm_model: str = "gemma3:4b"
+    vlm_keep_alive: str = "0"
     vlm_timeout_seconds: float = 60.0
     segmentation_provider: str = "sam3-subprocess"
     segmentation_conda_env: str = "sam3"
@@ -61,6 +62,7 @@ def get_settings() -> Settings:
         vlm_provider=os.environ.get("WONKY_STUDIO_VLM_PROVIDER", "ollama"),
         vlm_base_url=os.environ.get("WONKY_STUDIO_VLM_BASE_URL", "http://127.0.0.1:11434"),
         vlm_model=os.environ.get("WONKY_STUDIO_VLM_MODEL", "gemma3:4b"),
+        vlm_keep_alive=os.environ.get("WONKY_STUDIO_VLM_KEEP_ALIVE", "0"),
         vlm_timeout_seconds=float(os.environ.get("WONKY_STUDIO_VLM_TIMEOUT_SECONDS", "60")),
         segmentation_provider=os.environ.get(
             "WONKY_STUDIO_SEGMENTATION_PROVIDER",

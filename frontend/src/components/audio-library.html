@@ -1,0 +1,110 @@
+<main class="scene-layout" data-audio-library-page>
+  <header class="scene-header">
+    <div>
+      <a class="back-link" href="/">Home</a>
+      <p class="eyebrow">Audio</p>
+      <h1>Library</h1>
+      <p>Upload background music and sound effects for actions and preview playback.</p>
+    </div>
+    <p class="form-status" data-audio-library-status aria-live="polite">{{status}}</p>
+  </header>
+
+  <section class="actions-grid">
+    <aside class="actions-sidebar">
+      <section class="actions-panel">
+        <div>
+          <p class="eyebrow">Upload</p>
+          <h2>Add audio</h2>
+        </div>
+        <form class="stack-form" data-audio-upload-form>
+          <label>
+            Name
+            <input name="name" type="text" placeholder="Bedroom loop" />
+          </label>
+          <label>
+            Kind
+            <select name="kind">
+              <option value="bgm">Background music</option>
+              <option value="sfx">Sound effect</option>
+            </select>
+          </label>
+          <label>
+            File
+            <input name="file" type="file" accept="audio/*" required />
+          </label>
+          <button class="button primary compact" type="submit">Upload audio</button>
+        </form>
+      </section>
+    </aside>
+
+    <section class="actions-workbench">
+      <section class="actions-panel">
+        <div>
+          <p class="eyebrow">Looping</p>
+          <h2>Background music</h2>
+        </div>
+        {{#if hasBgmAssets}}
+          <div class="script-line-search-results">
+            {{#each bgmAssets as asset}}
+              <article class="script-line-search-row">
+                <form class="stack-form" data-audio-asset-form data-audio-asset-id="{{asset.id}}">
+                  <label>
+                    Name
+                    <input name="name" type="text" value="{{asset.name}}" required />
+                  </label>
+                  <label>
+                    Kind
+                    <select name="kind">
+                      <option value="bgm" {{#if asset.isBgm}}selected{{/if}}>Background music</option>
+                      <option value="sfx" {{#if asset.isSfx}}selected{{/if}}>Sound effect</option>
+                    </select>
+                  </label>
+                  <button class="button secondary compact" type="submit">Save</button>
+                </form>
+                <audio controls preload="metadata" src="{{asset.audioUrl}}"></audio>
+                <button class="button danger compact" type="button" data-action="delete-audio-asset" data-audio-asset-id="{{asset.id}}" data-audio-asset-name="{{asset.name}}">Delete</button>
+              </article>
+            {{/each}}
+          </div>
+        {{/if}}
+        {{#if not hasBgmAssets}}
+          <p class="muted">No background music uploaded yet.</p>
+        {{/if}}
+      </section>
+
+      <section class="actions-panel">
+        <div>
+          <p class="eyebrow">One-shot</p>
+          <h2>Sound effects</h2>
+        </div>
+        {{#if hasSfxAssets}}
+          <div class="script-line-search-results">
+            {{#each sfxAssets as asset}}
+              <article class="script-line-search-row">
+                <form class="stack-form" data-audio-asset-form data-audio-asset-id="{{asset.id}}">
+                  <label>
+                    Name
+                    <input name="name" type="text" value="{{asset.name}}" required />
+                  </label>
+                  <label>
+                    Kind
+                    <select name="kind">
+                      <option value="bgm" {{#if asset.isBgm}}selected{{/if}}>Background music</option>
+                      <option value="sfx" {{#if asset.isSfx}}selected{{/if}}>Sound effect</option>
+                    </select>
+                  </label>
+                  <button class="button secondary compact" type="submit">Save</button>
+                </form>
+                <audio controls preload="metadata" src="{{asset.audioUrl}}"></audio>
+                <button class="button danger compact" type="button" data-action="delete-audio-asset" data-audio-asset-id="{{asset.id}}" data-audio-asset-name="{{asset.name}}">Delete</button>
+              </article>
+            {{/each}}
+          </div>
+        {{/if}}
+        {{#if not hasSfxAssets}}
+          <p class="muted">No sound effects uploaded yet.</p>
+        {{/if}}
+      </section>
+    </section>
+  </section>
+</main>

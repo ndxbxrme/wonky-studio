@@ -12,7 +12,7 @@ from urllib.parse import urlencode
 from uuid import uuid4
 
 import httpx
-from fastapi import Body, Cookie, Depends, FastAPI, File, HTTPException, Response, UploadFile
+from fastapi import Body, Cookie, Depends, FastAPI, File, Form, HTTPException, Response, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, RedirectResponse
 from PIL import Image, ImageChops, ImageDraw, ImageFilter, ImageOps
@@ -21,6 +21,7 @@ from pydantic import BaseModel, EmailStr, Field
 from .config import Settings, get_settings
 from .database import (
     add_uploaded_file,
+    create_audio_asset,
     create_asset,
     create_game_variable,
     create_invite,
@@ -34,6 +35,7 @@ from .database import (
     create_scene_mask_prompt,
     create_upload_batch,
     delete_object_animation,
+    delete_audio_asset,
     delete_game_variable,
     delete_scene_mask_prompt,
     delete_scene_object,
@@ -50,6 +52,7 @@ from .database import (
     get_scene_interaction,
     get_scene_object_for_organization,
     get_active_processing_job_for_scene,
+    get_audio_asset_by_id,
     get_processing_job,
     get_session_by_token,
     get_scene_with_images,
@@ -61,6 +64,7 @@ from .database import (
     init_database,
     link_identity,
     list_assets,
+    list_audio_assets,
     list_game_variables,
     list_object_animations_for_object,
     list_object_masks_for_object,
@@ -83,6 +87,7 @@ from .database import (
     script_line_ids_exist,
     touch_object_mask,
     update_game_variable,
+    update_audio_asset,
     update_scene_interaction,
     update_script_audio_candidate,
     update_script_translation,
@@ -116,6 +121,22 @@ class Asset(AssetCreate):
     id: int
     organization_id: str
     created_at: str
+
+
+class AudioAssetBase(BaseModel):
+    name: str = Field(min_length=1, max_length=160)
+    kind: str = Field(pattern="^(bgm|sfx)$")
+
+
+class AudioAsset(AudioAssetBase):
+    id: int
+    organization_id: str
+    relative_path: str
+    original_filename: str
+    content_type: str | None
+    file_size: int
+    created_at: str
+    updated_at: str
 
 
 class User(BaseModel):
@@ -589,6 +610,8 @@ class PreviewObjectState(BaseModel):
     id: int
     name: str
     visible: bool = True
+    enabled: bool = True
+    label: str = ""
     default_render: PreviewObjectRender | None = None
     animations: list[PreviewObjectAnimation] = []
 
@@ -599,8 +622,13 @@ class ScenePreview(BaseModel):
     description: str
     width: int
     height: int
+    available_scenes: list[dict[str, Any]] = []
     images: list[PreviewImageFrame] = []
     objects: list[PreviewObjectState] = []
+    audio_assets: list[AudioAsset] = []
+    variables: list[GameVariable] = []
+    interactions: list[SceneInteraction] = []
+    script_lines: list[ScriptLineDetail] = []
 
 
 def create_app(
@@ -1807,6 +1835,100 @@ def create_app(
             status=asset.status,
         )
 
+    @app.get("/api/audio-assets", response_model=list[AudioAsset])
+    def get_audio_assets(user: dict[str, Any] = Depends(current_user)) -> list[dict]:
+        return list_audio_assets(database_path, user["organization_id"])
+
+    @app.post("/api/audio-assets", response_model=AudioAsset, status_code=201)
+    async def post_audio_asset(
+        file: UploadFile = File(...),
+        name: str = Form(default=""),
+        kind: str = Form(default="sfx"),
+        user: dict[str, Any] = Depends(current_user),
+    ) -> dict[str, Any]:
+        normalized_kind = str(kind).strip().lower()
+        if normalized_kind not in {"bgm", "sfx"}:
+            raise HTTPException(status_code=400, detail="Audio kind must be bgm or sfx")
+        original_filename = _safe_filename(file.filename or "audio.bin")
+        audio_name = str(name).strip() or Path(original_filename).stem
+        audio_root = (
+            app_settings.storage_root
+            / _safe_path_segment(user["organization_id"])
+            / "audio"
+            / normalized_kind
+        )
+        audio_root.mkdir(parents=True, exist_ok=True)
+        stored_filename = f"{uuid4().hex}-{original_filename}"
+        stored_path = audio_root / stored_filename
+        file_size = await _write_upload(file, stored_path)
+        return create_audio_asset(
+            database_path,
+            organization_id=user["organization_id"],
+            name=audio_name,
+            kind=normalized_kind,
+            relative_path=str(
+                Path(_safe_path_segment(user["organization_id"])) / "audio" / normalized_kind / stored_filename
+            ),
+            original_filename=original_filename,
+            content_type=file.content_type,
+            file_size=file_size,
+        )
+
+    @app.patch("/api/audio-assets/{audio_asset_id}", response_model=AudioAsset)
+    def patch_audio_asset(
+        audio_asset_id: int,
+        asset: AudioAssetBase,
+        user: dict[str, Any] = Depends(current_user),
+    ) -> dict[str, Any]:
+        updated = update_audio_asset(
+            database_path,
+            organization_id=user["organization_id"],
+            audio_asset_id=audio_asset_id,
+            name=asset.name,
+            kind=asset.kind,
+        )
+        if updated is None:
+            raise HTTPException(status_code=404, detail="Audio asset not found")
+        return updated
+
+    @app.delete("/api/audio-assets/{audio_asset_id}", status_code=204)
+    def delete_audio_asset_endpoint(
+        audio_asset_id: int,
+        user: dict[str, Any] = Depends(current_user),
+    ) -> Response:
+        deleted = delete_audio_asset(
+            database_path,
+            organization_id=user["organization_id"],
+            audio_asset_id=audio_asset_id,
+        )
+        if deleted is None:
+            raise HTTPException(status_code=404, detail="Audio asset not found")
+        file_path = app_settings.storage_root / deleted["relative_path"]
+        if file_path.exists():
+            file_path.unlink()
+        return Response(status_code=204)
+
+    @app.get("/api/audio-assets/{audio_asset_id}/content")
+    def get_audio_asset_content(
+        audio_asset_id: int,
+        user: dict[str, Any] = Depends(current_user),
+    ) -> FileResponse:
+        asset = get_audio_asset_by_id(
+            database_path,
+            organization_id=user["organization_id"],
+            audio_asset_id=audio_asset_id,
+        )
+        if asset is None:
+            raise HTTPException(status_code=404, detail="Audio asset not found")
+        file_path = app_settings.storage_root / asset["relative_path"]
+        if not file_path.exists():
+            raise HTTPException(status_code=404, detail="Audio asset content not found")
+        return FileResponse(
+            file_path,
+            media_type=asset["content_type"] or "audio/ogg",
+            filename=asset["original_filename"],
+        )
+
     return app
 
 
@@ -2287,6 +2409,37 @@ def _normalize_action_step(
             }
         )
         return normalized
+    if step_type == "increment_variable":
+        variable = _require_variable(
+            db_path,
+            organization_id,
+            _required_int(step.get("variable_id"), "Variable is required"),
+        )
+        if variable["value_type"] != "number":
+            raise HTTPException(status_code=400, detail="Only number variables can be incremented")
+        normalized.update(
+            {
+                "variable_id": variable["id"],
+                "amount": _numeric_delta(step.get("amount"), "Increment amount is required"),
+                "wait": _choice(step.get("wait"), {"wait", "continue"}, "continue"),
+            }
+        )
+        return normalized
+    if step_type == "toggle_variable":
+        variable = _require_variable(
+            db_path,
+            organization_id,
+            _required_int(step.get("variable_id"), "Variable is required"),
+        )
+        if variable["value_type"] != "bool":
+            raise HTTPException(status_code=400, detail="Only bool variables can be toggled")
+        normalized.update(
+            {
+                "variable_id": variable["id"],
+                "wait": _choice(step.get("wait"), {"wait", "continue"}, "continue"),
+            }
+        )
+        return normalized
     if step_type == "if_variable":
         variable = _require_variable(
             db_path,
@@ -2328,6 +2481,61 @@ def _normalize_action_step(
             }
         )
         return normalized
+    if step_type in {"fade_out", "fade_in"}:
+        color = step.get("color")
+        if not isinstance(color, str) or not color.strip():
+            raise HTTPException(status_code=400, detail="Fade color is required")
+        normalized.update(
+            {
+                "duration_seconds": _positive_float(step.get("duration_seconds"), "Fade duration is required"),
+                "color": color.strip(),
+                "affect_audio": bool(step.get("affect_audio")),
+                "wait": _choice(step.get("wait"), {"wait", "continue"}, "wait"),
+            }
+        )
+        return normalized
+    if step_type == "crossfade_bgm":
+        audio_asset = _require_audio_asset(
+            db_path,
+            organization_id,
+            _required_int(step.get("audio_asset_id"), "Background music is required"),
+        )
+        if audio_asset["kind"] != "bgm":
+            raise HTTPException(status_code=400, detail="Only bgm assets can be used for crossfade_bgm")
+        normalized.update(
+            {
+                "audio_asset_id": audio_asset["id"],
+                "duration_seconds": _positive_float(step.get("duration_seconds"), "Crossfade duration is required"),
+                "wait": _choice(step.get("wait"), {"wait", "continue"}, "wait"),
+            }
+        )
+        return normalized
+    if step_type == "play_sfx":
+        audio_asset = _require_audio_asset(
+            db_path,
+            organization_id,
+            _required_int(step.get("audio_asset_id"), "Sound effect is required"),
+        )
+        if audio_asset["kind"] != "sfx":
+            raise HTTPException(status_code=400, detail="Only sfx assets can be used for play_sfx")
+        normalized.update(
+            {
+                "audio_asset_id": audio_asset["id"],
+                "wait": _choice(step.get("wait"), {"wait", "continue"}, "continue"),
+            }
+        )
+        return normalized
+    if step_type == "change_scene":
+        target_scene_id = _required_int(step.get("scene_id"), "Target scene is required")
+        if not scene_belongs_to_organization(db_path, target_scene_id, organization_id):
+            raise HTTPException(status_code=400, detail="Target scene does not exist")
+        normalized.update(
+            {
+                "scene_id": target_scene_id,
+                "wait": "wait",
+            }
+        )
+        return normalized
     raise HTTPException(status_code=400, detail="Unsupported action type")
 
 
@@ -2336,6 +2544,13 @@ def _require_variable(db_path: Path, organization_id: str, variable_id: int) -> 
     if variable is None:
         raise HTTPException(status_code=400, detail="Variable does not exist")
     return variable
+
+
+def _require_audio_asset(db_path: Path, organization_id: str, audio_asset_id: int) -> dict[str, Any]:
+    asset = get_audio_asset_by_id(db_path, organization_id, audio_asset_id)
+    if asset is None:
+        raise HTTPException(status_code=400, detail="Audio asset does not exist")
+    return asset
 
 
 def _required_int(value: Any, detail: str) -> int:
@@ -2357,6 +2572,15 @@ def _positive_float(value: Any, detail: str) -> float:
     if number <= 0:
         raise HTTPException(status_code=400, detail=detail)
     return number
+
+
+def _numeric_delta(value: Any, detail: str) -> float:
+    if value is None or value == "" or isinstance(value, bool):
+        raise HTTPException(status_code=400, detail=detail)
+    try:
+        return float(value)
+    except (TypeError, ValueError) as exc:
+        raise HTTPException(status_code=400, detail=detail) from exc
 
 
 def _choice(value: Any, allowed: set[str], default: str) -> str:
@@ -2486,6 +2710,29 @@ def _build_scene_preview_payload(
     scene_width = int(scene_images[0]["width"]) if scene_images else 0
     scene_height = int(scene_images[0]["height"]) if scene_images else 0
     preview_objects = []
+    preview_audio_assets = list_audio_assets(database_path, organization_id)
+    preview_variables = list_game_variables(database_path, organization_id)
+    available_scenes = [
+        {
+            "id": item["id"],
+            "title": item["title"],
+        }
+        for item in list_scenes(database_path, organization_id)
+    ]
+    preview_interactions = [
+        interaction
+        for interaction in list_scene_interactions(
+            database_path,
+            scene_id=scene["id"],
+            organization_id=organization_id,
+        )
+        if interaction.get("enabled")
+    ]
+    preview_script_lines = [
+        line
+        for line_id in sorted(_collect_script_line_ids(preview_interactions))
+        if (line := get_script_line_detail(database_path, organization_id, line_id)) is not None
+    ]
 
     for scene_object in scene.get("objects", []):
         object_masks = list_object_masks_for_object(
@@ -2562,6 +2809,8 @@ def _build_scene_preview_payload(
                 "id": scene_object["id"],
                 "name": scene_object["name"],
                 "visible": True,
+                "enabled": True,
+                "label": scene_object["name"],
                 "default_render": default_render,
                 "animations": animations,
             }
@@ -2573,9 +2822,33 @@ def _build_scene_preview_payload(
         "description": scene["description"],
         "width": scene_width,
         "height": scene_height,
+        "available_scenes": available_scenes,
         "images": preview_images,
         "objects": preview_objects,
+        "audio_assets": preview_audio_assets,
+        "variables": preview_variables,
+        "interactions": preview_interactions,
+        "script_lines": preview_script_lines,
     }
+
+
+def _collect_script_line_ids(interactions: list[dict[str, Any]]) -> set[int]:
+    line_ids: set[int] = set()
+    for interaction in interactions:
+        _collect_script_line_ids_from_steps(interaction.get("action_tree") or [], line_ids)
+    return line_ids
+
+
+def _collect_script_line_ids_from_steps(steps: list[dict[str, Any]], line_ids: set[int]) -> None:
+    for step in steps:
+        if step.get("type") in {"show_subtitle", "play_audio"}:
+            for line_id in step.get("script_line_ids") or []:
+                try:
+                    line_ids.add(int(line_id))
+                except (TypeError, ValueError):
+                    continue
+        _collect_script_line_ids_from_steps(step.get("then_steps") or [], line_ids)
+        _collect_script_line_ids_from_steps(step.get("else_steps") or [], line_ids)
 
 
 def _preview_render_payload_for_mask(

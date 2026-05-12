@@ -126,6 +126,26 @@ def init_database(
         _ensure_column(connection, "assets", "organization_id", "TEXT NOT NULL DEFAULT 'wonky-studio'")
         connection.execute(
             """
+            CREATE TABLE IF NOT EXISTS audio_assets (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                organization_id TEXT NOT NULL,
+                name TEXT NOT NULL,
+                kind TEXT NOT NULL CHECK (kind IN ('bgm', 'sfx')),
+                relative_path TEXT NOT NULL,
+                original_filename TEXT NOT NULL,
+                content_type TEXT,
+                file_size INTEGER NOT NULL DEFAULT 0,
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (organization_id) REFERENCES organizations(id)
+            )
+            """
+        )
+        connection.execute(
+            "CREATE INDEX IF NOT EXISTS idx_audio_assets_org_kind ON audio_assets (organization_id, kind, id)"
+        )
+        connection.execute(
+            """
             CREATE TABLE IF NOT EXISTS upload_batches (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 organization_id TEXT NOT NULL,
@@ -485,6 +505,7 @@ def reset_workspace_tables(db_path: Path) -> list[str]:
     tables = [
         "scene_interactions",
         "game_variables",
+        "audio_assets",
         "script_audio_candidates",
         "script_translations",
         "script_lines",
@@ -803,6 +824,189 @@ def create_asset(
     if row is None:
         raise RuntimeError("Created asset could not be loaded")
 
+    return dict(row)
+
+
+def list_audio_assets(db_path: Path, organization_id: str) -> list[dict[str, Any]]:
+    with connect(db_path) as connection:
+        rows = connection.execute(
+            """
+            SELECT id,
+                   organization_id,
+                   name,
+                   kind,
+                   relative_path,
+                   original_filename,
+                   content_type,
+                   file_size,
+                   created_at,
+                   updated_at
+            FROM audio_assets
+            WHERE organization_id = ?
+            ORDER BY kind ASC, id ASC
+            """,
+            (organization_id,),
+        ).fetchall()
+    return [dict(row) for row in rows]
+
+
+def create_audio_asset(
+    db_path: Path,
+    organization_id: str,
+    name: str,
+    kind: str,
+    relative_path: str,
+    original_filename: str,
+    content_type: str | None,
+    file_size: int,
+) -> dict[str, Any]:
+    with connect(db_path) as connection:
+        cursor = connection.execute(
+            """
+            INSERT INTO audio_assets (
+                organization_id,
+                name,
+                kind,
+                relative_path,
+                original_filename,
+                content_type,
+                file_size
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                organization_id,
+                name,
+                kind,
+                relative_path,
+                original_filename,
+                content_type,
+                file_size,
+            ),
+        )
+        row = connection.execute(
+            """
+            SELECT id,
+                   organization_id,
+                   name,
+                   kind,
+                   relative_path,
+                   original_filename,
+                   content_type,
+                   file_size,
+                   created_at,
+                   updated_at
+            FROM audio_assets
+            WHERE id = ?
+            """,
+            (cursor.lastrowid,),
+        ).fetchone()
+    if row is None:
+        raise RuntimeError("Created audio asset could not be loaded")
+    return dict(row)
+
+
+def get_audio_asset_by_id(
+    db_path: Path,
+    organization_id: str,
+    audio_asset_id: int,
+) -> dict[str, Any] | None:
+    with connect(db_path) as connection:
+        row = connection.execute(
+            """
+            SELECT id,
+                   organization_id,
+                   name,
+                   kind,
+                   relative_path,
+                   original_filename,
+                   content_type,
+                   file_size,
+                   created_at,
+                   updated_at
+            FROM audio_assets
+            WHERE id = ?
+              AND organization_id = ?
+            """,
+            (audio_asset_id, organization_id),
+        ).fetchone()
+    return dict(row) if row else None
+
+
+def update_audio_asset(
+    db_path: Path,
+    organization_id: str,
+    audio_asset_id: int,
+    name: str,
+    kind: str,
+) -> dict[str, Any] | None:
+    with connect(db_path) as connection:
+        connection.execute(
+            """
+            UPDATE audio_assets
+            SET name = ?,
+                kind = ?,
+                updated_at = CURRENT_TIMESTAMP
+            WHERE id = ?
+              AND organization_id = ?
+            """,
+            (name, kind, audio_asset_id, organization_id),
+        )
+        row = connection.execute(
+            """
+            SELECT id,
+                   organization_id,
+                   name,
+                   kind,
+                   relative_path,
+                   original_filename,
+                   content_type,
+                   file_size,
+                   created_at,
+                   updated_at
+            FROM audio_assets
+            WHERE id = ?
+              AND organization_id = ?
+            """,
+            (audio_asset_id, organization_id),
+        ).fetchone()
+    return dict(row) if row else None
+
+
+def delete_audio_asset(
+    db_path: Path,
+    organization_id: str,
+    audio_asset_id: int,
+) -> dict[str, Any] | None:
+    with connect(db_path) as connection:
+        row = connection.execute(
+            """
+            SELECT id,
+                   organization_id,
+                   name,
+                   kind,
+                   relative_path,
+                   original_filename,
+                   content_type,
+                   file_size,
+                   created_at,
+                   updated_at
+            FROM audio_assets
+            WHERE id = ?
+              AND organization_id = ?
+            """,
+            (audio_asset_id, organization_id),
+        ).fetchone()
+        if row is None:
+            return None
+        connection.execute(
+            """
+            DELETE FROM audio_assets
+            WHERE id = ?
+              AND organization_id = ?
+            """,
+            (audio_asset_id, organization_id),
+        )
     return dict(row)
 
 
@@ -1198,7 +1402,6 @@ def get_script_line_detail(
             WHERE script_line_id = ?
             ORDER BY language ASC,
                      source_type ASC,
-                     selected DESC,
                      CASE WHEN rank < 0 THEN 999 ELSE rank END ASC,
                      id ASC
             """,
@@ -1302,17 +1505,6 @@ def update_script_audio_candidate(
         candidate = _get_audio_candidate_row(connection, organization_id, candidate_id)
         if candidate is None:
             return None
-        if selected:
-            connection.execute(
-                """
-                UPDATE script_audio_candidates
-                SET selected = 0,
-                    updated_at = CURRENT_TIMESTAMP
-                WHERE script_line_id = ?
-                  AND language = ?
-                """,
-                (candidate["script_line_id"], candidate["language"]),
-            )
         connection.execute(
             """
             UPDATE script_audio_candidates

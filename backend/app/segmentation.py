@@ -92,7 +92,7 @@ class Sam3SubprocessSegmentationProvider:
             *command,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
-            env={**os.environ, "PYTORCH_CUDA_ALLOC_CONF": "expandable_segments:True"},
+            env=_conda_subprocess_env(),
         )
         try:
             stdout, stderr = await asyncio.wait_for(
@@ -169,3 +169,16 @@ def _coerce_score(value: Any) -> float | None:
         return float(value)
     except (TypeError, ValueError):
         return None
+
+
+def _conda_subprocess_env() -> dict[str, str]:
+    env = dict(os.environ)
+    for key in ("VIRTUAL_ENV", "PYTHONHOME", "PYTHONPATH"):
+        env.pop(key, None)
+    env["PATH"] = os.pathsep.join(
+        path
+        for path in env.get("PATH", "").split(os.pathsep)
+        if path and "wonky-studio/backend/.venv/bin" not in path
+    )
+    env["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
+    return env

@@ -5,11 +5,12 @@ class WonkyScenePreviewElement extends HTMLElement {
     super();
     this.attachShadow({mode: 'open'});
     this.preview = null;
+    this.runtimeObjectStates = {};
     this.showBackground = true;
-    this.playbackToken = 0;
     this.currentBackgroundUrl = '';
     this.currentObjectRenders = new Map();
-    this.activeObjectId = null;
+    this.activeObjectIds = new Set();
+    this.objectPlaybackState = new Map();
     this.resizeObserver = new ResizeObserver(() => this.renderCanvas());
     this.shadowRoot.innerHTML = `
       <style>
@@ -43,6 +44,7 @@ class WonkyScenePreviewElement extends HTMLElement {
           height: 100%;
           display: block;
           background: #18212a;
+          cursor: default;
         }
 
         .empty {
@@ -62,21 +64,38 @@ class WonkyScenePreviewElement extends HTMLElement {
 
   disconnectedCallback() {
     this.resizeObserver.disconnect();
-    this.playbackToken += 1;
+    this.stop();
   }
 
   async configure(preview) {
     this.preview = preview;
     this.showBackground = preview?.showBackground !== false;
-    this.playbackToken += 1;
     this.currentObjectRenders.clear();
+    this.activeObjectIds.clear();
+    this.objectPlaybackState.clear();
     if (!preview?.images?.length) {
       this.renderEmpty();
       return;
     }
     this.renderStage();
-    await this.primeImages(preview);
+    try {
+      await this.primeImages(preview);
+    } catch (error) {
+      this.dispatchPreviewError(error);
+      this.renderEmpty();
+      return;
+    }
     this.setDefaultState();
+    this.renderCanvas();
+  }
+
+  applyRuntimeState(runtimeObjectStates) {
+    this.runtimeObjectStates = runtimeObjectStates ?? {};
+    for (const [objectId, state] of Object.entries(this.runtimeObjectStates)) {
+      const numericId = Number(objectId);
+      if (state?.render) this.currentObjectRenders.set(numericId, state.render);
+      else this.currentObjectRenders.delete(numericId);
+    }
     this.renderCanvas();
   }
 
@@ -99,60 +118,97 @@ class WonkyScenePreviewElement extends HTMLElement {
     `;
     this.canvas = this.shadowRoot.querySelector('[data-preview-canvas]');
     this.context = this.canvas?.getContext('2d');
+    this.canvas?.addEventListener('click', event => this.onCanvasClick(event));
+    this.canvas?.addEventListener('pointermove', event => this.onCanvasPointerMove(event));
+    this.canvas?.addEventListener('pointerleave', () => this.setCanvasCursor(false));
   }
 
   async primeImages(preview) {
-    const urls = new Set();
-    const firstBackground = preview.images?.[0];
-    if (firstBackground) urls.add(uploadedFileUrl(firstBackground.uploaded_file_id));
-    for (const object of preview.objects ?? []) {
-      if (object.default_render?.url) urls.add(resolvePreviewUrl(object.default_render.url));
-      for (const animation of object.animations ?? []) {
-        for (const frame of animation.frames ?? []) {
-          if (frame.render?.url) urls.add(resolvePreviewUrl(frame.render.url));
-        }
-      }
-    }
-    await Promise.all([...urls].map(url => loadImage(url)));
+    await preloadPreviewAssets(preview);
   }
 
   setDefaultState() {
-    this.activeObjectId = null;
     const firstBackground = this.preview?.images?.[0];
     this.currentBackgroundUrl = firstBackground ? uploadedFileUrl(firstBackground.uploaded_file_id) : '';
     this.currentObjectRenders.clear();
     for (const object of this.preview?.objects ?? []) {
       if (object.default_render) this.currentObjectRenders.set(Number(object.id), object.default_render);
     }
+    this.runtimeObjectStates = Object.fromEntries(
+      (this.preview?.objects ?? []).map(object => [
+        object.id,
+        {
+          visible: object.visible !== false,
+          enabled: object.enabled !== false,
+          label: object.label || object.name,
+          render: object.default_render ?? null
+        }
+      ])
+    );
   }
 
-  async playAnimation(objectId, animationId) {
+  async playAnimation(objectId, animationId, {mode = 'queued'} = {}) {
     const object = (this.preview?.objects ?? []).find(item => Number(item.id) === Number(objectId));
     const animation = object?.animations?.find(item => Number(item.id) === Number(animationId));
     if (!object || !animation?.frames?.length) return false;
-    const token = ++this.playbackToken;
-    this.activeObjectId = Number(objectId);
-    for (const frame of animation.frames) {
-      if (token !== this.playbackToken) return false;
-      const render = frame.render ?? object.default_render ?? null;
-      if (render?.url) {
-        await loadImage(resolvePreviewUrl(render.url));
+
+    const numericObjectId = Number(objectId);
+    const playbackState = this.objectPlaybackState.get(numericObjectId) ?? {
+      token: 0,
+      chain: Promise.resolve()
+    };
+    if (mode === 'immediate') playbackState.token += 1;
+    const token = playbackState.token + 1;
+    playbackState.token = token;
+
+    const run = async () => {
+      this.activeObjectIds.add(numericObjectId);
+      try {
+        for (const frame of animation.frames) {
+          if (token !== playbackState.token) return false;
+          const render = frame.render ?? object.default_render ?? null;
+          if (render?.url) {
+            try {
+              await loadImage(resolvePreviewUrl(render.url));
+            } catch (error) {
+              this.dispatchPreviewError(error);
+              return false;
+            }
+          }
+          if (token !== playbackState.token) return false;
+          if (render) this.currentObjectRenders.set(numericObjectId, render);
+          else this.currentObjectRenders.delete(numericObjectId);
+          if (this.runtimeObjectStates[numericObjectId]) {
+            this.runtimeObjectStates[numericObjectId].render = render;
+          }
+          this.renderCanvas();
+          await wait(frame.duration_seconds);
+        }
+        return true;
+      } finally {
+        if (token === playbackState.token) this.activeObjectIds.delete(numericObjectId);
+        this.renderCanvas();
       }
-      if (token !== this.playbackToken) return false;
-      if (render) this.currentObjectRenders.set(Number(object.id), render);
-      else this.currentObjectRenders.delete(Number(object.id));
-      this.renderCanvas();
-      await wait(frame.duration_seconds);
-    }
-    if (token !== this.playbackToken) return false;
-    this.setDefaultState();
-    this.renderCanvas();
-    return true;
+    };
+
+    const queueBase = mode === 'queued' ? playbackState.chain.catch(() => {}) : Promise.resolve();
+    const promise = queueBase.then(run);
+    playbackState.chain = promise.catch(() => {});
+    this.objectPlaybackState.set(numericObjectId, playbackState);
+    return promise;
   }
 
   stop() {
-    this.playbackToken += 1;
-    this.setDefaultState();
+    for (const playbackState of this.objectPlaybackState.values()) {
+      playbackState.token += 1;
+      playbackState.chain = Promise.resolve();
+    }
+    this.activeObjectIds.clear();
+    this.currentObjectRenders.clear();
+    for (const [objectId, state] of Object.entries(this.runtimeObjectStates ?? {})) {
+      const numericId = Number(objectId);
+      if (state?.render) this.currentObjectRenders.set(numericId, state.render);
+    }
     this.renderCanvas();
   }
 
@@ -189,15 +245,15 @@ class WonkyScenePreviewElement extends HTMLElement {
     }
 
     const objects = [...(this.preview.objects ?? [])];
-    if (this.activeObjectId != null) {
-      objects.sort((left, right) => {
-        if (left.id === this.activeObjectId) return 1;
-        if (right.id === this.activeObjectId) return -1;
-        return 0;
-      });
-    }
+    objects.sort((left, right) => {
+      const leftActive = this.activeObjectIds.has(Number(left.id)) ? 1 : 0;
+      const rightActive = this.activeObjectIds.has(Number(right.id)) ? 1 : 0;
+      return leftActive - rightActive;
+    });
 
     for (const object of objects) {
+      const objectState = this.runtimeObjectStates?.[object.id];
+      if (objectState?.visible === false) continue;
       const render = this.currentObjectRenders.get(Number(object.id));
       if (!render?.url) continue;
       const image = imageCache.get(resolvePreviewUrl(render.url))?.value ?? null;
@@ -209,6 +265,63 @@ class WonkyScenePreviewElement extends HTMLElement {
       if (width <= 0 || height <= 0) continue;
       ctx.drawImage(image, x, y, width, height);
     }
+  }
+
+  onCanvasClick(event) {
+    const object = this.findObjectAtCanvasEvent(event);
+    if (!object) return;
+    this.dispatchEvent(new CustomEvent('preview-object-click', {
+      bubbles: true,
+      detail: {objectId: object.id}
+    }));
+  }
+
+  onCanvasPointerMove(event) {
+    const object = this.findObjectAtCanvasEvent(event);
+    this.setCanvasCursor(Boolean(object));
+  }
+
+  setCanvasCursor(active) {
+    if (!this.canvas) return;
+    this.canvas.style.cursor = active ? 'pointer' : 'default';
+  }
+
+  findObjectAtCanvasEvent(event) {
+    if (!this.canvas || !this.preview) return null;
+    const rect = this.canvas.getBoundingClientRect();
+    if (!rect.width || !rect.height) return null;
+    const x = event.clientX - rect.left;
+    const y = event.clientY - rect.top;
+    const objects = [...(this.preview.objects ?? [])]
+      .sort((left, right) => {
+        const leftActive = this.activeObjectIds.has(Number(left.id)) ? 1 : 0;
+        const rightActive = this.activeObjectIds.has(Number(right.id)) ? 1 : 0;
+        return leftActive - rightActive;
+      })
+      .reverse();
+    for (const object of objects) {
+      const objectState = this.runtimeObjectStates?.[object.id];
+      if (!objectState?.enabled || objectState?.visible === false) continue;
+      const render = this.currentObjectRenders.get(Number(object.id));
+      if (!render) continue;
+      const bounds = previewBounds(render, this.preview.width, this.preview.height, rect.width, rect.height);
+      if (
+        x >= bounds.left
+        && x <= bounds.left + bounds.width
+        && y >= bounds.top
+        && y <= bounds.top + bounds.height
+      ) {
+        return object;
+      }
+    }
+    return null;
+  }
+
+  dispatchPreviewError(error) {
+    this.dispatchEvent(new CustomEvent('preview-error', {
+      bubbles: true,
+      detail: {message: error?.message || 'Preview could not load one or more images.'}
+    }));
   }
 }
 
@@ -240,6 +353,22 @@ async function loadImage(url) {
   return promise;
 }
 
+async function preloadPreviewAssets(preview) {
+  if (!preview?.images?.length) return;
+  const urls = new Set();
+  const firstBackground = preview.images?.[0];
+  if (firstBackground) urls.add(uploadedFileUrl(firstBackground.uploaded_file_id));
+  for (const object of preview.objects ?? []) {
+    if (object.default_render?.url) urls.add(resolvePreviewUrl(object.default_render.url));
+    for (const animation of object.animations ?? []) {
+      for (const frame of animation.frames ?? []) {
+        if (frame.render?.url) urls.add(resolvePreviewUrl(frame.render.url));
+      }
+    }
+  }
+  await Promise.all([...urls].map(url => loadImage(url)));
+}
+
 function blobToImage(blob) {
   const objectUrl = URL.createObjectURL(blob);
   return new Promise((resolve, reject) => {
@@ -266,4 +395,17 @@ function wait(durationSeconds) {
   return new Promise(resolve => window.setTimeout(resolve, milliseconds));
 }
 
-customElements.define('wonky-scene-preview', WonkyScenePreviewElement);
+function previewBounds(render, sceneWidth, sceneHeight, canvasWidth, canvasHeight) {
+  return {
+    left: (render.left / Math.max(1, sceneWidth || 1)) * canvasWidth,
+    top: (render.top / Math.max(1, sceneHeight || 1)) * canvasHeight,
+    width: (render.width / Math.max(1, sceneWidth || 1)) * canvasWidth,
+    height: (render.height / Math.max(1, sceneHeight || 1)) * canvasHeight
+  };
+}
+
+if (!customElements.get('wonky-scene-preview')) {
+  customElements.define('wonky-scene-preview', WonkyScenePreviewElement);
+}
+
+export {preloadPreviewAssets};
