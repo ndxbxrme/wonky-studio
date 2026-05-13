@@ -3,6 +3,7 @@ from contextlib import contextmanager
 from io import BytesIO
 import json
 import time
+import wave
 from pathlib import Path
 
 from fastapi.testclient import TestClient
@@ -14,12 +15,15 @@ from app.main import create_app
 from app.segmentation import SegmentationCandidate, SegmentationPromptResult
 from app.vlm import SceneDraft, SceneDraftObject
 
+USE_DEFAULT_PROVIDER = object()
+
 
 @contextmanager
 def api_client(
     tmp_path: Path,
     vlm_provider=None,
     segmentation_provider=None,
+    inventory_image_provider=USE_DEFAULT_PROVIDER,
 ) -> Iterator[tuple[TestClient, Path, Settings]]:
     db_path = tmp_path / "test.sqlite3"
     settings = Settings(
@@ -34,12 +38,18 @@ def api_client(
         google_redirect_uri="http://127.0.0.1:8000/api/auth/google/callback",
         storage_root=tmp_path / "uploads",
         script_audio_root=tmp_path / "audio",
+        inventory_image_provider=(
+            "disabled" if inventory_image_provider is None else "comfyui"
+        ),
     )
     app = create_app(
         db_path,
         settings,
         vlm_provider=vlm_provider,
         segmentation_provider=segmentation_provider,
+        inventory_image_provider=(
+            None if inventory_image_provider is USE_DEFAULT_PROVIDER else inventory_image_provider
+        ),
     )
 
     with TestClient(app) as client:
@@ -698,6 +708,12 @@ def test_scene_interactions_validate_actions_and_export_json(tmp_path):
                         "value": True,
                     },
                     {
+                        "type": "go_to_frame",
+                        "target_object_id": clock["id"],
+                        "frame_index": 0,
+                        "wait": "continue",
+                    },
+                    {
                         "type": "play_animation",
                         "target_object_id": clock["id"],
                         "animation_id": animation["id"],
@@ -761,6 +777,22 @@ def test_scene_interactions_validate_actions_and_export_json(tmp_path):
                         "type": "change_scene",
                         "scene_id": next_scene["id"],
                     },
+                ],
+            },
+        )
+        mouseover_response = client.post(
+            f"/api/scenes/{scene['id']}/interactions",
+            json={
+                "name": "Hover clock",
+                "enabled": True,
+                "trigger": {"type": "object_mouseover", "object_id": clock["id"]},
+                "action_tree": [
+                    {
+                        "type": "set_object_property",
+                        "target_object_id": clock["id"],
+                        "property": "label",
+                        "value": "hovered",
+                    }
                 ],
             },
         )
@@ -863,25 +895,30 @@ def test_scene_interactions_validate_actions_and_export_json(tmp_path):
     assert counter["default_value"] == 0
 
     assert create_response.status_code == 201
+    assert mouseover_response.status_code == 201
     interaction = create_response.json()
+    hover_interaction = mouseover_response.json()
     assert interaction["trigger"] == {"type": "object_click", "object_id": clock["id"]}
+    assert hover_interaction["trigger"] == {"type": "object_mouseover", "object_id": clock["id"]}
     assert interaction["action_tree"][0]["selection"] == "random"
     assert interaction["action_tree"][0]["script_line_ids"] == [1, 2]
     assert interaction["action_tree"][0]["id"]
-    assert interaction["action_tree"][3]["then_steps"][0]["type"] == "set_variable"
-    assert interaction["action_tree"][4]["type"] == "increment_variable"
-    assert interaction["action_tree"][4]["amount"] == 1
-    assert interaction["action_tree"][5]["type"] == "toggle_variable"
-    assert interaction["action_tree"][6]["type"] == "fade_out"
-    assert interaction["action_tree"][6]["affect_audio"] is True
-    assert interaction["action_tree"][7]["type"] == "fade_in"
-    assert interaction["action_tree"][7]["wait"] == "continue"
-    assert interaction["action_tree"][8]["type"] == "crossfade_bgm"
-    assert interaction["action_tree"][8]["audio_asset_id"] == bgm_asset["id"]
-    assert interaction["action_tree"][9]["type"] == "play_sfx"
-    assert interaction["action_tree"][9]["audio_asset_id"] == sfx_asset["id"]
-    assert interaction["action_tree"][10]["type"] == "change_scene"
-    assert interaction["action_tree"][10]["scene_id"] == next_scene["id"]
+    assert interaction["action_tree"][2]["type"] == "go_to_frame"
+    assert interaction["action_tree"][2]["frame_index"] == 0
+    assert interaction["action_tree"][4]["then_steps"][0]["type"] == "set_variable"
+    assert interaction["action_tree"][5]["type"] == "increment_variable"
+    assert interaction["action_tree"][5]["amount"] == 1
+    assert interaction["action_tree"][6]["type"] == "toggle_variable"
+    assert interaction["action_tree"][7]["type"] == "fade_out"
+    assert interaction["action_tree"][7]["affect_audio"] is True
+    assert interaction["action_tree"][8]["type"] == "fade_in"
+    assert interaction["action_tree"][8]["wait"] == "continue"
+    assert interaction["action_tree"][9]["type"] == "crossfade_bgm"
+    assert interaction["action_tree"][9]["audio_asset_id"] == bgm_asset["id"]
+    assert interaction["action_tree"][10]["type"] == "play_sfx"
+    assert interaction["action_tree"][10]["audio_asset_id"] == sfx_asset["id"]
+    assert interaction["action_tree"][11]["type"] == "change_scene"
+    assert interaction["action_tree"][11]["scene_id"] == next_scene["id"]
 
     assert list_response.status_code == 200
     assert list_response.json()[0]["id"] == interaction["id"]
@@ -1054,6 +1091,96 @@ def test_script_audio_candidates_allow_multiple_selected_and_keep_order(tmp_path
     ]
     assert english_candidates_after[0]["selected"] is True
     assert english_candidates_after[1]["selected"] is True
+
+
+def test_script_lines_can_be_created_deleted_and_blocked_when_in_use(tmp_path):
+    with api_client(tmp_path) as (client, db_path, settings):
+        authenticate(client, db_path, settings, role="admin")
+        create_script_audio_fixture(settings.script_audio_root)
+        import_response = client.post("/api/admin/import-script-audio", json={})
+        assert import_response.status_code == 200
+
+        create_response = client.post(
+            "/api/script-lines",
+            json={
+                "source_text": "Look at the painting",
+                "path_text": "ROOMS / GALLERY",
+                "translations": [
+                    {"language": "fr", "text": "Regarde la peinture", "review_status": "needs_review"}
+                ],
+            },
+        )
+        assert create_response.status_code == 201
+        created_line = create_response.json()
+        created_line_id = created_line["line_id"]
+        assert created_line["source_text"] == "Look at the painting"
+        assert created_line["path_parts"] == ["ROOMS", "GALLERY"]
+
+        detail_response = client.get(f"/api/script-lines/{created_line_id}")
+        assert detail_response.status_code == 200
+        french = next(
+            translation
+            for translation in detail_response.json()["translations"]
+            if translation["language"] == "fr"
+        )
+        assert french["text"] == "Regarde la peinture"
+
+        delete_response = client.delete(f"/api/script-lines/{created_line_id}")
+        missing_response = client.get(f"/api/script-lines/{created_line_id}")
+
+        upload_response = client.post(
+            "/api/uploads/batches",
+            files=[("files", ("bedroom.png", png_bytes(draw_flower=True), "image/png"))],
+        )
+        batch_id = upload_response.json()["id"]
+        scene = client.post(f"/api/uploads/batches/{batch_id}/process-scene").json()["scene"]
+        scene_object = client.post(
+            f"/api/scenes/{scene['id']}/objects",
+            json={"name": "painting", "description": "Framed art on the wall.", "prompt": "painting"},
+        ).json()
+        interaction_response = client.post(
+            f"/api/scenes/{scene['id']}/interactions",
+            json={
+                "name": "Painting subtitle",
+                "enabled": True,
+                "trigger": {"type": "object_click", "object_id": scene_object["id"]},
+                "action_tree": [{"type": "show_subtitle", "script_line_ids": [1], "duration_seconds": 1.0}],
+            },
+        )
+        assert interaction_response.status_code == 201
+
+        in_use_response = client.get("/api/script-lines/1")
+        blocked_delete_response = client.delete("/api/script-lines/1")
+
+    assert delete_response.status_code == 204
+    assert missing_response.status_code == 404
+    assert in_use_response.status_code == 200
+    assert len(in_use_response.json()["usage_references"]) == 1
+    assert blocked_delete_response.status_code == 409
+
+
+def test_script_review_audio_upload_creates_candidate_and_processed_file(tmp_path):
+    with api_client(tmp_path) as (client, db_path, settings):
+        authenticate(client, db_path, settings, role="admin")
+        create_script_audio_fixture(settings.script_audio_root)
+        assert client.post("/api/admin/import-script-audio", json={}).status_code == 200
+
+        upload_response = client.post(
+            "/api/script-lines/1/audio-candidates",
+            data={"language": "fr"},
+            files={"file": ("bonjour.wav", wav_bytes(), "audio/wav")},
+        )
+        assert upload_response.status_code == 201
+        candidate = upload_response.json()["candidate"]
+        detail_response = client.get("/api/script-lines/1")
+        assert detail_response.status_code == 200
+        content_response = client.get(f"/api/script-audio-candidates/{candidate['id']}/content")
+
+    assert candidate["language"] == "fr"
+    assert candidate["source_type"] == "uploaded_review"
+    assert candidate["relative_path"].endswith(".ogg")
+    assert content_response.status_code == 200
+    assert content_response.content
 
 
 def test_scene_vlm_analysis_updates_description_and_adds_missing_draft_objects(tmp_path):
@@ -1250,6 +1377,12 @@ def test_scene_preview_data_renders_default_and_animation_frames_only(tmp_path):
                         "property": "visible",
                         "value": False,
                     },
+                    {
+                        "type": "go_to_frame",
+                        "target_object_id": scene_object["id"],
+                        "frame_index": 2,
+                        "wait": "continue",
+                    },
                 ],
             },
         )
@@ -1277,7 +1410,7 @@ def test_scene_preview_data_renders_default_and_animation_frames_only(tmp_path):
         assert preview_response.status_code == 200
         preview = preview_response.json()
         assert preview["available_scenes"] == [
-            {"id": scene["id"], "title": scene["title"]}
+            {"id": scene["id"], "title": scene["title"], "presentation_mode": "base"}
         ]
         assert [image["original_filename"] for image in preview["images"]] == [
             "bedroom_0000.png",
@@ -1287,16 +1420,22 @@ def test_scene_preview_data_renders_default_and_animation_frames_only(tmp_path):
         assert preview["width"] == 96
         assert preview["height"] == 54
 
-        preview_object = preview["objects"][0]
+        preview_object = next(item for item in preview["objects"] if item["id"] == scene_object["id"])
+        hidden_preview_object = next(item for item in preview["objects"] if item["id"] == hidden_object["id"])
         assert preview_object["name"] == "bed"
         assert preview_object["visible"] is True
         assert preview_object["enabled"] is True
         assert preview_object["label"] == "bed"
         assert preview_object["default_render"]["original_filename"] == "bedroom_0000.png"
         assert preview_object["default_render"]["frame_index"] == 0
+        assert [render["frame_index"] for render in preview_object["frame_renders"]] == [2]
+        assert preview_object["frame_renders"][0]["original_filename"] == "bedroom_0002.png"
         assert preview_object["default_render"]["url"].startswith(
             f"/api/scene-objects/{scene_object['id']}/preview-renders/"
         )
+
+        assert hidden_preview_object["name"] == "clock"
+        assert hidden_preview_object["frame_renders"] == []
 
         animation = preview_object["animations"][0]
         assert animation["name"] == "idle"
@@ -1323,6 +1462,7 @@ def test_scene_preview_data_renders_default_and_animation_frames_only(tmp_path):
             "type": "object_click",
             "object_id": scene_object["id"],
             "variable_id": None,
+            "key_code": None,
         }
         assert [line["line_id"] for line in preview["script_lines"]] == [1, 2]
 
@@ -1337,10 +1477,11 @@ def test_scene_preview_data_renders_default_and_animation_frames_only(tmp_path):
             / "preview"
         )
         rendered_files = sorted(path.name for path in preview_root.glob("*.png"))
-        assert rendered_files == [
+        assert rendered_files == sorted([
             str(preview["images"][0]["uploaded_file_id"]) + ".png",
             str(preview["images"][1]["uploaded_file_id"]) + ".png",
-        ]
+            str(preview["images"][2]["uploaded_file_id"]) + ".png",
+        ])
 
         first_render_response = client.get(
             f"/api/scene-objects/{scene_object['id']}/preview-renders/{preview['images'][0]['uploaded_file_id']}"
@@ -1355,6 +1496,295 @@ def test_scene_preview_data_renders_default_and_animation_frames_only(tmp_path):
         assert first_render_response.status_code == 200
         assert second_render_response.status_code == 200
         assert missing_render_response.status_code == 200
+
+
+def test_overlay_scene_bindings_and_interaction_validation(tmp_path):
+    from app.database import create_scene
+
+    with api_client(tmp_path) as (client, db_path, settings):
+        authenticate(client, db_path, settings, role="user")
+        upload = client.post(
+            "/api/uploads/batches",
+            files=[("files", ("bedroom_0000.png", png_bytes(draw_flower=True), "image/png"))],
+        )
+        base_scene = client.post(
+            f"/api/uploads/batches/{upload.json()['id']}/process-scene"
+        ).json()["scene"]
+        overlay_scene = create_scene(
+            db_path,
+            organization_id=settings.organization_id,
+            created_by_user_id=1,
+            representative_uploaded_file_id=base_scene["representative_uploaded_file_id"],
+            representative_hash=f"{base_scene['representative_hash']}-overlay",
+            title="Inventory overlay",
+            description="Overlay scene",
+            presentation_mode="overlay",
+        )
+
+        binding_response = client.post(
+            "/api/overlay-bindings",
+            json={"key_code": "Escape", "overlay_scene_id": overlay_scene["id"]},
+        )
+        create_response = client.post(
+            f"/api/scenes/{base_scene['id']}/interactions",
+            json={
+                "name": "Open inventory",
+                "enabled": True,
+                "trigger": {"type": "key_press", "key_code": "KeyI"},
+                "action_tree": [
+                    {"type": "open_overlay_scene", "scene_id": overlay_scene["id"]},
+                    {"type": "change_overlay_scene", "scene_id": overlay_scene["id"]},
+                    {"type": "close_overlay_scene"},
+                ],
+            },
+        )
+        overlay_trigger_response = client.post(
+            f"/api/scenes/{overlay_scene['id']}/interactions",
+            json={
+                "name": "Overlay opened",
+                "enabled": True,
+                "trigger": {"type": "overlay_open"},
+                "action_tree": [],
+            },
+        )
+        invalid_change_scene_response = client.post(
+            f"/api/scenes/{base_scene['id']}/interactions",
+            json={
+                "name": "Bad base scene change",
+                "enabled": True,
+                "trigger": {"type": "scene_enter"},
+                "action_tree": [
+                    {"type": "change_scene", "scene_id": overlay_scene["id"]},
+                ],
+            },
+        )
+        preview_response = client.get(f"/api/scenes/{base_scene['id']}/preview-data")
+        delete_binding_response = client.delete(f"/api/overlay-bindings/{binding_response.json()['id']}")
+
+        assert binding_response.status_code == 201
+        assert binding_response.json()["key_code"] == "Escape"
+        assert create_response.status_code == 201
+        assert create_response.json()["trigger"] == {"type": "key_press", "key_code": "KeyI"}
+        assert create_response.json()["action_tree"][0]["type"] == "open_overlay_scene"
+        assert create_response.json()["action_tree"][1]["type"] == "change_overlay_scene"
+        assert create_response.json()["action_tree"][2]["type"] == "close_overlay_scene"
+        assert overlay_trigger_response.status_code == 201
+        assert overlay_trigger_response.json()["trigger"] == {"type": "overlay_open"}
+        assert invalid_change_scene_response.status_code == 400
+        assert "base presentation mode" in invalid_change_scene_response.json()["detail"]
+        assert preview_response.status_code == 200
+        preview = preview_response.json()
+        assert preview["available_scenes"] == [
+            {"id": base_scene["id"], "title": base_scene["title"], "presentation_mode": "base"}
+        ]
+        assert preview["overlay_scenes"] == [
+            {"id": overlay_scene["id"], "title": overlay_scene["title"], "presentation_mode": "overlay"}
+        ]
+        assert preview["overlay_bindings"][0]["key_code"] == "Escape"
+        assert preview["overlay_bindings"][0]["overlay_scene_id"] == overlay_scene["id"]
+        assert delete_binding_response.status_code == 204
+
+
+def test_global_settings_and_preview_object_accessibility_fields(tmp_path):
+    with api_client(tmp_path) as (client, db_path, settings):
+        authenticate(client, db_path, settings, role="user")
+        upload_response = client.post(
+            "/api/uploads/batches",
+            files=[("files", ("bedroom.png", png_bytes(draw_flower=True), "image/png"))],
+        )
+        scene = client.post(
+            f"/api/uploads/batches/{upload_response.json()['id']}/process-scene"
+        ).json()["scene"]
+        first_object = client.post(
+            f"/api/scenes/{scene['id']}/objects",
+            json={"name": "clock", "prompt": "clock"},
+        ).json()
+        second_object = client.post(
+            f"/api/scenes/{scene['id']}/objects",
+            json={"name": "painting", "prompt": "painting"},
+        ).json()
+
+        default_settings_response = client.get("/api/global-settings")
+        patch_settings_response = client.patch(
+            "/api/global-settings",
+            json={
+                "overlay_open_duration_seconds": 0.4,
+                "overlay_close_duration_seconds": 0.25,
+                "overlay_fade_color": "#112233",
+                "overlay_affect_audio": True,
+                "start_scene_id": scene["id"],
+            },
+        )
+        patch_first_object_response = client.patch(
+            f"/api/scenes/{scene['id']}/objects/{first_object['id']}",
+            json={"prompt": "clock", "sort_order": 2, "keyboard_target_enabled": True},
+        )
+        patch_second_object_response = client.patch(
+            f"/api/scenes/{scene['id']}/objects/{second_object['id']}",
+            json={"prompt": "painting", "sort_order": 1, "keyboard_target_enabled": False},
+        )
+        preview_response = client.get(f"/api/scenes/{scene['id']}/preview-data")
+
+        assert default_settings_response.status_code == 200
+        assert default_settings_response.json()["organization_id"] == settings.organization_id
+        assert patch_settings_response.status_code == 200
+        assert patch_settings_response.json()["overlay_open_duration_seconds"] == 0.4
+        assert patch_settings_response.json()["overlay_close_duration_seconds"] == 0.25
+        assert patch_settings_response.json()["overlay_fade_color"] == "#112233"
+        assert patch_settings_response.json()["overlay_affect_audio"] is True
+        assert patch_settings_response.json()["start_scene_id"] == scene["id"]
+        assert patch_first_object_response.status_code == 200
+        assert patch_first_object_response.json()["sort_order"] == 2
+        assert patch_first_object_response.json()["keyboard_target_enabled"] is True
+        assert patch_second_object_response.status_code == 200
+        assert patch_second_object_response.json()["sort_order"] == 1
+        assert patch_second_object_response.json()["keyboard_target_enabled"] is False
+        assert preview_response.status_code == 200
+        preview = preview_response.json()
+        assert preview["global_settings"]["overlay_open_duration_seconds"] == 0.4
+        assert preview["global_settings"]["overlay_close_duration_seconds"] == 0.25
+        assert preview["global_settings"]["overlay_fade_color"] == "#112233"
+        assert preview["global_settings"]["overlay_affect_audio"] is True
+        assert preview["global_settings"]["start_scene_id"] == scene["id"]
+        assert [object_state["name"] for object_state in preview["objects"]] == ["painting", "clock"]
+        assert preview["objects"][0]["sort_order"] == 1
+        assert preview["objects"][0]["keyboard_target_enabled"] is False
+        assert preview["objects"][1]["sort_order"] == 2
+        assert preview["objects"][1]["keyboard_target_enabled"] is True
+
+
+def test_scene_inventory_images_can_be_generated_for_keyboard_targets(tmp_path):
+    fake_segmentation = FakeSegmentationProvider()
+    fake_inventory = FakeInventoryImageProvider()
+    with api_client(
+        tmp_path,
+        segmentation_provider=fake_segmentation,
+        inventory_image_provider=fake_inventory,
+    ) as (client, db_path, settings):
+        authenticate(client, db_path, settings, role="user")
+        upload_response = client.post(
+            "/api/uploads/batches",
+            files=[("files", ("bedroom.png", png_bytes(draw_flower=True), "image/png"))],
+        )
+        scene = client.post(
+            f"/api/uploads/batches/{upload_response.json()['id']}/process-scene"
+        ).json()["scene"]
+        scene_object = client.post(
+            f"/api/scenes/{scene['id']}/objects",
+            json={"name": "clock", "description": "alarm clock", "prompt": "clock"},
+        ).json()
+        client.patch(
+            f"/api/scenes/{scene['id']}/objects/{scene_object['id']}",
+            json={"prompt": "clock", "keyboard_target_enabled": True, "sort_order": 1},
+        )
+        job_response = client.post(f"/api/scenes/{scene['id']}/extract-masks")
+        assert job_response.status_code == 200
+        job = wait_for_job(client, job_response.json()["id"])
+        assert job["status"] == "succeeded"
+
+        response = client.post(f"/api/scenes/{scene['id']}/generate-inventory-images")
+
+        assert response.status_code == 200
+        payload = response.json()
+        assert payload["generated_count"] == 1
+        assert payload["skipped_count"] == 0
+        assert payload["updated_object_ids"] == [scene_object["id"]]
+        generated_scene_object = payload["scene"]["objects"][0]
+        assert generated_scene_object["inventory_image_relative_path"].endswith("generated.png")
+        assert fake_inventory.calls[0]["object_name"] == "clock"
+        assert fake_inventory.calls[0]["object_description"] == "alarm clock"
+        thumbnail_response = client.get(f"/api/scene-objects/{scene_object['id']}/thumbnail")
+        assert thumbnail_response.status_code == 200
+        assert thumbnail_response.content.startswith(b"\x89PNG")
+
+
+def test_scene_inventory_images_show_service_unavailable_message_when_provider_missing(tmp_path):
+    with api_client(tmp_path, inventory_image_provider=None) as (client, db_path, settings):
+        authenticate(client, db_path, settings, role="user")
+        upload_response = client.post(
+            "/api/uploads/batches",
+            files=[("files", ("bedroom.png", png_bytes(draw_flower=True), "image/png"))],
+        )
+        scene = client.post(
+            f"/api/uploads/batches/{upload_response.json()['id']}/process-scene"
+        ).json()["scene"]
+        response = client.post(f"/api/scenes/{scene['id']}/generate-inventory-images")
+
+        assert response.status_code == 503
+        assert "turn Comfy on" in response.json()["detail"]
+
+
+def test_scene_can_be_merged_into_another_scene_with_animation_offset(tmp_path):
+    with api_client(tmp_path) as (client, db_path, settings):
+        authenticate(client, db_path, settings, role="admin")
+        target_upload_response = client.post(
+            "/api/uploads/batches",
+            files=[("files", ("target_0000.png", png_bytes(draw_flower=True), "image/png"))],
+        )
+        source_upload_response = client.post(
+            "/api/uploads/batches",
+            files=[("files", ("source_0000.png", png_bytes(draw_flower=False), "image/png"))],
+        )
+        target_scene = client.post(
+            f"/api/uploads/batches/{target_upload_response.json()['id']}/process-scene"
+        ).json()["scene"]
+        source_scene = client.post(
+            f"/api/uploads/batches/{source_upload_response.json()['id']}/process-scene"
+        ).json()["scene"]
+
+        source_object = client.post(
+            f"/api/scenes/{source_scene['id']}/objects",
+            json={"name": "clock", "prompt": "clock"},
+        ).json()
+        animation_response = client.post(
+            f"/api/scene-objects/{source_object['id']}/animations",
+            json={
+                "name": "idle",
+                "segments": [
+                    {"start_frame": 0, "end_frame": 0, "frame_duration_seconds": 0.25},
+                ],
+            },
+        )
+        prompt_response = client.post(
+            f"/api/scenes/{source_scene['id']}/mask-prompts",
+            json={"text": "clock", "enabled": True},
+        )
+        interaction_response = client.post(
+            f"/api/scenes/{source_scene['id']}/interactions",
+            json={
+                "name": "Click clock",
+                "enabled": True,
+                "trigger": {"type": "object_click", "object_id": source_object["id"]},
+                "action_tree": [],
+            },
+        )
+
+        merge_response = client.post(
+            f"/api/scenes/{source_scene['id']}/merge-into",
+            json={"target_scene_id": target_scene["id"]},
+        )
+        merged_target_response = client.get(f"/api/scenes/{target_scene['id']}")
+        source_scene_response = client.get(f"/api/scenes/{source_scene['id']}")
+        target_interactions_response = client.get(f"/api/scenes/{target_scene['id']}/interactions")
+        source_object_animations_response = client.get(f"/api/scene-objects/{source_object['id']}/animations")
+
+        assert animation_response.status_code == 201
+        assert prompt_response.status_code == 201
+        assert interaction_response.status_code == 201
+        assert merge_response.status_code == 200
+        merged_scene = merge_response.json()
+        assert merged_scene["id"] == target_scene["id"]
+        assert len(merged_scene["images"]) == 2
+        assert [image["sort_order"] for image in merged_scene["images"]] == [0, 1]
+        assert any(scene_object["id"] == source_object["id"] for scene_object in merged_scene["objects"])
+        assert merged_target_response.status_code == 200
+        assert len(merged_target_response.json()["images"]) == 2
+        assert source_scene_response.status_code == 404
+        assert target_interactions_response.status_code == 200
+        assert target_interactions_response.json()[0]["scene_id"] == target_scene["id"]
+        assert source_object_animations_response.status_code == 200
+        assert source_object_animations_response.json()[0]["segments"][0]["start_frame"] == 1
+        assert source_object_animations_response.json()[0]["segments"][0]["end_frame"] == 1
 
 
 def test_scene_preview_cache_key_changes_after_mask_edit(tmp_path):
@@ -1466,6 +1896,42 @@ def test_object_mask_content_can_be_saved_and_processed(tmp_path):
     assert updated_thumbnail_response.status_code == 200
 
 
+def test_mask_extraction_generates_default_animation_for_new_motion_masks(tmp_path):
+    fake_segmentation = FakeMovingSegmentationProvider()
+    with api_client(
+        tmp_path,
+        segmentation_provider=fake_segmentation,
+    ) as (client, db_path, settings):
+        authenticate(client, db_path, settings, role="user")
+        upload_response = client.post(
+            "/api/uploads/batches",
+            files=[
+                ("files", ("frame-01.png", png_bytes(draw_flower=False), "image/png")),
+                ("files", ("frame-02.png", png_bytes(draw_flower=True), "image/png")),
+            ],
+        )
+        batch_id = upload_response.json()["id"]
+        scene = client.post(f"/api/uploads/batches/{batch_id}/process-scene").json()["scene"]
+        scene_object = client.post(
+            f"/api/scenes/{scene['id']}/objects",
+            json={"name": "clock", "description": "Moving clock", "prompt": "clock"},
+        ).json()
+
+        extract_response = client.post(f"/api/scenes/{scene['id']}/extract-masks")
+        extract_job = wait_for_job(client, extract_response.json()["id"])
+        animations_response = client.get(f"/api/scene-objects/{scene_object['id']}/animations")
+
+    assert extract_job["status"] == "succeeded"
+    result = json.loads(extract_job["result_json"])
+    assert result["generated_animation_count"] == 1
+    assert animations_response.status_code == 200
+    animations = animations_response.json()
+    assert len(animations) == 1
+    assert animations[0]["name"] == "Generated motion"
+    assert animations[0]["segments"][0]["start_frame"] == 0
+    assert animations[0]["segments"][0]["end_frame"] == 1
+
+
 def test_admin_can_reset_workspace_tables_without_removing_users_or_session(tmp_path):
     with api_client(tmp_path) as (client, db_path, settings):
         admin = create_or_promote_admin(
@@ -1485,7 +1951,14 @@ def test_admin_can_reset_workspace_tables_without_removing_users_or_session(tmp_
             files=[("files", ("bedroom.png", png_bytes(draw_flower=True), "image/png"))],
         )
         batch_id = upload_response.json()["id"]
+        upload_relative_path = upload_response.json()["files"][0]["relative_path"]
         client.post(f"/api/uploads/batches/{batch_id}/process-scene")
+        audio_response = client.post(
+            "/api/audio-assets",
+            data={"name": "Bedroom loop", "kind": "bgm"},
+            files={"file": ("bedroom-loop.ogg", b"OggS bgm bytes", "audio/ogg")},
+        )
+        audio_relative_path = audio_response.json()["relative_path"]
         client.post("/api/invites", json={"role": "user"})
 
         reset_response = client.post("/api/admin/reset-database")
@@ -1493,6 +1966,8 @@ def test_admin_can_reset_workspace_tables_without_removing_users_or_session(tmp_
         scenes_response = client.get("/api/scenes")
         uploads_response = client.get("/api/uploads/batches")
         assets_response = client.get("/api/assets")
+        upload_file_path = settings.storage_root / upload_relative_path
+        audio_file_path = settings.storage_root / audio_relative_path
 
     assert reset_response.status_code == 200
     assert reset_response.json()["ok"] is True
@@ -1503,6 +1978,8 @@ def test_admin_can_reset_workspace_tables_without_removing_users_or_session(tmp_
     assert scenes_response.json() == []
     assert uploads_response.json() == []
     assert assets_response.json() == []
+    assert not upload_file_path.exists()
+    assert audio_file_path.exists()
 
 
 def test_regular_user_cannot_reset_workspace_tables(tmp_path):
@@ -1595,6 +2072,65 @@ class FakeSegmentationProvider:
         ]
 
 
+class FakeMovingSegmentationProvider:
+    def __init__(self):
+        self.call_index = 0
+
+    async def extract_masks(
+        self,
+        image_path: Path,
+        prompts: list[str],
+        output_dir: Path,
+    ) -> list[SegmentationPromptResult]:
+        del image_path
+        output_dir.mkdir(parents=True, exist_ok=True)
+        offset = self.call_index * 4
+        raw_path = output_dir / f"moving_{self.call_index:02d}.png"
+        soft_path = output_dir / f"moving_{self.call_index:02d}_soft.png"
+        mask = Image.new("L", (32, 18), 0)
+        ImageDraw.Draw(mask).rectangle((2 + offset, 4, 10 + offset, 12), fill=255)
+        mask.save(raw_path)
+        mask.point(lambda value: 128 if value else 0).save(soft_path)
+        self.call_index += 1
+        return [
+            SegmentationPromptResult(
+                prompt=prompts[0],
+                candidates=[
+                    SegmentationCandidate(
+                        raw_path=raw_path,
+                        soft_path=soft_path,
+                        bbox=[2.0 + offset, 4.0, 10.0 + offset, 12.0],
+                        score=0.95,
+                    )
+                ],
+            )
+        ]
+
+
+class FakeInventoryImageProvider:
+    def __init__(self):
+        self.calls = []
+
+    async def generate_inventory_image(
+        self,
+        *,
+        rendered_input_path: Path,
+        object_name: str,
+        object_description: str,
+        output_path: Path,
+    ) -> None:
+        self.calls.append(
+            {
+                "rendered_input_path": rendered_input_path,
+                "object_name": object_name,
+                "object_description": object_description,
+                "output_path": output_path,
+            }
+        )
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        Image.new("RGBA", (64, 64), (240, 230, 200, 255)).save(output_path)
+
+
 def png_bytes(draw_flower: bool) -> bytes:
     image = Image.new("RGB", (96, 54), "#d6c0a1")
     draw = ImageDraw.Draw(image)
@@ -1614,4 +2150,15 @@ def png_bytes(draw_flower: bool) -> bytes:
 def image_bytes(image: Image.Image) -> bytes:
     buffer = BytesIO()
     image.save(buffer, format="PNG")
+    return buffer.getvalue()
+
+
+def wav_bytes(duration_seconds: float = 0.2, sample_rate: int = 16000) -> bytes:
+    frame_count = max(1, int(duration_seconds * sample_rate))
+    buffer = BytesIO()
+    with wave.open(buffer, "wb") as wav_file:
+        wav_file.setnchannels(1)
+        wav_file.setsampwidth(2)
+        wav_file.setframerate(sample_rate)
+        wav_file.writeframes(b"\x00\x00" * frame_count)
     return buffer.getvalue()

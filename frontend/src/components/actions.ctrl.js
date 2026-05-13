@@ -5,6 +5,7 @@ import {user} from '../state/user.js';
 
 const ACTION_TYPES = [
   {value: 'play_animation', label: 'Play animation'},
+  {value: 'go_to_frame', label: 'Go to frame'},
   {value: 'set_object_property', label: 'Set object property'},
   {value: 'show_subtitle', label: 'Show subtitle'},
   {value: 'play_audio', label: 'Play audio'},
@@ -17,8 +18,18 @@ const ACTION_TYPES = [
   {value: 'crossfade_bgm', label: 'Crossfade BGM'},
   {value: 'play_sfx', label: 'Play SFX'},
   {value: 'change_scene', label: 'Change scene'},
+  {value: 'open_overlay_scene', label: 'Open overlay scene'},
+  {value: 'close_overlay_scene', label: 'Close overlay scene'},
+  {value: 'change_overlay_scene', label: 'Change overlay scene'},
   {value: 'delay', label: 'Delay'}
 ];
+
+const KEY_CODE_OPTIONS = [
+  'Escape', 'Enter', 'Space', 'Tab',
+  'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight',
+  'KeyI', 'KeyS', 'KeyQ', 'KeyE', 'KeyR', 'KeyT',
+  'KeyA', 'KeyD', 'KeyW', 'Digit1', 'Digit2', 'Digit3'
+].map(value => ({value, label: value}));
 
 const ActionsCtrl = app => async params => {
   const sceneId = Number(params[0]);
@@ -36,9 +47,15 @@ const ActionsCtrl = app => async params => {
     selectedInteraction: null,
     objectOptions: [],
     sceneOptions: [],
+    baseSceneOptions: [],
     audioAssetOptions: [],
     bgmOptions: [],
     sfxOptions: [],
+    overlayBindings: [],
+    overlaySceneOptions: [],
+    keyCodeOptions: KEY_CODE_OPTIONS,
+    previousSceneId: null,
+    nextSceneId: null,
     animationOptions: [],
     actionTypes: ACTION_TYPES,
     branchOptions: [],
@@ -84,9 +101,13 @@ const ActionsCtrl = app => async params => {
         }];
         this.variables = await apiFetch('/api/variables');
         this.sceneOptions = await apiFetch('/api/scenes');
+        this.overlayBindings = await apiFetch('/api/overlay-bindings');
         this.audioAssetOptions = await apiFetch('/api/audio-assets');
         this.bgmOptions = this.audioAssetOptions.filter(asset => asset.kind === 'bgm');
         this.sfxOptions = this.audioAssetOptions.filter(asset => asset.kind === 'sfx');
+        this.overlaySceneOptions = this.sceneOptions.filter(item => item.presentation_mode === 'overlay');
+        this.baseSceneOptions = this.sceneOptions.filter(item => item.presentation_mode !== 'overlay');
+        this.prepareSceneNavigation();
         await this.loadAnimations();
         this.interactions = await apiFetch(`/api/scenes/${this.sceneId}/interactions`);
         if (!this.selectedInteractionId && this.interactions.length) {
@@ -137,6 +158,12 @@ const ActionsCtrl = app => async params => {
       this.hasVariables = Boolean(this.variables.length);
       this.isEditingVariable = Boolean(this.selectedVariableId);
       this.variableSubmitLabel = this.isEditingVariable ? 'Update variable' : 'Add variable';
+      this.overlayBindings = this.overlayBindings.map(binding => ({
+        ...binding,
+        overlaySceneLabel: this.overlaySceneOptions.find(scene => scene.id === binding.overlay_scene_id)?.title
+          ?? binding.overlay_scene_title
+          ?? `Scene ${binding.overlay_scene_id}`
+      }));
       this.interactions = this.interactions.map(interaction => ({
         ...interaction,
         triggerLabel: triggerLabel(interaction, this.scene, this.variables),
@@ -206,6 +233,12 @@ const ActionsCtrl = app => async params => {
       const previewButton = event.target.closest('[data-action="open-preview"]');
       if (previewButton) {
         openScenePreview(this.sceneId);
+        return;
+      }
+
+      const deleteOverlayBindingButton = event.target.closest('[data-action="delete-overlay-binding"]');
+      if (deleteOverlayBindingButton) {
+        await this.deleteOverlayBinding(deleteOverlayBindingButton);
       }
     },
 
@@ -242,6 +275,20 @@ const ActionsCtrl = app => async params => {
       if (searchForm) {
         event.preventDefault();
         await this.searchScriptLines(searchForm);
+        return;
+      }
+
+      const sceneJumpForm = event.target.closest('[data-scene-jump-form]');
+      if (sceneJumpForm) {
+        event.preventDefault();
+        this.goToScene(sceneJumpForm);
+        return;
+      }
+
+      const overlayBindingForm = event.target.closest('[data-overlay-binding-form]');
+      if (overlayBindingForm) {
+        event.preventDefault();
+        await this.saveOverlayBinding(overlayBindingForm);
       }
     },
 
@@ -315,6 +362,40 @@ const ActionsCtrl = app => async params => {
         this.setStatus('Interaction created.');
       } catch {
         this.setStatus('Could not create interaction.');
+      }
+    },
+
+    async saveOverlayBinding(form) {
+      const formData = new FormData(form);
+      this.setStatus('Saving overlay binding...');
+      try {
+        await apiFetch('/api/overlay-bindings', {
+          method: 'POST',
+          body: JSON.stringify({
+            key_code: String(formData.get('key_code') ?? ''),
+            overlay_scene_id: Number(formData.get('overlay_scene_id'))
+          })
+        });
+        form.reset();
+        await this.refreshData();
+        this.refreshView();
+        this.setStatus('Overlay binding saved.');
+      } catch {
+        this.setStatus('Could not save overlay binding.');
+      }
+    },
+
+    async deleteOverlayBinding(button) {
+      const bindingId = Number(button.dataset.bindingId);
+      if (!bindingId) return;
+      this.setStatus('Removing overlay binding...');
+      try {
+        await apiFetch(`/api/overlay-bindings/${bindingId}`, {method: 'DELETE'});
+        await this.refreshData();
+        this.refreshView();
+        this.setStatus('Overlay binding removed.');
+      } catch {
+        this.setStatus('Could not remove overlay binding.');
       }
     },
 
@@ -427,6 +508,20 @@ const ActionsCtrl = app => async params => {
       if (status) status.textContent = message;
     },
 
+    prepareSceneNavigation() {
+      this.sceneOptions = [...this.sceneOptions]
+        .sort((left, right) => Number(left.id) - Number(right.id))
+        .map(scene => ({
+          ...scene,
+          isCurrent: Number(scene.id) === Number(this.sceneId)
+        }));
+      const currentIndex = this.sceneOptions.findIndex(scene => Number(scene.id) === Number(this.sceneId));
+      this.previousSceneId = currentIndex > 0 ? this.sceneOptions[currentIndex - 1].id : null;
+      this.nextSceneId = currentIndex >= 0 && currentIndex < this.sceneOptions.length - 1
+        ? this.sceneOptions[currentIndex + 1].id
+        : null;
+    },
+
     setControlValues() {
       const variableForm = this.root?.querySelector('[data-variable-form]');
       if (variableForm) {
@@ -471,6 +566,13 @@ const ActionsCtrl = app => async params => {
     refreshView() {
       app.refresh();
       requestAnimationFrame(() => this.setControlValues());
+    },
+
+    goToScene(form) {
+      const formData = new FormData(form);
+      const targetSceneId = Number(formData.get('scene_id'));
+      if (!targetSceneId || targetSceneId === this.sceneId) return;
+      app.goto(`/actions/${targetSceneId}`);
     }
   };
 
@@ -545,6 +647,7 @@ function readTrigger(formData) {
   const trigger = {type};
   if (type.startsWith('object_')) trigger.object_id = Number(formData.get('trigger_object_id'));
   if (type === 'variable_changed') trigger.variable_id = Number(formData.get('trigger_variable_id'));
+  if (type === 'key_press') trigger.key_code = String(formData.get('trigger_key_code') ?? '');
   return trigger;
 }
 
@@ -571,6 +674,14 @@ function readActionStepForm(form) {
       value: property === 'label'
         ? String(formData.get('value_text') ?? '')
         : String(formData.get('value_bool') ?? 'true') === 'true',
+      wait
+    };
+  }
+  if (type === 'go_to_frame') {
+    return {
+      type,
+      target_object_id: Number(formData.get('target_object_id')),
+      frame_index: Number(formData.get('frame_index') || 0),
       wait
     };
   }
@@ -655,6 +766,19 @@ function readActionStepForm(form) {
       wait: 'wait'
     };
   }
+  if (type === 'open_overlay_scene' || type === 'change_overlay_scene') {
+    return {
+      type,
+      scene_id: Number(formData.get('overlay_scene_id')),
+      wait: 'wait'
+    };
+  }
+  if (type === 'close_overlay_scene') {
+    return {
+      type,
+      wait: 'wait'
+    };
+  }
   return {
     type: 'delay',
     duration_seconds: Number(formData.get('duration_seconds') || 1),
@@ -671,6 +795,9 @@ function setInteractionFormValues(form, interaction) {
   }
   if (form.elements.trigger_variable_id) {
     form.elements.trigger_variable_id.value = interaction.trigger?.variable_id ?? '';
+  }
+  if (form.elements.trigger_key_code) {
+    form.elements.trigger_key_code.value = interaction.trigger?.key_code ?? 'Escape';
   }
 }
 
@@ -787,6 +914,9 @@ function triggerLabel(interaction, scene, variables) {
     const variable = variables.find(item => item.id === trigger.variable_id);
     return `variable changed · ${variable?.name ?? 'variable'}`;
   }
+  if (trigger.type === 'key_press') {
+    return `key press · ${trigger.key_code ?? 'key'}`;
+  }
   return String(trigger.type ?? 'scene_enter').replace(/_/g, ' ');
 }
 
@@ -797,6 +927,7 @@ function actionLabel(step) {
 function actionMeta(step) {
   if (step.type === 'play_audio') return `audio lines ${step.script_line_ids?.join(', ')}`;
   if (step.type === 'show_subtitle') return `subtitle lines ${step.script_line_ids?.join(', ')}`;
+  if (step.type === 'go_to_frame') return `object ${step.target_object_id} · frame ${step.frame_index}`;
   if (step.type === 'set_object_property') return `${step.property} = ${step.value}`;
   if (step.type === 'set_variable') return `variable ${step.variable_id} = ${step.value}`;
   if (step.type === 'increment_variable') return `variable ${step.variable_id} += ${step.amount}`;
@@ -806,6 +937,9 @@ function actionMeta(step) {
   if (step.type === 'crossfade_bgm') return `audio ${step.audio_asset_id} · ${step.duration_seconds}s`;
   if (step.type === 'play_sfx') return `audio ${step.audio_asset_id}`;
   if (step.type === 'change_scene') return `scene ${step.scene_id}`;
+  if (step.type === 'open_overlay_scene') return `open overlay ${step.scene_id}`;
+  if (step.type === 'close_overlay_scene') return 'close overlay';
+  if (step.type === 'change_overlay_scene') return `change overlay ${step.scene_id}`;
   if (step.type === 'delay') return `${step.duration_seconds}s`;
   return step.wait ? `${step.wait}` : '';
 }
@@ -813,6 +947,7 @@ function actionMeta(step) {
 function actionTypeHelp(type) {
   return {
     play_animation: 'Uses the animation picker. Mode controls queued vs immediate playback.',
+    go_to_frame: 'Uses a target object and a raw frame index from this scene.',
     set_object_property: 'Uses target object, property, and value fields.',
     show_subtitle: 'Uses script line IDs and duration. Search below and add matching lines.',
     play_audio: 'Uses script line IDs. Search below and add matching lines.',
@@ -825,6 +960,9 @@ function actionTypeHelp(type) {
     crossfade_bgm: 'Crossfades looping background music to a target BGM asset.',
     play_sfx: 'Plays a one-shot sound effect asset.',
     change_scene: 'Uses a target scene and transfers preview flow into that scene.',
+    open_overlay_scene: 'Opens an overlay scene on top of the current base scene.',
+    close_overlay_scene: 'Closes the current overlay scene and resumes the base scene.',
+    change_overlay_scene: 'Switches from the current overlay scene to another overlay scene.',
     delay: 'Uses duration only.'
   }[type] ?? '';
 }

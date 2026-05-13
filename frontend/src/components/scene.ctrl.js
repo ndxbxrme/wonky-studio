@@ -2,6 +2,7 @@ import {apiFetch} from '../api.js';
 import {
   findScene,
   loadScene,
+  loadScenes,
   replaceScene,
   scenes
 } from '../state/scenes.js';
@@ -20,6 +21,10 @@ const SceneCtrl = app => async params => {
     sceneFound: false,
     sceneMissing: false,
     scenes,
+    sceneOptions: [],
+    mergeSceneOptions: [],
+    previousSceneId: null,
+    nextSceneId: null,
     extractionJob: null,
     hasExtractionJob: false,
     extractionJobRunning: false,
@@ -65,9 +70,21 @@ const SceneCtrl = app => async params => {
         return;
       }
 
+      const inventoryButton = event.target.closest('[data-action="generate-inventory-images"]');
+      if (inventoryButton) {
+        await this.generateInventoryImages(inventoryButton);
+        return;
+      }
+
       const previewButton = event.target.closest('[data-action="open-preview"]');
       if (previewButton) {
         openScenePreview(this.sceneId);
+        return;
+      }
+
+      const moveObjectButton = event.target.closest('[data-action="move-object"]');
+      if (moveObjectButton) {
+        await this.moveObject(moveObjectButton);
         return;
       }
 
@@ -89,6 +106,27 @@ const SceneCtrl = app => async params => {
       if (objectPromptForm) {
         event.preventDefault();
         await this.updateObjectPrompt(objectPromptForm);
+        return;
+      }
+
+      const sceneJumpForm = event.target.closest('[data-scene-jump-form]');
+      if (sceneJumpForm) {
+        event.preventDefault();
+        this.goToScene(sceneJumpForm);
+        return;
+      }
+
+      const sceneSettingsForm = event.target.closest('[data-scene-settings-form]');
+      if (sceneSettingsForm) {
+        event.preventDefault();
+        await this.saveSceneSettings(sceneSettingsForm);
+        return;
+      }
+
+      const sceneMergeForm = event.target.closest('[data-scene-merge-form]');
+      if (sceneMergeForm) {
+        event.preventDefault();
+        await this.mergeIntoScene(sceneMergeForm);
       }
     },
 
@@ -100,10 +138,38 @@ const SceneCtrl = app => async params => {
     },
 
     async loadSceneWithActions() {
+      if (!this.scenes.length) await loadScenes();
       const latestScene = replaceScene(await loadScene(this.sceneId));
       this.interactions = await loadSceneInteractions(this.sceneId);
       this.scene = annotateSceneActions(latestScene, this.interactions);
+      this.prepareSceneNavigation();
       return this.scene;
+    },
+
+    prepareSceneNavigation() {
+      this.sceneOptions = [...this.scenes]
+        .sort((left, right) => Number(left.id) - Number(right.id))
+        .map(scene => ({
+          id: scene.id,
+          title: scene.title,
+          isCurrent: Number(scene.id) === Number(this.sceneId)
+        }));
+      this.mergeSceneOptions = this.sceneOptions
+        .filter(scene => !scene.isCurrent)
+        .map(scene => {
+          const source = this.scenes.find(item => Number(item.id) === Number(scene.id));
+          return {
+            id: scene.id,
+            title: scene.title,
+            presentation_mode: source?.presentation_mode ?? 'base'
+          };
+        })
+        .filter(scene => scene.presentation_mode === 'base');
+      const currentIndex = this.sceneOptions.findIndex(scene => Number(scene.id) === Number(this.sceneId));
+      this.previousSceneId = currentIndex > 0 ? this.sceneOptions[currentIndex - 1].id : null;
+      this.nextSceneId = currentIndex >= 0 && currentIndex < this.sceneOptions.length - 1
+        ? this.sceneOptions[currentIndex + 1].id
+        : null;
     },
 
     setStatus(selector, message) {
@@ -156,6 +222,43 @@ const SceneCtrl = app => async params => {
         button.disabled = false;
         button.textContent = 'Extract masks';
         this.setStatus('[data-mask-extraction-status]', 'Could not extract masks.');
+      }
+    },
+
+    async generateInventoryImages(button) {
+      button.disabled = true;
+      button.textContent = 'Generating...';
+      this.setStatus('[data-inventory-image-status]', 'Generating inventory art for keyboard-target objects...');
+      try {
+        const result = await apiFetch(`/api/scenes/${this.sceneId}/generate-inventory-images`, {
+          method: 'POST'
+        });
+        this.scene = replaceScene(result.scene);
+        this.sceneFound = true;
+        this.sceneMissing = false;
+        this.setStatus(
+          '[data-inventory-image-status]',
+          `Generated ${result.generated_count} inventory image${result.generated_count === 1 ? '' : 's'}${result.skipped_count ? `, skipped ${result.skipped_count}` : ''}.`
+        );
+        button.disabled = false;
+        button.textContent = 'Generate inventory art';
+        app.refresh();
+      } catch (error) {
+        button.disabled = false;
+        button.textContent = 'Generate inventory art';
+        let detail = '';
+        try {
+          detail = error?.response ? (await error.response.clone().json()).detail ?? '' : '';
+        } catch {
+          detail = '';
+        }
+        if (error?.response?.status === 503) {
+          window.alert(detail || 'Inventory image generator is unavailable. Please contact the administrator to turn Comfy on.');
+        }
+        this.setStatus(
+          '[data-inventory-image-status]',
+          detail || 'Could not generate inventory art.'
+        );
       }
     },
 
@@ -214,14 +317,20 @@ const SceneCtrl = app => async params => {
       const status = form.querySelector('[data-object-prompt-status]');
       const formData = new FormData(form);
       const prompt = String(formData.get('prompt') ?? '').trim();
+      const keyboardTargetEnabled = formData.get('keyboard_target_enabled') === 'on';
       if (!prompt) return;
       if (status) status.textContent = 'Saving...';
       try {
-        await apiFetch(`/api/scenes/${this.sceneId}/objects/${objectId}`, {
+        const updatedObject = await apiFetch(`/api/scenes/${this.sceneId}/objects/${objectId}`, {
           method: 'PATCH',
-          body: JSON.stringify({prompt})
+          body: JSON.stringify({
+            prompt,
+            keyboard_target_enabled: keyboardTargetEnabled
+          })
         });
-        if (status) status.textContent = '';
+        form.elements.prompt.value = updatedObject.prompt ?? prompt;
+        form.elements.keyboard_target_enabled.checked = Boolean(updatedObject.keyboard_target_enabled);
+        if (status) status.textContent = 'Saved.';
         await this.refreshScene();
         notifyScenePreview(this.sceneId, 'object-updated');
       } catch {
@@ -247,6 +356,100 @@ const SceneCtrl = app => async params => {
       } finally {
         button.disabled = false;
       }
+    },
+
+    async moveObject(button) {
+      const objectId = Number(button.dataset.objectId);
+      const direction = button.dataset.direction === 'up' ? -1 : 1;
+      if (!objectId || !direction) return;
+      const objects = this.scene?.objects ?? [];
+      const currentIndex = objects.findIndex(sceneObject => Number(sceneObject.id) === objectId);
+      if (currentIndex < 0) return;
+      const nextIndex = currentIndex + direction;
+      if (nextIndex < 0 || nextIndex >= objects.length) return;
+      const currentObject = objects[currentIndex];
+      const swapObject = objects[nextIndex];
+      button.disabled = true;
+      this.setStatus('[data-object-action-status]', `Moving ${currentObject.name}...`);
+      try {
+        await Promise.all([
+          apiFetch(`/api/scenes/${this.sceneId}/objects/${currentObject.id}`, {
+            method: 'PATCH',
+            body: JSON.stringify({sort_order: swapObject.sort_order})
+          }),
+          apiFetch(`/api/scenes/${this.sceneId}/objects/${swapObject.id}`, {
+            method: 'PATCH',
+            body: JSON.stringify({sort_order: currentObject.sort_order})
+          })
+        ]);
+        await this.refreshScene();
+        notifyScenePreview(this.sceneId, 'object-updated');
+        this.setStatus('[data-object-action-status]', 'Object order updated.');
+      } catch {
+        this.setStatus('[data-object-action-status]', 'Could not change object order.');
+      } finally {
+        button.disabled = false;
+      }
+    },
+
+    async saveSceneSettings(form) {
+      const formData = new FormData(form);
+      this.setStatus('[data-scene-settings-status]', 'Saving scene settings...');
+      try {
+        const updatedScene = await apiFetch(`/api/scenes/${this.sceneId}`, {
+          method: 'PATCH',
+          body: JSON.stringify({
+            title: String(formData.get('title') ?? '').trim() || undefined,
+            description: String(formData.get('description') ?? ''),
+            presentation_mode: String(formData.get('presentation_mode') ?? 'base')
+          })
+        });
+        this.scene = replaceScene(updatedScene);
+        this.sceneFound = true;
+        this.sceneMissing = false;
+        notifyScenePreview(this.sceneId, 'scene-updated');
+        this.setStatus('[data-scene-settings-status]', 'Scene settings saved.');
+        app.refresh();
+      } catch {
+        this.setStatus('[data-scene-settings-status]', 'Could not save scene settings.');
+      }
+    },
+
+    async mergeIntoScene(form) {
+      const formData = new FormData(form);
+      const targetSceneId = Number(formData.get('target_scene_id'));
+      if (!targetSceneId || targetSceneId === this.sceneId) return;
+      const targetScene = this.mergeSceneOptions.find(scene => Number(scene.id) === targetSceneId);
+      const confirmed = window.confirm(
+        `Merge scene ${this.sceneId} into scene ${targetSceneId}${targetScene ? ` (${targetScene.title})` : ''}?\n\nThis will move images, objects, masks, prompts, interactions, and animations into the target scene, then permanently remove the current scene.`
+      );
+      if (!confirmed) return;
+      this.setStatus('[data-scene-merge-status]', 'Merging scene...');
+      try {
+        await apiFetch(`/api/scenes/${this.sceneId}/merge-into`, {
+          method: 'POST',
+          body: JSON.stringify({target_scene_id: targetSceneId})
+        });
+        await loadScenes();
+        notifyScenePreview(this.sceneId, 'scene-updated');
+        notifyScenePreview(targetSceneId, 'scene-updated');
+        app.goto(`/scene/${targetSceneId}`);
+      } catch (error) {
+        let detail = '';
+        try {
+          detail = error?.response ? (await error.response.clone().json()).detail ?? '' : '';
+        } catch {
+          detail = '';
+        }
+        this.setStatus('[data-scene-merge-status]', detail || 'Could not merge scene.');
+      }
+    },
+
+    goToScene(form) {
+      const formData = new FormData(form);
+      const targetSceneId = Number(formData.get('scene_id'));
+      if (!targetSceneId || targetSceneId === this.sceneId) return;
+      app.goto(`/scene/${targetSceneId}`);
     }
   };
 
@@ -308,10 +511,17 @@ function annotateSceneActions(scene, interactions) {
       hasActionSummaries: Boolean(actionSummaries.length)
     };
   });
+  const objectsWithOrderControls = objects.map((sceneObject, index) => ({
+    ...sceneObject,
+    hasPreviousObject: index > 0,
+    hasNextObject: index < objects.length - 1
+  }));
 
   return {
     ...scene,
-    objects,
+    isBasePresentation: (scene.presentation_mode ?? 'base') === 'base',
+    isOverlayPresentation: (scene.presentation_mode ?? 'base') === 'overlay',
+    objects: objectsWithOrderControls,
     actionCount: interactions.length,
     hasActions: Boolean(interactions.length),
     sceneActionSummaries,

@@ -97,6 +97,7 @@ const DefaultCtrl = app => async () => {
     async uploadFiles(files) {
       const selectedFiles = Array.from(files ?? []);
       if (!selectedFiles.length) return;
+      const hasImageFiles = selectedFiles.some(file => String(file.type || '').startsWith('image/'));
       const status = document.querySelector('[data-upload-status]');
       if (status) {
         status.textContent = `Uploading ${selectedFiles.length} file${selectedFiles.length === 1 ? '' : 's'}...`;
@@ -111,8 +112,25 @@ const DefaultCtrl = app => async () => {
         });
         this.uploadBatches = [batch, ...this.uploadBatches];
         this.hasUploadBatches = this.uploadBatches.length > 0;
-        if (status) {
-          status.textContent = `Queued ${batch.file_count} file${batch.file_count === 1 ? '' : 's'} for processing.`;
+        if (status && hasImageFiles) {
+          status.textContent = `Uploaded ${batch.file_count} file${batch.file_count === 1 ? '' : 's'}. Processing scene...`;
+        }
+        if (hasImageFiles) {
+          const processResult = await this.processBatchById(batch.id, {auto: true});
+          if (processResult?.scene?.id) {
+            if (processResult.created) {
+              if (status) status.textContent = `Scene ${processResult.scene.id} created. Running VLM analysis...`;
+              await apiFetch(`/api/scenes/${processResult.scene.id}/analyze-vlm`, {method: 'POST'});
+            }
+            await this.reloadScenes();
+            if (status) {
+              status.textContent = processResult.created
+                ? `Created scene ${processResult.scene.id} and analyzed it with VLM.`
+                : `Matched uploaded files to scene ${processResult.scene.id}.`;
+            }
+          }
+        } else if (status) {
+          status.textContent = `Queued ${batch.file_count} file${batch.file_count === 1 ? '' : 's'}.`;
         }
         app.refresh();
       } catch {
@@ -126,7 +144,7 @@ const DefaultCtrl = app => async () => {
       button.disabled = true;
       button.textContent = 'Processing...';
       try {
-        await apiFetch(`/api/uploads/batches/${batchId}/process-scene`, {method: 'POST'});
+        await this.processBatchById(batchId);
         await this.reloadScenes();
         button.textContent = 'Process scene';
         button.disabled = false;
@@ -135,6 +153,12 @@ const DefaultCtrl = app => async () => {
         button.disabled = false;
         button.textContent = 'Process scene';
       }
+    },
+
+    async processBatchById(batchId, options = {}) {
+      const result = await apiFetch(`/api/uploads/batches/${batchId}/process-scene`, {method: 'POST'});
+      if (!options.auto) await this.reloadScenes();
+      return result;
     },
 
     async generateInvite(form) {

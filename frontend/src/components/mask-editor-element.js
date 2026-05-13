@@ -68,6 +68,8 @@ class WonkyMaskEditor extends HTMLElement {
     root.querySelector('[data-action="fit"]')?.addEventListener('click', () => this.fitToView());
     root.querySelector('[data-action="grow"]')?.addEventListener('click', () => this.dispatchProcess('grow'));
     root.querySelector('[data-action="fill-holes"]')?.addEventListener('click', () => this.dispatchProcess('fill_holes'));
+    root.querySelector('[data-action="invert"]')?.addEventListener('click', () => this.dispatchProcess('invert'));
+    root.querySelector('[data-action="solid"]')?.addEventListener('click', () => this.dispatchProcess('solid'));
     root.querySelector('[name="brushSize"]')?.addEventListener('input', event => {
       this.brushSize = Number(event.target.value);
       root.querySelector('[data-brush-size]').textContent = String(this.brushSize);
@@ -232,6 +234,8 @@ class WonkyMaskEditor extends HTMLElement {
         <div class="toolbar-group">
           <button type="button" data-action="grow">Grow mask</button>
           <button type="button" data-action="fill-holes">Fill holes</button>
+          <button type="button" data-action="invert">Invert mask</button>
+          <button type="button" data-action="solid">Solid mask</button>
           <button class="primary" type="button" data-action="save">Save</button>
         </div>
       </div>

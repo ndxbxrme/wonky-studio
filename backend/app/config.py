@@ -30,6 +30,13 @@ class Settings:
     segmentation_threshold: float = 0.2
     segmentation_dilate_pixels: int = 2
     segmentation_blur_radius: float = 1.5
+    inventory_image_provider: str = "comfyui"
+    inventory_image_comfy_url: str = "http://172.24.224.1:8189"
+    inventory_image_workflow_path: Path = Path("temp/inventory-image-generator/inventory_item_workflow.json")
+    inventory_image_input_root: Path = Path("/mnt/d/wonky-studio/temp")
+    inventory_image_comfy_input_root: str = "D:/wonky-studio/temp"
+    inventory_image_output_root: Path = Path("/mnt/d/AI/ComfyUI_windows_portable/ComfyUI/output")
+    inventory_image_timeout_seconds: float = 300.0
 
 
 def get_settings() -> Settings:
@@ -79,6 +86,36 @@ def get_settings() -> Settings:
         ),
         segmentation_blur_radius=float(
             os.environ.get("WONKY_STUDIO_SEGMENTATION_BLUR_RADIUS", "1.5")
+        ),
+        inventory_image_provider=os.environ.get(
+            "WONKY_STUDIO_INVENTORY_IMAGE_PROVIDER",
+            "comfyui",
+        ),
+        inventory_image_comfy_url=os.environ.get(
+            "WONKY_STUDIO_INVENTORY_IMAGE_COMFY_URL",
+            "http://172.24.224.1:8189",
+        ),
+        inventory_image_workflow_path=Path(
+            os.environ.get(
+                "WONKY_STUDIO_INVENTORY_IMAGE_WORKFLOW_PATH",
+                str(Path(__file__).resolve().parents[2] / "temp" / "inventory-image-generator" / "inventory_item_workflow.json"),
+            )
+        ),
+        inventory_image_input_root=Path(
+            os.environ.get("WONKY_STUDIO_INVENTORY_IMAGE_INPUT_ROOT", "/mnt/d/wonky-studio/temp")
+        ),
+        inventory_image_comfy_input_root=os.environ.get(
+            "WONKY_STUDIO_INVENTORY_IMAGE_COMFY_INPUT_ROOT",
+            "D:/wonky-studio/temp",
+        ),
+        inventory_image_output_root=Path(
+            os.environ.get(
+                "WONKY_STUDIO_INVENTORY_IMAGE_OUTPUT_ROOT",
+                "/mnt/d/AI/ComfyUI_windows_portable/ComfyUI/output",
+            )
+        ),
+        inventory_image_timeout_seconds=float(
+            os.environ.get("WONKY_STUDIO_INVENTORY_IMAGE_TIMEOUT_SECONDS", "300")
         ),
     )
 

@@ -1,6 +1,6 @@
 # Wonky Studio
 
-Internal asset tooling for a point-and-click adventure game built from real-world diorama photography. The current focus is scene intake, object inventory, AI-assisted mask generation, animation authoring, script/audio review, action authoring, and live scene preview.
+Internal asset tooling for a point-and-click adventure game built from real-world diorama photography. The current focus is scene intake, object inventory, AI-assisted mask generation, animation authoring, script/audio review, action authoring, audio library management, and a live scene preview that now behaves more like a playable runtime than a static inspector.
 
 ## Run Locally
 
@@ -70,12 +70,14 @@ Authentication:
 - Session cookie auth.
 - Roles: `admin` and `user`.
 - Admins can create invite links and reset development workspace tables without deleting users/sessions.
+- Admin reset now also clears uploaded scene files and derived image artifacts from storage while preserving audio library files.
 
 Upload and scene grouping:
 
 - Logged-in users can drag/drop batches of files.
 - Uploads are stored under `WONKY_STUDIO_STORAGE_ROOT`.
 - Image batches can be processed into scenes.
+- The home/upload flow now auto-processes image uploads into scenes and auto-runs VLM analysis only for newly created scenes.
 - Similar images uploaded in later batches are matched back into an existing scene using local image fingerprints.
 - Scene frames are sorted by natural original filename order, not drag arrival order.
 
@@ -93,6 +95,7 @@ Objects and masks:
 - Current practical path is SAM3 via a conda subprocess using `tools/sam3_smoke.py`.
 - Extraction stores one top-scoring mask per object/frame/prompt.
 - Changing an object prompt causes new masks to render while previous mask rows remain untouched.
+- For objects that just received new masks and do not already have animations, extraction now tries to generate one default motion animation automatically.
 
 Manual mask editor:
 
@@ -125,7 +128,11 @@ Script/audio review:
 - Admin import route loads the script and audio manifests from `WONKY_STUDIO_SCRIPT_AUDIO_ROOT`.
 - Route: `/script-review`.
 - Script lines are searchable by path/text/language.
+- New script lines can be authored directly in the review UI, including manual translations.
+- Lines can be deleted from the review UI, but deletion is blocked when a line is still referenced by interactions.
 - Each translation and audio candidate has review state, notes, and audio preview.
+- Review audio can be uploaded or drag-dropped directly onto the currently selected line/language.
+- Uploaded review clips are trimmed, normalized, re-encoded to OGG, and stored as normal reviewable candidates.
 
 Audio library:
 
@@ -137,9 +144,12 @@ Actions:
 
 - Route: `/actions/{sceneId}`.
 - Global variables: `bool`, `string`, `number`.
+- Variables can be edited in-place via the shared add/update form.
 - Scene interactions support scene/object/variable triggers.
+- Object hover authoring is now explicit `object_mouseover` and `object_mouseout`, rather than a single hover trigger.
 - Action steps are structured and validated, not free-form script text.
-- Supported steps today: `play_animation`, `set_object_property`, `show_subtitle`, `play_audio`, `set_variable`, `increment_variable`, `toggle_variable`, `if_variable`, `fade_out`, `fade_in`, `crossfade_bgm`, `play_sfx`, `change_scene`, `delay`.
+- Supported steps today: `play_animation`, `go_to_frame`, `set_object_property`, `show_subtitle`, `play_audio`, `set_variable`, `increment_variable`, `toggle_variable`, `if_variable`, `fade_out`, `fade_in`, `crossfade_bgm`, `play_sfx`, `change_scene`, `delay`.
+- Scene-to-scene authoring navigation now exists directly inside the actions page.
 - Scene pages show action counts plus per-object action summaries with links back into the action editor.
 
 Scene preview:
@@ -149,9 +159,22 @@ Scene preview:
 - Uses cached server-rendered object crops, not raw masks in the browser.
 - Renders each object’s first valid frame plus any frames referenced by saved animations.
 - Uses a canvas renderer for deterministic composition and playback.
+- Auto-runs enabled `scene_enter` interactions on load.
+- Supports enabled `scene_exit`, `object_click`, `object_mouseover`, `object_mouseout`, and `variable_changed` interactions.
+- Executes authored steps for animation, object state, variable state, subtitles, narration audio, fades, BGM crossfades, SFX, delays, branching, and scene changes.
+- Preserves global variable state across authored scene transitions.
+- Preserves looping BGM across preview scene transitions.
+- Preloads directly connected destination scenes in the background to reduce transition latency.
 - Background can be toggled on/off for object inspection.
 - The currently playing object is drawn on top of the stack during playback.
+- Preview subtitles are bilingual and rendered inside the visible scene frame, not below the stage.
 - Listens for editor updates in the same browser via `BroadcastChannel` and refreshes automatically.
+
+Navigation and UI:
+
+- A shared top-level app bar now exposes `Scenes`, `Transcript library`, and `Audio library` on the main authoring routes.
+- Scene, actions, and preview pages now support direct previous/next scene navigation plus scene jump dropdowns.
+- The preview workspace is now clamped to the viewport more like the animation editor, reducing wasted space and keeping subtitles/fade overlays inside the visible stage.
 
 ## Backend Map
 
@@ -182,9 +205,11 @@ Scene preview:
 - `frontend/src/components/animations.*`: animation authoring route.
 - `frontend/src/components/animation-preview-element.js`: animation preview surface.
 - `frontend/src/components/script-review.*`: script/audio review route.
+- `frontend/src/components/audio-library.*`: uploaded BGM/SFX management route.
 - `frontend/src/components/actions.*`: actions/variables authoring route.
 - `frontend/src/components/preview.*`: popout scene preview route.
 - `frontend/src/components/scene-preview-element.js`: canvas-based cached scene composition preview surface.
+- `frontend/src/audio-runtime.js`: shared preview audio manager for looping BGM, crossfades, SFX, and ducking.
 - `frontend/src/app.css`: global app styles.
 
 ## Turbomini Notes
@@ -195,7 +220,7 @@ Routes:
 
 - A route is registered with `app.template(name, html)` and `app.controller(name, Controller(app))`.
 - Route matching is prefix-based from the URL path. `/scene/1` uses the `scene` route and receives `["1"]` as params.
-- Current routes: `default`, `not-authorized`, `scene`, `mask-editor`, `animations`, `script-review`, `actions`, `preview`.
+- Current routes: `default`, `not-authorized`, `scene`, `mask-editor`, `animations`, `script-review`, `audio-library`, `actions`, `preview`.
 
 Controller pattern:
 
@@ -258,9 +283,10 @@ When to use a web component:
 7. Click **Extract masks** to queue SAM3 extraction.
 8. Use object thumbnails/list to open the mask editor and clean masks.
 9. Open `/animations/{sceneId}/{objectId}` to define reusable frame sequences.
-10. Open `/actions/{sceneId}` to define triggers, variables, and action sequences.
-11. Open `/preview/{sceneId}` from the scene/actions UI to test cached object playback in a live popout.
-12. Use `/script-review` to import, search, and review dialog/translations/audio candidates.
+10. Use `/script-review` to import, search, and review dialog/translations/audio candidates.
+11. Use `/audio-library` to upload and organize looping BGM and one-shot SFX.
+12. Open `/actions/{sceneId}` to define triggers, variables, and runtime action sequences.
+13. Open `/preview/{sceneId}` from the scene/actions UI to test the live runtime, including scene transitions, bilingual subtitles, narration, fades, BGM, and SFX.
 
 ## Known Design Choices
 
@@ -270,5 +296,13 @@ When to use a web component:
 - Derived files are stored under `derived/scenes/...` inside the storage root.
 - Manual mask edits overwrite the raw and soft mask files for now.
 - Preview invalidation currently uses `BroadcastChannel`, so automatic refresh works between windows in the same browser profile.
-- The preview is a runtime foundation, not a full game player yet. It currently supports cached composition and manual animation playback, not full authored interaction execution.
+- The preview is now the main runtime proving ground for authored interactions, but it is still a tooling runtime rather than the final shipping game client.
+- BGM/SFX assets are separate from subtitle-bearing script audio on purpose: one library is for authored game sound, the other is for spoken line review.
 - Default object layering is still implicit. During preview playback the currently animating object is temporarily drawn last.
+
+## Next Directions
+
+- Add music-aware connected-scene preloading so likely destination BGM is warmed along with cached preview renders.
+- Expand runtime authoring around inventory/stateful adventure patterns, especially object use and item-driven logic.
+- Decide how subtitle/audio timing should behave in edge cases such as skipped transitions or overlapping authored effects.
+- Keep tightening layout density and cross-page navigation so the authoring flow feels more like a coherent studio tool than a collection of screens.

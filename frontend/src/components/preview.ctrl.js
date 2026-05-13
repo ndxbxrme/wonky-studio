@@ -13,6 +13,7 @@ const DEFAULT_SECONDARY_LANGUAGE = 'fr';
 const DEFAULT_TRANSLATION_MODE = 'sequential';
 const FADE_FRAME_MS = 33;
 const MAX_PRELOADED_CONNECTED_SCENES = 6;
+const OVERLAY_OPEN_DUCK_FACTOR = 0.5;
 let previewSceneCarryover = null;
 let previewRouteTransitionInFlight = false;
 const previewDataCache = new Map();
@@ -25,13 +26,24 @@ const PreviewCtrl = app => async params => {
     sceneId,
     scene: findScene(sceneId),
     previewData: null,
+    overlayPreviewData: null,
+    sceneOptions: [],
+    previousSceneId: null,
+    nextSceneId: null,
     runtimeSnapshot: null,
     runtimeObjects: [],
     runtimeVariables: [],
     runtimeState: null,
+    overlayRuntimeSnapshot: null,
+    overlayRuntimeState: null,
     previewObjects: [],
     currentSubtitle: null,
     currentFade: null,
+    overlayCurrentSubtitle: null,
+    overlayCurrentFade: null,
+    overlayPresentationOpacity: 0,
+    focusedBaseObjectId: null,
+    focusedOverlayObjectId: null,
     showBackground: true,
     status: '',
     editorReady: false,
@@ -47,13 +59,21 @@ const PreviewCtrl = app => async params => {
     runningSceneExit: false,
     pendingSceneTransitionTarget: null,
     preloadTimer: null,
+    openingOverlaySceneId: null,
+    basePreview: null,
+    overlayPreview: null,
+    overlayShell: null,
+    overlayBackdrop: null,
+    overlayFrame: null,
 
     async postLoad() {
-      this.root = document.querySelector('[data-preview-page]');
-      this.preview = this.root?.querySelector('wonky-scene-preview');
+      this.captureDom();
       this.bind(this.root, 'click', event => this.onClick(event));
-      this.bind(this.preview, 'preview-object-click', event => this.onPreviewObjectClick(event));
-      this.bind(this.preview, 'preview-error', event => this.onPreviewError(event));
+      this.bind(this.root, 'submit', event => this.onSubmit(event));
+      this.bindPreviewEvents();
+      this.bind(window, 'keydown', event => {
+        void this.onWindowKeyDown(event);
+      });
       this.previewSyncCleanup = listenScenePreview(this.sceneId, async () => {
         this.setStatus('Refreshing preview...');
         await this.reloadRuntime({rerunSceneEnter: true});
@@ -75,22 +95,45 @@ const PreviewCtrl = app => async params => {
       this.previewSyncCleanup = null;
     },
 
+    captureDom() {
+      this.root = document.querySelector('[data-preview-page]');
+      this.basePreview = this.root?.querySelector('[data-preview-layer="base"]') ?? null;
+      this.overlayPreview = this.root?.querySelector('[data-preview-layer="overlay"]') ?? null;
+      this.overlayShell = this.root?.querySelector('[data-preview-overlay-shell]') ?? null;
+      this.overlayBackdrop = this.root?.querySelector('[data-preview-overlay-backdrop]') ?? null;
+      this.overlayFrame = this.root?.querySelector('[data-preview-overlay-frame]') ?? null;
+    },
+
     bind(target, type, handler) {
       if (!target) return;
       target.addEventListener(type, handler);
       this.unloadHandlers.push(() => target.removeEventListener(type, handler));
     },
 
+    bindPreviewEvents() {
+      this.bind(this.basePreview, 'preview-object-click', event => this.onPreviewObjectClick(event, 'base'));
+      this.bind(this.basePreview, 'preview-object-mouseover', event => this.onPreviewObjectMouseover(event, 'base'));
+      this.bind(this.basePreview, 'preview-object-mouseout', event => this.onPreviewObjectMouseout(event, 'base'));
+      this.bind(this.basePreview, 'preview-error', event => this.onPreviewError(event));
+      this.bind(this.overlayPreview, 'preview-object-click', event => this.onPreviewObjectClick(event, 'overlay'));
+      this.bind(this.overlayPreview, 'preview-object-mouseover', event => this.onPreviewObjectMouseover(event, 'overlay'));
+      this.bind(this.overlayPreview, 'preview-object-mouseout', event => this.onPreviewObjectMouseout(event, 'overlay'));
+      this.bind(this.overlayPreview, 'preview-error', event => this.onPreviewError(event));
+    },
+
     async refreshData() {
       try {
         this.scene = findScene(this.sceneId) ?? {id: this.sceneId};
         this.previewData = await fetchPreviewData(this.sceneId);
+        this.prepareSceneNavigation();
         this.prepareState();
         this.applyCarriedVariables();
         this.scheduleConnectedScenePreload();
         this.editorReady = Boolean(this.previewData);
         this.editorMissing = !this.editorReady;
       } catch {
+        previewRouteTransitionInFlight = false;
+        previewSceneCarryover = null;
         this.editorReady = false;
         this.editorMissing = true;
       }
@@ -100,7 +143,24 @@ const PreviewCtrl = app => async params => {
       this.runtimeSnapshot = createRuntimeSnapshot(this.previewData);
       this.runtimeState = cloneRuntimeState(this.runtimeSnapshot);
       this.currentSubtitle = null;
+      this.currentFade = null;
+      this.focusedBaseObjectId = null;
+      this.clearOverlayState();
       this.refreshInspectorState();
+    },
+
+    prepareSceneNavigation() {
+      this.sceneOptions = [...(this.previewData?.available_scenes ?? [])]
+        .sort((left, right) => Number(left.id) - Number(right.id))
+        .map(scene => ({
+          ...scene,
+          isCurrent: Number(scene.id) === Number(this.sceneId)
+        }));
+      const currentIndex = this.sceneOptions.findIndex(scene => Number(scene.id) === Number(this.sceneId));
+      this.previousSceneId = currentIndex > 0 ? this.sceneOptions[currentIndex - 1].id : null;
+      this.nextSceneId = currentIndex >= 0 && currentIndex < this.sceneOptions.length - 1
+        ? this.sceneOptions[currentIndex + 1].id
+        : null;
     },
 
     applyCarriedVariables() {
@@ -117,10 +177,24 @@ const PreviewCtrl = app => async params => {
       this.refreshInspectorState();
     },
 
+    clearOverlayState() {
+      this.overlayPreviewData = null;
+      this.overlayRuntimeSnapshot = null;
+      this.overlayRuntimeState = null;
+      this.overlayCurrentSubtitle = null;
+      this.overlayCurrentFade = null;
+      this.overlayPresentationOpacity = 0;
+      this.focusedOverlayObjectId = null;
+      this.openingOverlaySceneId = null;
+    },
+
     refreshInspectorState() {
-      const runtimeObjects = [...(this.previewData?.objects ?? [])]
+      const layer = this.getActiveLayerName();
+      const previewData = this.getLayerPreviewData(layer);
+      const runtimeState = this.getLayerRuntimeState(layer);
+      const runtimeObjects = [...(previewData?.objects ?? [])]
         .map(object => {
-          const state = this.runtimeState?.objects?.[object.id];
+          const state = runtimeState?.objects?.[object.id];
           return {
             id: object.id,
             name: state?.label || object.label || object.name,
@@ -146,30 +220,177 @@ const PreviewCtrl = app => async params => {
       this.syncRuntimePanels();
     },
 
+    getActiveLayerName() {
+      return this.overlayPreviewData ? 'overlay' : 'base';
+    },
+
+    getLayerPreviewData(layer) {
+      return layer === 'overlay' ? this.overlayPreviewData : this.previewData;
+    },
+
+    getLayerRuntimeState(layer) {
+      return layer === 'overlay' ? this.overlayRuntimeState : this.runtimeState;
+    },
+
+    getLayerPreviewElement(layer) {
+      return layer === 'overlay' ? this.overlayPreview : this.basePreview;
+    },
+
+    getLayerSubtitle(layer) {
+      return layer === 'overlay' ? this.overlayCurrentSubtitle : this.currentSubtitle;
+    },
+
+    setLayerSubtitle(layer, subtitle) {
+      if (layer === 'overlay') this.overlayCurrentSubtitle = subtitle;
+      else this.currentSubtitle = subtitle;
+    },
+
+    getLayerFade(layer) {
+      return layer === 'overlay' ? this.overlayCurrentFade : this.currentFade;
+    },
+
+    setLayerFade(layer, fade) {
+      if (layer === 'overlay') this.overlayCurrentFade = fade;
+      else this.currentFade = fade;
+    },
+
+    getFocusedObjectId(layer) {
+      return layer === 'overlay' ? this.focusedOverlayObjectId : this.focusedBaseObjectId;
+    },
+
+    setFocusedObjectId(layer, objectId) {
+      const numericId = Number(objectId);
+      const nextId = Number.isFinite(numericId) && numericId > 0 ? numericId : null;
+      if (layer === 'overlay') this.focusedOverlayObjectId = nextId;
+      else this.focusedBaseObjectId = nextId;
+      this.getLayerPreviewElement(layer)?.setFocusedObjectId(nextId);
+    },
+
+    getTargetableObjects(layer) {
+      const previewData = this.getLayerPreviewData(layer);
+      const runtimeState = this.getLayerRuntimeState(layer);
+      return [...(previewData?.objects ?? [])]
+        .filter(object => {
+          const objectState = runtimeState?.objects?.[object.id];
+          return (
+            object.keyboard_target_enabled
+            && objectState?.visible !== false
+            && objectState?.enabled !== false
+          );
+        })
+        .sort((left, right) => (
+          Number(left.sort_order ?? 0) - Number(right.sort_order ?? 0)
+          || Number(left.id) - Number(right.id)
+        ));
+    },
+
+    syncKeyboardFocusState(layer) {
+      const targetableObjects = this.getTargetableObjects(layer);
+      const focusedObjectId = this.getFocusedObjectId(layer);
+      if (!focusedObjectId) {
+        this.setFocusedObjectId(layer, null);
+        return;
+      }
+      if (!targetableObjects.some(object => Number(object.id) === Number(focusedObjectId))) {
+        this.setFocusedObjectId(layer, null);
+      } else {
+        this.setFocusedObjectId(layer, focusedObjectId);
+      }
+    },
+
+    async moveKeyboardFocus(layer, direction) {
+      const objects = this.getTargetableObjects(layer);
+      if (!objects.length) return;
+      const currentId = this.getFocusedObjectId(layer);
+      let nextIndex = direction > 0 ? 0 : objects.length - 1;
+      if (currentId) {
+        const currentIndex = objects.findIndex(object => Number(object.id) === Number(currentId));
+        if (currentIndex >= 0) {
+          nextIndex = (currentIndex + direction + objects.length) % objects.length;
+        }
+      }
+      await this.updateKeyboardFocus(layer, objects[nextIndex]?.id ?? null);
+    },
+
+    async updateKeyboardFocus(layer, nextObjectId) {
+      const previousObjectId = this.getFocusedObjectId(layer);
+      const normalizedNext = Number(nextObjectId) || null;
+      if (previousObjectId === normalizedNext) {
+        this.setFocusedObjectId(layer, normalizedNext);
+        return;
+      }
+      this.setFocusedObjectId(layer, normalizedNext);
+      if (previousObjectId) {
+        await this.executeMatchingInteractionsForLayer(
+          layer,
+          interaction => (
+            interaction.trigger?.type === 'object_mouseout'
+            && Number(interaction.trigger?.object_id) === Number(previousObjectId)
+          ),
+          {reason: 'object_mouseout', objectId: Number(previousObjectId), keyboardDriven: true}
+        );
+      }
+      if (normalizedNext) {
+        await this.executeMatchingInteractionsForLayer(
+          layer,
+          interaction => (
+            interaction.trigger?.type === 'object_mouseover'
+            && Number(interaction.trigger?.object_id) === Number(normalizedNext)
+          ),
+          {reason: 'object_mouseover', objectId: Number(normalizedNext), keyboardDriven: true}
+        );
+      }
+    },
+
     async configurePreview() {
-      if (!this.preview || !this.previewData) return;
-      await this.preview.configure({
+      if (!this.basePreview || !this.previewData) return;
+      await this.basePreview.configure({
         ...this.previewData,
         showBackground: this.showBackground
       });
-      this.pushRuntimeToPreview();
-      this.syncSubtitleOverlay();
-      this.syncFadeOverlay();
+      this.pushRuntimeToPreview('base');
+      this.syncSubtitleOverlay('base');
+      this.syncFadeOverlay('base');
+      await this.configureOverlayPreview();
     },
 
-    pushRuntimeToPreview() {
-      if (!this.preview) return;
-      this.preview.applyRuntimeState(this.runtimeState?.objects ?? {});
+    async configureOverlayPreview() {
+      const active = Boolean(this.overlayPreviewData && this.overlayPreview);
+      if (this.overlayShell) {
+        this.overlayShell.classList.toggle('is-hidden', !active);
+      }
+      if (!active) {
+        this.syncOverlayPresentation();
+        this.syncFadeOverlay('overlay');
+        this.syncSubtitleOverlay('overlay');
+        return;
+      }
+      await this.overlayPreview.configure({
+        ...this.overlayPreviewData,
+        showBackground: true,
+        transparentStage: true
+      });
+      this.pushRuntimeToPreview('overlay');
+      this.syncOverlayPresentation();
+      this.syncSubtitleOverlay('overlay');
+      this.syncFadeOverlay('overlay');
+    },
+
+    pushRuntimeToPreview(layer) {
+      const preview = this.getLayerPreviewElement(layer);
+      const runtimeState = this.getLayerRuntimeState(layer);
+      if (!preview) return;
+      preview.applyRuntimeState(runtimeState?.objects ?? {});
+      this.syncKeyboardFocusState(layer);
     },
 
     async refreshView() {
       app.refresh();
       await Promise.resolve();
-      this.root = document.querySelector('[data-preview-page]');
-      this.preview = this.root?.querySelector('wonky-scene-preview');
+      this.captureDom();
       this.bind(this.root, 'click', event => this.onClick(event));
-      this.bind(this.preview, 'preview-object-click', event => this.onPreviewObjectClick(event));
-      this.bind(this.preview, 'preview-error', event => this.onPreviewError(event));
+      this.bind(this.root, 'submit', event => this.onSubmit(event));
+      this.bindPreviewEvents();
       await this.configurePreview();
       this.syncRuntimePanels();
     },
@@ -179,22 +400,39 @@ const PreviewCtrl = app => async params => {
       if (objectsRoot) objectsRoot.innerHTML = renderPreviewObjects(this.previewObjects);
       const variablesRoot = this.root?.querySelector('[data-preview-variables]');
       if (variablesRoot) variablesRoot.innerHTML = renderPreviewVariables(this.runtimeVariables);
-      this.syncSubtitleOverlay();
-      this.syncFadeOverlay();
+      this.syncSubtitleOverlay('base');
+      this.syncFadeOverlay('base');
+      this.syncOverlayPresentation();
+      this.syncSubtitleOverlay('overlay');
+      this.syncFadeOverlay('overlay');
     },
 
-    syncSubtitleOverlay() {
-      const subtitleRoot = this.root?.querySelector('[data-preview-subtitles]');
-      if (!subtitleRoot) return;
-      subtitleRoot.innerHTML = renderSubtitleOverlay(this.currentSubtitle);
+    syncSubtitleOverlay(layer) {
+      this.getLayerPreviewElement(layer)?.setSubtitle?.(this.getLayerSubtitle(layer));
     },
 
-    syncFadeOverlay() {
-      const fadeRoot = this.root?.querySelector('[data-preview-fade]');
+    syncFadeOverlay(layer) {
+      const fadeRoot = this.root?.querySelector(`[data-preview-fade="${layer}"]`);
       if (!fadeRoot) return;
-      const fade = this.currentFade ?? {opacity: 0, color: '#000000'};
+      const fade = this.getLayerFade(layer) ?? {opacity: 0, color: '#000000'};
       fadeRoot.style.background = fade.color || '#000000';
       fadeRoot.style.opacity = String(Math.max(0, Math.min(1, Number(fade.opacity) || 0)));
+    },
+
+    syncOverlayPresentation() {
+      const opacity = Math.max(0, Math.min(1, Number(this.overlayPresentationOpacity) || 0));
+      if (this.overlayBackdrop) {
+        this.overlayBackdrop.style.opacity = String(opacity);
+      }
+      if (this.overlayFrame) {
+        this.overlayFrame.style.opacity = String(opacity);
+      }
+    },
+
+    setOverlayPresentationOpacity(opacity) {
+      this.overlayPresentationOpacity = Math.max(0, Math.min(1, Number(opacity) || 0));
+      this.syncOverlayPresentation();
+      this.syncContinuousAudioState();
     },
 
     syncContinuousAudioState() {
@@ -203,8 +441,11 @@ const PreviewCtrl = app => async params => {
         bgmVolume: volumeForChannel(settings.masterVolume, settings.musicVolume),
         sfxVolume: volumeForChannel(settings.masterVolume, settings.sfxVolume)
       });
-      const duckOpacity = this.currentFade?.affectAudio ? Number(this.currentFade?.opacity) || 0 : 0;
-      previewAudioRuntime.setDuckFactor(1 - Math.max(0, Math.min(1, duckOpacity)));
+      previewAudioRuntime.setDuckFactor(combinedAudioDuckFactor(this));
+      const adjustedVolume = this.activeAudioBaseVolume * combinedAudioDuckFactor(this);
+      for (const audio of this.activeAudio) {
+        audio.volume = Math.max(0, Math.min(1, adjustedVolume));
+      }
     },
 
     setStatus(message) {
@@ -229,24 +470,30 @@ const PreviewCtrl = app => async params => {
       this.stopMediaPlayback();
       this.runtimeState = cloneRuntimeState(this.runtimeSnapshot);
       this.currentSubtitle = null;
+      this.currentFade = null;
+      this.clearOverlayState();
       this.refreshInspectorState();
-      this.preview?.stop();
-      this.pushRuntimeToPreview();
-      this.syncSubtitleOverlay();
-      this.syncFadeOverlay();
+      this.basePreview?.stop();
+      this.overlayPreview?.stop();
+      this.pushRuntimeToPreview('base');
+      await this.configureOverlayPreview();
+      this.syncSubtitleOverlay('base');
+      this.syncFadeOverlay('base');
     },
 
     stopMediaPlayback() {
       this.subtitleToken += 1;
       this.audioPlaybackToken += 1;
       this.currentSubtitle = null;
+      this.overlayCurrentSubtitle = null;
       for (const audio of this.activeAudio) {
         audio.pause();
         audio.src = '';
       }
       this.activeAudio = [];
       this.activeAudioBaseVolume = 1;
-      this.syncSubtitleOverlay();
+      this.syncSubtitleOverlay('base');
+      this.syncSubtitleOverlay('overlay');
     },
 
     resetNonVolumeVariables() {
@@ -263,14 +510,16 @@ const PreviewCtrl = app => async params => {
     },
 
     async runSceneEnterActions() {
-      await this.executeMatchingInteractions(
+      await this.executeMatchingInteractionsForLayer(
+        'base',
         interaction => interaction.trigger?.type === 'scene_enter',
         {reason: 'scene_enter'}
       );
     },
 
     async runSceneExitActions() {
-      await this.executeMatchingInteractions(
+      await this.executeMatchingInteractionsForLayer(
+        'base',
         interaction => interaction.trigger?.type === 'scene_exit',
         {reason: 'scene_exit', targetSceneId: this.pendingSceneTransitionTarget}
       );
@@ -289,7 +538,7 @@ const PreviewCtrl = app => async params => {
       if (playButton) {
         const objectId = Number(playButton.dataset.objectId);
         const animationId = Number(playButton.dataset.animationId);
-        await this.executeAnimationPreview(objectId, animationId);
+        await this.executeAnimationPreview(this.getActiveLayerName(), objectId, animationId);
         return;
       }
 
@@ -314,17 +563,127 @@ const PreviewCtrl = app => async params => {
       }
     },
 
-    async onPreviewObjectClick(event) {
+    async onSubmit(event) {
+      const sceneJumpForm = event.target.closest('[data-scene-jump-form]');
+      if (!sceneJumpForm) return;
+      event.preventDefault();
+      const formData = new FormData(sceneJumpForm);
+      const targetSceneId = Number(formData.get('scene_id'));
+      if (!targetSceneId || targetSceneId === this.sceneId) return;
+      previewRouteTransitionInFlight = true;
+      app.goto(`/preview/${targetSceneId}`);
+    },
+
+    async onWindowKeyDown(event) {
+      if (event.defaultPrevented || event.repeat || isEditableTarget(event.target)) return;
+      const keyCode = normalizeEventKeyCode(event);
+      if (!keyCode) return;
+
+      if (keyCode === 'Escape' && this.overlayPreviewData) {
+        event.preventDefault();
+        await this.closeOverlayScene();
+        return;
+      }
+
+      const overlayBinding = (this.previewData?.overlay_bindings ?? []).find(
+        binding => binding.key_code === keyCode
+      );
+      if (overlayBinding) {
+        event.preventDefault();
+        if (Number(this.overlayPreviewData?.id) === Number(overlayBinding.overlay_scene_id)) {
+          await this.closeOverlayScene();
+        } else if (this.overlayPreviewData) {
+          await this.changeOverlayScene(overlayBinding.overlay_scene_id);
+        } else {
+          await this.openOverlayScene(overlayBinding.overlay_scene_id);
+        }
+        return;
+      }
+
+      const layer = this.getActiveLayerName();
+      if (keyCode === 'Tab') {
+        event.preventDefault();
+        await this.moveKeyboardFocus(layer, event.shiftKey ? -1 : 1);
+        return;
+      }
+      if (['ArrowUp', 'ArrowLeft'].includes(keyCode)) {
+        event.preventDefault();
+        await this.moveKeyboardFocus(layer, -1);
+        return;
+      }
+      if (['ArrowDown', 'ArrowRight'].includes(keyCode)) {
+        event.preventDefault();
+        await this.moveKeyboardFocus(layer, 1);
+        return;
+      }
+      if (['Enter', 'Space'].includes(keyCode)) {
+        const focusedObjectId = this.getFocusedObjectId(layer);
+        if (focusedObjectId) {
+          event.preventDefault();
+          await this.triggerObjectClick(layer, focusedObjectId, {keyboardDriven: true});
+          return;
+        }
+      }
+      await this.executeMatchingInteractionsForLayer(
+        layer,
+        interaction => (
+          interaction.trigger?.type === 'key_press'
+          && interaction.trigger?.key_code === keyCode
+        ),
+        {reason: 'key_press', keyCode}
+      );
+    },
+
+    async onPreviewObjectClick(event, layer) {
+      if (layer === 'base' && this.overlayPreviewData) return;
+      if (layer === 'overlay' && !this.overlayPreviewData) return;
       const objectId = Number(event.detail?.objectId);
       if (!objectId) return;
-      const state = this.runtimeState?.objects?.[objectId];
+      await this.triggerObjectClick(layer, objectId);
+    },
+
+    async triggerObjectClick(layer, objectId, metadata = {}) {
+      const state = this.getLayerRuntimeState(layer)?.objects?.[objectId];
       if (!state?.enabled || !state?.visible) return;
-      await this.executeMatchingInteractions(
+      await this.executeMatchingInteractionsForLayer(
+        layer,
         interaction => (
           interaction.trigger?.type === 'object_click'
+          && Number(interaction.trigger?.object_id) === Number(objectId)
+        ),
+        {reason: 'object_click', objectId: Number(objectId), ...metadata}
+      );
+    },
+
+    async onPreviewObjectMouseover(event, layer) {
+      if (layer === 'base' && this.overlayPreviewData) return;
+      if (layer === 'overlay' && !this.overlayPreviewData) return;
+      const objectId = Number(event.detail?.objectId);
+      if (!objectId) return;
+      const state = this.getLayerRuntimeState(layer)?.objects?.[objectId];
+      if (!state?.enabled || !state?.visible) return;
+      await this.executeMatchingInteractionsForLayer(
+        layer,
+        interaction => (
+          interaction.trigger?.type === 'object_mouseover'
           && Number(interaction.trigger?.object_id) === objectId
         ),
-        {reason: 'object_click', objectId}
+        {reason: 'object_mouseover', objectId}
+      );
+    },
+
+    async onPreviewObjectMouseout(event, layer) {
+      if (layer === 'base' && this.overlayPreviewData) return;
+      if (layer === 'overlay' && !this.overlayPreviewData) return;
+      const objectId = Number(event.detail?.objectId);
+      if (!objectId) return;
+      await this.executeMatchingInteractionsForLayer(
+        layer,
+        interaction => (
+          interaction.trigger?.type === 'object_mouseout'
+          && Number(interaction.trigger?.object_id) === objectId
+        ),
+        {reason: 'object_mouseout', objectId}
       );
     },
 
@@ -333,16 +692,17 @@ const PreviewCtrl = app => async params => {
       this.setStatus(message);
     },
 
-    async executeAnimationPreview(objectId, animationId) {
+    async executeAnimationPreview(layer, objectId, animationId) {
       const version = ++this.executionVersion;
       this.setStatus('Playing animation...');
       try {
-        await this.preview?.playAnimation(objectId, animationId, {mode: 'immediate'});
+        await this.getLayerPreviewElement(layer)?.playAnimation(objectId, animationId, {mode: 'immediate'});
         if (version !== this.executionVersion) return;
-        const render = getAnimationLastRender(this.previewData, objectId, animationId);
-        if (render && this.runtimeState?.objects?.[objectId]) {
-          this.runtimeState.objects[objectId].render = render;
-          this.pushRuntimeToPreview();
+        const render = getAnimationLastRender(this.getLayerPreviewData(layer), objectId, animationId);
+        const runtimeState = this.getLayerRuntimeState(layer);
+        if (render && runtimeState?.objects?.[objectId]) {
+          runtimeState.objects[objectId].render = render;
+          this.pushRuntimeToPreview(layer);
         }
         this.refreshInspectorState();
       } finally {
@@ -350,14 +710,14 @@ const PreviewCtrl = app => async params => {
       }
     },
 
-    async executeMatchingInteractions(predicate, metadata = {}) {
-      const interactions = (this.previewData?.interactions ?? []).filter(predicate);
+    async executeMatchingInteractionsForLayer(layer, predicate, metadata = {}) {
+      const interactions = (this.getLayerPreviewData(layer)?.interactions ?? []).filter(predicate);
       if (!interactions.length) return;
       const chainState = {remaining: MAX_CHAINED_INTERACTIONS};
-      await this.executeInteractions(interactions, metadata, chainState);
+      await this.executeInteractions(layer, interactions, metadata, chainState);
     },
 
-    async executeInteractions(interactions, metadata = {}, chainState = {remaining: MAX_CHAINED_INTERACTIONS}) {
+    async executeInteractions(layer, interactions, metadata = {}, chainState = {remaining: MAX_CHAINED_INTERACTIONS}) {
       const version = this.executionVersion;
       for (const interaction of interactions) {
         if (version !== this.executionVersion) return;
@@ -367,41 +727,55 @@ const PreviewCtrl = app => async params => {
           return;
         }
         chainState.remaining -= 1;
-        await this.executeActionTree(interaction.action_tree ?? [], metadata, chainState, version);
+        await this.executeActionTree(layer, interaction.action_tree ?? [], metadata, chainState, version);
       }
     },
 
-    async executeActionTree(steps, metadata, chainState, version) {
+    async executeActionTree(layer, steps, metadata, chainState, version) {
       for (const step of steps ?? []) {
         if (version !== this.executionVersion) return;
-        await this.executeActionStep(step, metadata, chainState, version);
+        await this.executeActionStep(layer, step, metadata, chainState, version);
       }
     },
 
-    async executeActionStep(step, metadata, chainState, version) {
+    async executeActionStep(layer, step, metadata, chainState, version) {
       if (!step?.type || version !== this.executionVersion) return;
+      const previewData = this.getLayerPreviewData(layer);
+      const runtimeState = this.getLayerRuntimeState(layer);
+      const preview = this.getLayerPreviewElement(layer);
+
       if (step.type === 'play_animation') {
-        const runPromise = this.preview?.playAnimation(step.target_object_id, step.animation_id, {
+        const runPromise = preview?.playAnimation(step.target_object_id, step.animation_id, {
           mode: step.mode ?? 'queued'
         });
         if (step.wait !== 'continue') await runPromise;
         else void runPromise;
-        const render = getAnimationLastRender(this.previewData, step.target_object_id, step.animation_id);
-        if (render && this.runtimeState?.objects?.[step.target_object_id]) {
-          this.runtimeState.objects[step.target_object_id].render = render;
-          this.pushRuntimeToPreview();
+        const render = getAnimationLastRender(previewData, step.target_object_id, step.animation_id);
+        if (render && runtimeState?.objects?.[step.target_object_id]) {
+          runtimeState.objects[step.target_object_id].render = render;
+          this.pushRuntimeToPreview(layer);
         }
         return;
       }
 
+      if (step.type === 'go_to_frame') {
+        const render = getObjectRenderForFrame(previewData, step.target_object_id, step.frame_index);
+        if (runtimeState?.objects?.[step.target_object_id]) {
+          runtimeState.objects[step.target_object_id].render = render;
+        }
+        preview?.setObjectRender?.(step.target_object_id, render);
+        this.refreshInspectorState();
+        return;
+      }
+
       if (step.type === 'set_object_property') {
-        const objectState = this.runtimeState?.objects?.[step.target_object_id];
+        const objectState = runtimeState?.objects?.[step.target_object_id];
         if (!objectState) return;
         if (step.property === 'visible') objectState.visible = Boolean(step.value);
         if (step.property === 'enabled') objectState.enabled = Boolean(step.value);
         if (step.property === 'label') objectState.label = String(step.value ?? '');
         this.refreshInspectorState();
-        this.pushRuntimeToPreview();
+        this.pushRuntimeToPreview(layer);
         return;
       }
 
@@ -410,7 +784,7 @@ const PreviewCtrl = app => async params => {
         if (!variableState) return;
         variableState.value = step.value;
         this.refreshInspectorState();
-        await this.triggerVariableChanged(step.variable_id, chainState);
+        await this.triggerVariableChanged(layer, step.variable_id, chainState);
         return;
       }
 
@@ -419,7 +793,7 @@ const PreviewCtrl = app => async params => {
         if (!variableState) return;
         variableState.value = Number(variableState.value || 0) + Number(step.amount || 0);
         this.refreshInspectorState();
-        await this.triggerVariableChanged(step.variable_id, chainState);
+        await this.triggerVariableChanged(layer, step.variable_id, chainState);
         return;
       }
 
@@ -428,32 +802,32 @@ const PreviewCtrl = app => async params => {
         if (!variableState) return;
         variableState.value = !Boolean(variableState.value);
         this.refreshInspectorState();
-        await this.triggerVariableChanged(step.variable_id, chainState);
+        await this.triggerVariableChanged(layer, step.variable_id, chainState);
         return;
       }
 
       if (step.type === 'show_subtitle') {
-        const line = this.pickScriptLine(step.script_line_ids);
+        const line = this.pickScriptLine(layer, step.script_line_ids);
         if (!line) return;
         const subtitle = buildSubtitlePayload(line, this.getLanguageSettings());
         if (!subtitle) return;
-        const runPromise = this.showSubtitle(subtitle, step.duration_seconds, version);
+        const runPromise = this.showSubtitle(layer, subtitle, step.duration_seconds, version);
         if (step.wait !== 'continue') await runPromise;
         else void runPromise;
         return;
       }
 
       if (step.type === 'play_audio') {
-        const line = this.pickScriptLine(step.script_line_ids);
+        const line = this.pickScriptLine(layer, step.script_line_ids);
         if (!line) return;
-        const runPromise = this.playAudioForLine(line, version);
+        const runPromise = this.playAudioForLine(layer, line, version);
         if (step.wait !== 'continue') await runPromise;
         else void runPromise;
         return;
       }
 
       if (step.type === 'crossfade_bgm') {
-        const asset = this.findAudioAsset(step.audio_asset_id, 'bgm');
+        const asset = this.findAudioAsset(layer, step.audio_asset_id, 'bgm');
         if (!asset) return;
         const settings = this.getLanguageSettings();
         const runPromise = previewAudioRuntime.crossfadeBgm({
@@ -468,7 +842,7 @@ const PreviewCtrl = app => async params => {
       }
 
       if (step.type === 'play_sfx') {
-        const asset = this.findAudioAsset(step.audio_asset_id, 'sfx');
+        const asset = this.findAudioAsset(layer, step.audio_asset_id, 'sfx');
         if (!asset) return;
         const settings = this.getLanguageSettings();
         const runPromise = previewAudioRuntime.playSfx({
@@ -485,7 +859,7 @@ const PreviewCtrl = app => async params => {
         if (!variableState) return;
         const matches = compareVariable(variableState.value, step.operator, step.value);
         const branch = matches ? step.then_steps : step.else_steps;
-        await this.executeActionTree(branch ?? [], metadata, chainState, version);
+        await this.executeActionTree(layer, branch ?? [], metadata, chainState, version);
         return;
       }
 
@@ -495,28 +869,48 @@ const PreviewCtrl = app => async params => {
       }
 
       if (step.type === 'fade_out' || step.type === 'fade_in') {
-        const runPromise = this.runFade(step, version);
+        const runPromise = this.runFade(layer, step, version);
         if (step.wait !== 'continue') await runPromise;
         else void runPromise;
         return;
       }
 
       if (step.type === 'change_scene') {
+        if (layer === 'overlay' && this.overlayPreviewData) {
+          await this.closeOverlayScene();
+        }
         await this.changeScene(step.scene_id);
+        return;
+      }
+
+      if (step.type === 'open_overlay_scene') {
+        await this.openOverlayScene(step.scene_id);
+        return;
+      }
+
+      if (step.type === 'close_overlay_scene') {
+        await this.closeOverlayScene();
+        return;
+      }
+
+      if (step.type === 'change_overlay_scene') {
+        await this.changeOverlayScene(step.scene_id);
       }
     },
 
-    async runFade(step, version) {
+    async runFade(layer, step, version) {
       const targetOpacity = step.type === 'fade_out' ? 1 : 0;
       const color = normalizeFadeColor(step.color);
-      this.currentFade = {
+      const currentFade = this.getLayerFade(layer);
+      this.setLayerFade(layer, {
         color,
-        opacity: Number(this.currentFade?.opacity ?? (step.type === 'fade_out' ? 0 : 1)),
+        opacity: Number(currentFade?.opacity ?? (step.type === 'fade_out' ? 0 : 1)),
         affectAudio: Boolean(step.affect_audio)
-      };
-      this.syncFadeOverlay();
+      });
+      this.syncFadeOverlay(layer);
       await animateFade(this, {
-        fromOpacity: this.currentFade.opacity,
+        layer,
+        fromOpacity: this.getLayerFade(layer)?.opacity ?? 0,
         toOpacity: targetOpacity,
         color,
         durationSeconds: step.duration_seconds,
@@ -524,15 +918,81 @@ const PreviewCtrl = app => async params => {
         version
       });
       if (version !== this.executionVersion) return;
-      if (targetOpacity <= 0) this.currentFade = null;
-      else this.currentFade = {color, opacity: 1, affectAudio: Boolean(step.affect_audio)};
+      if (targetOpacity <= 0) this.setLayerFade(layer, null);
+      else this.setLayerFade(layer, {color, opacity: 1, affectAudio: Boolean(step.affect_audio)});
       this.syncContinuousAudioState();
-      this.syncFadeOverlay();
+      this.syncFadeOverlay(layer);
+    },
+
+    async openOverlayScene(nextOverlaySceneId) {
+      const targetSceneId = Number(nextOverlaySceneId);
+      if (!targetSceneId) return;
+      if (Number(this.overlayPreviewData?.id) === targetSceneId) return;
+      if (this.overlayPreviewData) {
+        await this.changeOverlayScene(targetSceneId);
+        return;
+      }
+      this.executionVersion += 1;
+      this.stopMediaPlayback();
+      this.setStatus(`Opening overlay scene ${targetSceneId}...`);
+      try {
+        const overlaySettings = this.getGlobalOverlaySettings();
+        this.openingOverlaySceneId = targetSceneId;
+        this.overlayPreviewData = await fetchPreviewData(targetSceneId);
+        this.overlayRuntimeSnapshot = createRuntimeSnapshot(this.overlayPreviewData);
+        this.overlayRuntimeState = createOverlayRuntimeState(this.overlayRuntimeSnapshot, this.runtimeState?.variables ?? {});
+        this.overlayCurrentSubtitle = null;
+        this.overlayCurrentFade = null;
+        this.overlayPresentationOpacity = 0;
+        await this.refreshView();
+        await animateOverlayOpacity(this, {
+          fromOpacity: 0,
+          toOpacity: 1,
+          durationSeconds: overlaySettings.overlayOpenDurationSeconds,
+          version: this.executionVersion
+        });
+      } finally {
+        this.openingOverlaySceneId = null;
+        this.setStatus('');
+      }
+    },
+
+    async closeOverlayScene() {
+      if (!this.overlayPreviewData) return;
+      const overlaySettings = this.getGlobalOverlaySettings();
+      await animateOverlayOpacity(this, {
+        fromOpacity: this.overlayPresentationOpacity,
+        toOpacity: 0,
+        durationSeconds: overlaySettings.overlayCloseDurationSeconds,
+        version: this.executionVersion
+      });
+      this.executionVersion += 1;
+      this.stopMediaPlayback();
+      this.overlayPreview?.stop();
+      this.clearOverlayState();
+      this.refreshInspectorState();
+      await this.refreshView();
+      this.setStatus('');
+    },
+
+    async changeOverlayScene(nextOverlaySceneId) {
+      const targetSceneId = Number(nextOverlaySceneId);
+      if (!targetSceneId) return;
+      if (!this.overlayPreviewData) {
+        await this.openOverlayScene(targetSceneId);
+        return;
+      }
+      if (Number(this.overlayPreviewData.id) === targetSceneId) return;
+      await this.closeOverlayScene();
+      await this.openOverlayScene(targetSceneId);
     },
 
     async changeScene(nextSceneId) {
       const targetSceneId = Number(nextSceneId);
       if (!targetSceneId) return;
+      if (this.overlayPreviewData) {
+        await this.closeOverlayScene();
+      }
       if (this.runningSceneExit || this.isTransitioningScene) {
         this.pendingSceneTransitionTarget = targetSceneId;
         return;
@@ -577,9 +1037,10 @@ const PreviewCtrl = app => async params => {
       }, 150);
     },
 
-    async triggerVariableChanged(variableId, chainState) {
+    async triggerVariableChanged(layer, variableId, chainState) {
       await this.executeInteractions(
-        (this.previewData?.interactions ?? []).filter(interaction => (
+        layer,
+        (this.getLayerPreviewData(layer)?.interactions ?? []).filter(interaction => (
           interaction.trigger?.type === 'variable_changed'
           && Number(interaction.trigger?.variable_id) === Number(variableId)
         )),
@@ -601,40 +1062,50 @@ const PreviewCtrl = app => async params => {
       };
     },
 
-    findAudioAsset(audioAssetId, expectedKind) {
-      return (this.previewData?.audio_assets ?? []).find(asset => (
+    getGlobalOverlaySettings() {
+      return {
+        overlayOpenDurationSeconds: Number(this.previewData?.global_settings?.overlay_open_duration_seconds || 0.22),
+        overlayCloseDurationSeconds: Number(this.previewData?.global_settings?.overlay_close_duration_seconds || 0.18),
+        overlayAffectAudio: Boolean(this.previewData?.global_settings?.overlay_affect_audio)
+      };
+    },
+
+    findAudioAsset(layer, audioAssetId, expectedKind) {
+      return (this.getLayerPreviewData(layer)?.audio_assets ?? []).find(asset => (
         Number(asset.id) === Number(audioAssetId)
         && (!expectedKind || asset.kind === expectedKind)
       )) ?? null;
     },
 
-    pickScriptLine(lineIds) {
+    pickScriptLine(layer, lineIds) {
       const validIds = (lineIds ?? []).map(Number).filter(Boolean);
       if (!validIds.length) return null;
       const randomId = validIds[Math.floor(Math.random() * validIds.length)];
-      return (this.previewData?.script_lines ?? []).find(line => Number(line.line_id) === randomId) ?? null;
+      return (this.getLayerPreviewData(layer)?.script_lines ?? []).find(
+        line => Number(line.line_id) === randomId
+      ) ?? null;
     },
 
-    async showSubtitle(subtitle, durationSeconds, version) {
+    async showSubtitle(layer, subtitle, durationSeconds, version) {
       const token = ++this.subtitleToken;
-      this.currentSubtitle = subtitle;
-      this.syncSubtitleOverlay();
+      this.setLayerSubtitle(layer, subtitle);
+      this.syncSubtitleOverlay(layer);
       await wait(durationSeconds);
       await waitMilliseconds(SUBTITLE_LINGER_MS);
       if (token !== this.subtitleToken || version !== this.executionVersion) return;
-      this.currentSubtitle = null;
-      this.syncSubtitleOverlay();
+      this.setLayerSubtitle(layer, null);
+      this.syncSubtitleOverlay(layer);
     },
 
-    async playAudioForLine(line, version) {
+    async playAudioForLine(layer, line, version) {
       const playbackToken = ++this.audioPlaybackToken;
       this.stopActiveAudio();
       const settings = this.getLanguageSettings();
       const subtitle = buildSubtitlePayload(line, settings);
       const sequence = buildAudioSequence(line, settings);
       if (subtitle) {
-        this.currentSubtitle = subtitle;
-        this.syncSubtitleOverlay();
+        this.setLayerSubtitle(layer, subtitle);
+        this.syncSubtitleOverlay(layer);
       }
       try {
         if (!sequence.length) return;
@@ -653,8 +1124,8 @@ const PreviewCtrl = app => async params => {
       } finally {
         if (playbackToken === this.audioPlaybackToken && version === this.executionVersion) {
           await waitMilliseconds(SUBTITLE_LINGER_MS);
-          this.currentSubtitle = null;
-          this.syncSubtitleOverlay();
+          this.setLayerSubtitle(layer, null);
+          this.syncSubtitleOverlay(layer);
         }
       }
     },
@@ -672,12 +1143,13 @@ const PreviewCtrl = app => async params => {
       if (!audioUrl) return;
       const audio = new Audio(audioUrl);
       this.activeAudioBaseVolume = volume;
-      audio.volume = this.currentFade?.affectAudio
-        ? applyFadeGain(volume, this.currentFade?.opacity ?? 0)
-        : volume;
+      audio.volume = Math.max(0, Math.min(1, volume * combinedAudioDuckFactor(this)));
       this.activeAudio = [audio];
       await new Promise(resolve => {
+        let finished = false;
         const finish = () => {
+          if (finished) return;
+          finished = true;
           audio.removeEventListener('ended', onEnded);
           audio.removeEventListener('error', onError);
           resolve();
@@ -729,6 +1201,12 @@ function createRuntimeSnapshot(previewData) {
   };
 }
 
+function createOverlayRuntimeState(snapshot, sharedVariables) {
+  const nextState = cloneRuntimeState(snapshot);
+  nextState.variables = sharedVariables ?? {};
+  return nextState;
+}
+
 function cloneRuntimeState(snapshot) {
   return structuredClone(snapshot ?? {objects: {}, variables: {}});
 }
@@ -741,6 +1219,17 @@ function getAnimationLastRender(previewData, objectId, animationId) {
     if (frames[index]?.render) return frames[index].render;
   }
   return object?.default_render ?? null;
+}
+
+function getObjectRenderForFrame(previewData, objectId, frameIndex) {
+  const object = (previewData?.objects ?? []).find(item => Number(item.id) === Number(objectId));
+  if (!object) return null;
+  const numericFrameIndex = Number(frameIndex);
+  const directRender = (object.frame_renders ?? []).find(
+    render => Number(render?.frame_index) === numericFrameIndex
+  );
+  if (directRender) return directRender;
+  return object.default_render ?? null;
 }
 
 function compareVariable(leftValue, operator, rightValue) {
@@ -786,12 +1275,21 @@ function normalizeFadeColor(value) {
   return trimmed || '#000000';
 }
 
-function applyFadeGain(baseVolume, fadeOpacity) {
-  const opacity = Math.max(0, Math.min(1, Number(fadeOpacity) || 0));
-  return Math.max(0, Math.min(1, Number(baseVolume || 0) * (1 - opacity)));
+function combinedAudioDuckFactor(controller) {
+  let factor = 1;
+  for (const fade of [controller.currentFade, controller.overlayCurrentFade]) {
+    if (!fade?.affectAudio) continue;
+    const opacity = Math.max(0, Math.min(1, Number(fade.opacity) || 0));
+    factor = Math.min(factor, 1 - opacity);
+  }
+  if (controller.overlayPreviewData && controller.getGlobalOverlaySettings().overlayAffectAudio) {
+    factor = Math.min(factor, OVERLAY_OPEN_DUCK_FACTOR);
+  }
+  return Math.max(0, Math.min(1, factor));
 }
 
 async function animateFade(controller, {
+  layer,
   fromOpacity,
   toOpacity,
   color,
@@ -805,15 +1303,32 @@ async function animateFade(controller, {
     const elapsed = performance.now() - start;
     const progress = Math.min(1, elapsed / durationMs);
     const opacity = fromOpacity + ((toOpacity - fromOpacity) * progress);
-    controller.currentFade = {color, opacity, affectAudio};
-    previewAudioRuntime.setDuckFactor(affectAudio ? 1 - Math.max(0, Math.min(1, opacity)) : 1);
-    controller.syncFadeOverlay();
-    if (affectAudio) {
-      const adjustedVolume = applyFadeGain(controller.activeAudioBaseVolume, opacity);
-      for (const audio of controller.activeAudio) {
-        audio.volume = adjustedVolume;
-      }
-    }
+    controller.setLayerFade(layer, {color, opacity, affectAudio});
+    controller.syncContinuousAudioState();
+    controller.syncFadeOverlay(layer);
+    return progress;
+  };
+
+  while (version === controller.executionVersion) {
+    const progress = updateFrame();
+    if (progress >= 1) break;
+    await waitMilliseconds(FADE_FRAME_MS);
+  }
+}
+
+async function animateOverlayOpacity(controller, {
+  fromOpacity,
+  toOpacity,
+  durationSeconds,
+  version
+}) {
+  const durationMs = Math.max(1, Math.round(Number(durationSeconds || 0) * 1000));
+  const start = performance.now();
+  const updateFrame = () => {
+    const elapsed = performance.now() - start;
+    const progress = Math.min(1, elapsed / durationMs);
+    const opacity = fromOpacity + ((toOpacity - fromOpacity) * progress);
+    controller.setOverlayPresentationOpacity(opacity);
     return progress;
   };
 
@@ -914,16 +1429,6 @@ function renderPreviewVariables(variables) {
   )).join('');
 }
 
-function renderSubtitleOverlay(subtitle) {
-  if (!subtitle?.primaryText && !subtitle?.secondaryText) return '';
-  return `
-    <div class="preview-subtitles ${subtitle.sizeClass}">
-      ${subtitle.primaryText ? `<p class="preview-subtitles__primary">${escapeHtml(subtitle.primaryText)}</p>` : ''}
-      ${subtitle.secondaryText ? `<p class="preview-subtitles__secondary">${escapeHtml(subtitle.secondaryText)}</p>` : ''}
-    </div>
-  `;
-}
-
 function escapeHtml(value) {
   return String(value ?? '')
     .replaceAll('&', '&amp;')
@@ -940,6 +1445,17 @@ function wait(durationSeconds) {
 
 function waitMilliseconds(milliseconds) {
   return new Promise(resolve => window.setTimeout(resolve, milliseconds));
+}
+
+function normalizeEventKeyCode(event) {
+  const code = String(event.code || '').trim();
+  return code || '';
+}
+
+function isEditableTarget(target) {
+  if (!(target instanceof HTMLElement)) return false;
+  if (target.isContentEditable) return true;
+  return Boolean(target.closest('input, textarea, select, [contenteditable="true"]'));
 }
 
 export {PreviewCtrl};
@@ -970,6 +1486,10 @@ function invalidatePreviewDataCache(sceneId) {
 
 function collectConnectedSceneIds(previewData, currentSceneId) {
   const targets = new Set();
+  for (const binding of previewData?.overlay_bindings ?? []) {
+    const overlaySceneId = Number(binding.overlay_scene_id);
+    if (overlaySceneId) targets.add(overlaySceneId);
+  }
   collectConnectedSceneIdsFromSteps(
     (previewData?.interactions ?? []).flatMap(interaction => interaction.action_tree ?? []),
     targets,
@@ -984,6 +1504,10 @@ function collectConnectedSceneIdsFromSteps(steps, targets, currentSceneId) {
       const targetSceneId = Number(step.scene_id);
       if (targetSceneId && targetSceneId !== currentSceneId) targets.add(targetSceneId);
     }
+    if (step?.type === 'open_overlay_scene' || step?.type === 'change_overlay_scene') {
+      const targetSceneId = Number(step.scene_id);
+      if (targetSceneId) targets.add(targetSceneId);
+    }
     collectConnectedSceneIdsFromSteps(step?.then_steps ?? [], targets, currentSceneId);
     collectConnectedSceneIdsFromSteps(step?.else_steps ?? [], targets, currentSceneId);
   }
@@ -994,8 +1518,12 @@ async function preloadConnectedScenes(sceneIds) {
     [...new Set(sceneIds)]
       .slice(0, MAX_PRELOADED_CONNECTED_SCENES)
       .map(async sceneId => {
-        const previewData = await fetchPreviewData(sceneId);
-        await preloadPreviewAssets(previewData);
+        try {
+          const previewData = await fetchPreviewData(sceneId);
+          await preloadPreviewAssets(previewData);
+        } catch {
+          invalidatePreviewDataCache(sceneId);
+        }
       })
   );
 }

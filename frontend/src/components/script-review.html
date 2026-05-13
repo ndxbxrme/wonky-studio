@@ -1,4 +1,15 @@
 <main class="script-review-page" data-script-review-page>
+  <nav class="app-topbar" aria-label="Primary">
+    <a class="app-topbar__brand" href="/">Wonky Studio</a>
+    <div class="app-topbar__links">
+      <a class="app-topbar__link" href="/">Scenes</a>
+      <a class="app-topbar__link" href="/script-review">Transcript library</a>
+      <a class="app-topbar__link" href="/audio-library">Audio library</a>
+      <a class="app-topbar__link" href="/global-settings">Global settings</a>
+      <button class="app-topbar__link app-topbar__link--primary" type="button" data-action="open-game-preview">Preview game</button>
+    </div>
+  </nav>
+
   <header class="script-review-header">
     <div>
       <a class="back-link" href="/">Back to workspace</a>
@@ -64,6 +75,7 @@
           <option value="">Any</option>
           <option value="narrator_candidate">Narrator</option>
           <option value="tts">TTS</option>
+          <option value="uploaded_review">Uploaded</option>
         </select>
       </label>
       <label class="checkbox-label">
@@ -76,6 +88,28 @@
 
   <section class="script-review-grid">
     <aside class="script-line-panel" aria-label="Script line list">
+      <form class="script-line-create-card" data-script-line-create-form>
+        <div class="script-line-create-card__header">
+          <div>
+            <p class="eyebrow">Authoring</p>
+            <strong>Add line</strong>
+          </div>
+          <span>{{language}}</span>
+        </div>
+        <label>
+          Source text
+          <textarea name="source_text" rows="3" placeholder="New script line" required></textarea>
+        </label>
+        <label>
+          Path
+          <input name="path_text" type="text" list="script-path-options" placeholder="ROOMS / BEDROOM" />
+        </label>
+        <label>
+          {{language}} translation
+          <textarea name="translation_text" rows="2" placeholder="Optional translation"></textarea>
+        </label>
+        <button class="button primary" type="submit">Add line</button>
+      </form>
       <div class="script-line-panel__header">
         <strong>{{total}} lines</strong>
         <div class="script-pager">
@@ -113,7 +147,21 @@
             <h2>{{selectedLine.source_text}}</h2>
             <p>{{selectedLine.pathLabel}}</p>
           </div>
+          <button class="button danger compact" type="button" data-action="delete-script-line">Delete line</button>
         </div>
+
+        {{#if selectedLine.usage_references.length}}
+          <section class="script-line-usage" aria-label="Line usage">
+            <p class="eyebrow">In use</p>
+            <div class="script-line-usage__list">
+              {{#each selectedLine.usage_references as reference}}
+                <span>
+                  Scene {{reference.scene_id}} · {{reference.interaction_name}} · {{reference.step_types.0}}
+                </span>
+              {{/each}}
+            </div>
+          </section>
+        {{/if}}
 
         <form class="translation-editor" data-translation-form>
           <input type="hidden" name="language" value="{{language}}" />
@@ -143,13 +191,18 @@
           <button class="button primary" type="submit">Save translation</button>
         </form>
 
-        <section class="audio-review-section" aria-label="Audio candidates">
+        <section class="audio-review-section" aria-label="Audio candidates" data-script-audio-dropzone>
           <div class="audio-review-section__header">
             <div>
               <p class="eyebrow">Audio</p>
               <h2>Candidates</h2>
             </div>
+            <div class="audio-review-section__actions">
+              <input class="file-input" type="file" accept="audio/*" multiple data-script-audio-upload-input />
+              <button class="button secondary compact" type="button" data-action="browse-review-audio">Upload audio</button>
+            </div>
           </div>
+          <p class="muted">Drop audio anywhere on this page or upload it here for the current {{language}} line.</p>
           {{#if selectedLine.hasAudioCandidates}}
             <div class="audio-candidate-list">
               {{#each selectedLine.audio_candidates as candidate}}

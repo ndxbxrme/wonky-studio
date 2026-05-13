@@ -1,4 +1,15 @@
 <main class="scene-layout" data-scene-page>
+  <nav class="app-topbar" aria-label="Primary">
+    <a class="app-topbar__brand" href="/">Wonky Studio</a>
+    <div class="app-topbar__links">
+      <a class="app-topbar__link" href="/">Scenes</a>
+      <a class="app-topbar__link" href="/script-review">Transcript library</a>
+      <a class="app-topbar__link" href="/audio-library">Audio library</a>
+      <a class="app-topbar__link" href="/global-settings">Global settings</a>
+      <button class="app-topbar__link app-topbar__link--primary" type="button" data-action="open-game-preview">Preview game</button>
+    </div>
+  </nav>
+
   {{#if sceneFound}}
     <header class="scene-header">
       <div>
@@ -8,8 +19,21 @@
         <p>{{scene.description}}</p>
       </div>
       <div class="scene-header__actions">
+        <div class="scene-switcher">
+          {{#if previousSceneId}}<a class="button secondary compact" href="/scene/{{previousSceneId}}">Prev scene</a>{{/if}}
+          <form class="scene-switcher__form" data-scene-jump-form>
+            <select name="scene_id">
+              {{#each sceneOptions as sceneOption}}
+                <option value="{{sceneOption.id}}" {{#if sceneOption.isCurrent}}selected{{/if}}>Scene {{sceneOption.id}}</option>
+              {{/each}}
+            </select>
+            <button class="button secondary compact" type="submit">Go</button>
+          </form>
+          {{#if nextSceneId}}<a class="button secondary compact" href="/scene/{{nextSceneId}}">Next scene</a>{{/if}}
+        </div>
         <button class="button secondary compact" type="button" data-action="analyze-vlm">Analyze with VLM</button>
         <button class="button primary compact" type="button" data-action="extract-masks">Extract masks</button>
+        <button class="button secondary compact" type="button" data-action="generate-inventory-images">Generate inventory art</button>
         <a class="button secondary compact" href="/actions/{{scene.id}}">Edit actions</a>
         <button class="button secondary compact" type="button" data-action="open-preview">Open preview</button>
         <button class="button secondary compact" type="button" data-action="logout">Sign out</button>
@@ -31,7 +55,7 @@
           <div class="scene-action-summary" aria-label="Scene-level actions">
             <p class="eyebrow">Scene actions</p>
             {{#each scene.sceneActionSummaries as action}}
-              <span>{{action.label}}</span>
+              <a href="{{action.href}}">{{action.label}}</a>
             {{/each}}
           </div>
         {{/if}}
@@ -45,23 +69,58 @@
             {{/if}}
           </div>
         {{/if}}
-        <p class="form-status" data-vlm-analysis-status aria-live="polite"></p>
-        <p class="form-status" data-mask-extraction-status aria-live="polite"></p>
+        <p class="form-status scene-form-status" data-vlm-analysis-status aria-live="polite"></p>
+        <p class="form-status scene-form-status" data-mask-extraction-status aria-live="polite"></p>
+        <p class="form-status scene-form-status" data-inventory-image-status aria-live="polite"></p>
       </article>
 
       <aside class="objects-panel">
         <div class="panel-stack">
           <div>
-            <p class="eyebrow">Objects</p>
-            <h2>Inventory</h2>
+            <p class="eyebrow">Scene settings</p>
+            <h2>Presentation</h2>
           </div>
-          {{#if scene.hasObjects}}
-            <div class="object-list">
-              {{#each scene.objects as object}}
-                <span>{{object.name}}</span>
-              {{/each}}
-            </div>
-          {{/if}}
+          <form class="object-form" data-scene-settings-form>
+            <label>
+              Title
+              <input name="title" type="text" value="{{scene.title}}" required />
+            </label>
+            <label>
+              Description
+              <input name="description" type="text" value="{{scene.description}}" />
+            </label>
+            <label>
+              Presentation mode
+              <select name="presentation_mode">
+                <option value="base" {{#if scene.isBasePresentation}}selected{{/if}}>Base scene</option>
+                <option value="overlay" {{#if scene.isOverlayPresentation}}selected{{/if}}>Overlay scene</option>
+              </select>
+            </label>
+            <button class="button secondary compact" type="submit">Save scene settings</button>
+            <p class="form-status scene-form-status" data-scene-settings-status aria-live="polite"></p>
+          </form>
+
+          <div>
+            <h2>Merge Into Scene</h2>
+            <p class="muted">Move this scene's images, objects, masks, prompts, interactions, and animations into another base scene, then remove this scene.</p>
+          </div>
+          <form class="object-form" data-scene-merge-form>
+            <label>
+              Target scene
+              <select name="target_scene_id" required>
+                <option value="">Choose target scene</option>
+                {{#each mergeSceneOptions as sceneOption}}
+                  <option value="{{sceneOption.id}}">Scene {{sceneOption.id}} · {{sceneOption.title}}</option>
+                {{/each}}
+              </select>
+            </label>
+            <button class="button danger compact" type="submit">Merge into scene</button>
+            <p class="form-status scene-form-status" data-scene-merge-status aria-live="polite"></p>
+          </form>
+
+          <div>
+            <h2>New Object</h2>
+          </div>
           <form class="object-form" data-object-form>
             <label>
               Object name
@@ -76,7 +135,7 @@
               <input name="prompt" type="text" placeholder="bed with covers and pillow" />
             </label>
             <button class="button secondary compact" type="submit">Add object</button>
-            <p class="form-status" data-object-form-status aria-live="polite"></p>
+            <p class="form-status scene-form-status" data-object-form-status aria-live="polite"></p>
           </form>
         </div>
       </aside>
@@ -109,7 +168,9 @@
                     <p>
                       {{object.source}} · {{object.maskCount}} masks ·
                       <a class="inline-link" href="/animations/{{scene.id}}/{{object.id}}">{{object.animationCount}} animations</a> ·
-                      <a class="inline-link" href="/actions/{{scene.id}}?objectId={{object.id}}">New action</a>
+                      <a class="inline-link" href="/actions/{{scene.id}}?objectId={{object.id}}">New action</a> ·
+                      {{#if object.keyboard_target_enabled}}keyboard target{{/if}}
+                      {{#if not object.keyboard_target_enabled}}pointer only{{/if}}
                     </p>
                     {{#if object.description}}
                       <p>{{object.description}}</p>
@@ -135,15 +196,44 @@
                     Segmentation prompt
                     <input name="prompt" type="text" value="{{object.prompt}}" required />
                   </label>
-                  <button class="button secondary compact" type="submit">Save prompt</button>
-                  <p class="form-status" data-object-prompt-status aria-live="polite"></p>
+                  <div class="object-order-controls">
+                    <span class="object-order-controls__label">Object order</span>
+                    <div class="object-order-controls__buttons">
+                      <button
+                        class="button secondary compact"
+                        type="button"
+                        data-action="move-object"
+                        data-object-id="{{object.id}}"
+                        data-direction="up"
+                        {{#if not object.hasPreviousObject}}disabled{{/if}}
+                      >↑</button>
+                      <button
+                        class="button secondary compact"
+                        type="button"
+                        data-action="move-object"
+                        data-object-id="{{object.id}}"
+                        data-direction="down"
+                        {{#if not object.hasNextObject}}disabled{{/if}}
+                      >↓</button>
+                    </div>
+                  </div>
+                  <label class="checkbox-label">
+                    <input
+                      name="keyboard_target_enabled"
+                      type="checkbox"
+                      {{#if object.keyboard_target_enabled}}checked{{/if}}
+                    />
+                    Keyboard target
+                  </label>
+                  <button class="button secondary compact" type="submit">Save</button>
+                  <p class="form-status scene-form-status" data-object-prompt-status aria-live="polite"></p>
                 </form>
               </div>
             </article>
           {{/each}}
         </div>
       {{/if}}
-      <p class="form-status" data-object-action-status aria-live="polite"></p>
+      <p class="form-status scene-form-status" data-object-action-status aria-live="polite"></p>
     </section>
   {{/if}}
 

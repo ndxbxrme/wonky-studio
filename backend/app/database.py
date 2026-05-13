@@ -186,6 +186,7 @@ def init_database(
                 organization_id TEXT NOT NULL,
                 title TEXT NOT NULL,
                 description TEXT NOT NULL DEFAULT '',
+                presentation_mode TEXT NOT NULL DEFAULT 'base',
                 status TEXT NOT NULL DEFAULT 'draft',
                 representative_uploaded_file_id INTEGER,
                 representative_hash TEXT,
@@ -198,6 +199,14 @@ def init_database(
             )
             """
         )
+        _ensure_column(connection, "scenes", "presentation_mode", "TEXT NOT NULL DEFAULT 'base'")
+        connection.execute(
+            """
+            UPDATE scenes
+            SET presentation_mode = 'base'
+            WHERE trim(presentation_mode) = ''
+            """
+        )
         connection.execute(
             """
             CREATE TABLE IF NOT EXISTS scene_images (
@@ -207,10 +216,19 @@ def init_database(
                 perceptual_hash TEXT NOT NULL,
                 width INTEGER NOT NULL,
                 height INTEGER NOT NULL,
+                sort_order INTEGER NOT NULL DEFAULT 0,
                 created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
                 FOREIGN KEY (scene_id) REFERENCES scenes(id),
                 FOREIGN KEY (uploaded_file_id) REFERENCES uploaded_files(id)
             )
+            """
+        )
+        _ensure_column(connection, "scene_images", "sort_order", "INTEGER NOT NULL DEFAULT 0")
+        connection.execute(
+            """
+            UPDATE scene_images
+            SET sort_order = id
+            WHERE sort_order = 0
             """
         )
         connection.execute(
@@ -223,6 +241,9 @@ def init_database(
                 prompt TEXT NOT NULL DEFAULT '',
                 category TEXT NOT NULL DEFAULT 'other',
                 source TEXT NOT NULL DEFAULT 'manual',
+                sort_order INTEGER NOT NULL DEFAULT 0,
+                keyboard_target_enabled INTEGER NOT NULL DEFAULT 0,
+                inventory_image_relative_path TEXT,
                 status TEXT NOT NULL DEFAULT 'draft',
                 created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
                 updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -233,6 +254,9 @@ def init_database(
         _ensure_column(connection, "scene_objects", "prompt", "TEXT NOT NULL DEFAULT ''")
         _ensure_column(connection, "scene_objects", "category", "TEXT NOT NULL DEFAULT 'other'")
         _ensure_column(connection, "scene_objects", "source", "TEXT NOT NULL DEFAULT 'manual'")
+        _ensure_column(connection, "scene_objects", "sort_order", "INTEGER NOT NULL DEFAULT 0")
+        _ensure_column(connection, "scene_objects", "keyboard_target_enabled", "INTEGER NOT NULL DEFAULT 0")
+        _ensure_column(connection, "scene_objects", "inventory_image_relative_path", "TEXT")
         connection.execute(
             """
             UPDATE scene_objects
@@ -240,6 +264,30 @@ def init_database(
             WHERE trim(prompt) = ''
             """
         )
+        connection.execute(
+            """
+            UPDATE scene_objects
+            SET sort_order = id
+            WHERE sort_order = 0
+            """
+        )
+        connection.execute(
+            """
+            CREATE TABLE IF NOT EXISTS global_settings (
+                organization_id TEXT PRIMARY KEY,
+                overlay_open_duration_seconds REAL NOT NULL DEFAULT 0.22,
+                overlay_close_duration_seconds REAL NOT NULL DEFAULT 0.18,
+                overlay_fade_color TEXT NOT NULL DEFAULT '#000000',
+                overlay_affect_audio INTEGER NOT NULL DEFAULT 0,
+                start_scene_id INTEGER,
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (organization_id) REFERENCES organizations(id),
+                FOREIGN KEY (start_scene_id) REFERENCES scenes(id)
+            )
+            """
+        )
+        _ensure_column(connection, "global_settings", "start_scene_id", "INTEGER")
         connection.execute(
             """
             CREATE TABLE IF NOT EXISTS object_animations (
@@ -484,6 +532,24 @@ def init_database(
         connection.execute(
             "CREATE INDEX IF NOT EXISTS idx_scene_interactions_scene ON scene_interactions (scene_id)"
         )
+        connection.execute(
+            """
+            CREATE TABLE IF NOT EXISTS overlay_scene_bindings (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                organization_id TEXT NOT NULL,
+                key_code TEXT NOT NULL,
+                overlay_scene_id INTEGER NOT NULL,
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE (organization_id, key_code),
+                FOREIGN KEY (organization_id) REFERENCES organizations(id),
+                FOREIGN KEY (overlay_scene_id) REFERENCES scenes(id)
+            )
+            """
+        )
+        connection.execute(
+            "CREATE INDEX IF NOT EXISTS idx_overlay_scene_bindings_org ON overlay_scene_bindings (organization_id, overlay_scene_id)"
+        )
 
 
 def list_assets(db_path: Path, organization_id: str) -> list[dict[str, Any]]:
@@ -504,6 +570,8 @@ def list_assets(db_path: Path, organization_id: str) -> list[dict[str, Any]]:
 def reset_workspace_tables(db_path: Path) -> list[str]:
     tables = [
         "scene_interactions",
+        "overlay_scene_bindings",
+        "global_settings",
         "game_variables",
         "audio_assets",
         "script_audio_candidates",
@@ -1010,6 +1078,182 @@ def delete_audio_asset(
     return dict(row)
 
 
+def list_overlay_scene_bindings(db_path: Path, organization_id: str) -> list[dict[str, Any]]:
+    with connect(db_path) as connection:
+        rows = connection.execute(
+            """
+            SELECT overlay_scene_bindings.id,
+                   overlay_scene_bindings.organization_id,
+                   overlay_scene_bindings.key_code,
+                   overlay_scene_bindings.overlay_scene_id,
+                   overlay_scene_bindings.created_at,
+                   overlay_scene_bindings.updated_at,
+                   scenes.title AS overlay_scene_title,
+                   scenes.presentation_mode AS overlay_scene_presentation_mode
+            FROM overlay_scene_bindings
+            JOIN scenes ON scenes.id = overlay_scene_bindings.overlay_scene_id
+            WHERE overlay_scene_bindings.organization_id = ?
+            ORDER BY lower(overlay_scene_bindings.key_code) ASC, overlay_scene_bindings.id ASC
+            """,
+            (organization_id,),
+        ).fetchall()
+    return [dict(row) for row in rows]
+
+
+def get_global_settings(db_path: Path, organization_id: str) -> dict[str, Any]:
+    with connect(db_path) as connection:
+        row = connection.execute(
+            """
+            SELECT organization_id,
+                   overlay_open_duration_seconds,
+                   overlay_close_duration_seconds,
+                   overlay_fade_color,
+                   overlay_affect_audio,
+                   start_scene_id,
+                   created_at,
+                   updated_at
+            FROM global_settings
+            WHERE organization_id = ?
+            """,
+            (organization_id,),
+        ).fetchone()
+        if row is None:
+            connection.execute(
+                """
+                INSERT INTO global_settings (organization_id)
+                VALUES (?)
+                """,
+                (organization_id,),
+            )
+            row = connection.execute(
+                """
+                SELECT organization_id,
+                       overlay_open_duration_seconds,
+                       overlay_close_duration_seconds,
+                       overlay_fade_color,
+                       overlay_affect_audio,
+                       start_scene_id,
+                       created_at,
+                       updated_at
+                FROM global_settings
+                WHERE organization_id = ?
+                """,
+                (organization_id,),
+            ).fetchone()
+    result = dict(row)
+    result["overlay_affect_audio"] = bool(result["overlay_affect_audio"])
+    return result
+
+
+def update_global_settings(
+    db_path: Path,
+    organization_id: str,
+    overlay_open_duration_seconds: float | None = None,
+    overlay_close_duration_seconds: float | None = None,
+    overlay_fade_color: str | None = None,
+    overlay_affect_audio: bool | None = None,
+    start_scene_id: int | None = None,
+    update_start_scene_id: bool = False,
+) -> dict[str, Any]:
+    get_global_settings(db_path, organization_id)
+    assignments = ["updated_at = CURRENT_TIMESTAMP"]
+    values: list[Any] = []
+    if overlay_open_duration_seconds is not None:
+        assignments.append("overlay_open_duration_seconds = ?")
+        values.append(float(overlay_open_duration_seconds))
+    if overlay_close_duration_seconds is not None:
+        assignments.append("overlay_close_duration_seconds = ?")
+        values.append(float(overlay_close_duration_seconds))
+    if overlay_fade_color is not None:
+        assignments.append("overlay_fade_color = ?")
+        values.append(str(overlay_fade_color))
+    if overlay_affect_audio is not None:
+        assignments.append("overlay_affect_audio = ?")
+        values.append(int(bool(overlay_affect_audio)))
+    if update_start_scene_id:
+        assignments.append("start_scene_id = ?")
+        values.append(start_scene_id if start_scene_id is None else int(start_scene_id))
+    with connect(db_path) as connection:
+        connection.execute(
+            f"""
+            UPDATE global_settings
+            SET {", ".join(assignments)}
+            WHERE organization_id = ?
+            """,
+            (*values, organization_id),
+        )
+    return get_global_settings(db_path, organization_id)
+
+
+def create_or_update_overlay_scene_binding(
+    db_path: Path,
+    organization_id: str,
+    key_code: str,
+    overlay_scene_id: int,
+) -> dict[str, Any]:
+    with connect(db_path) as connection:
+        connection.execute(
+            """
+            INSERT INTO overlay_scene_bindings (
+                organization_id,
+                key_code,
+                overlay_scene_id
+            )
+            VALUES (?, ?, ?)
+            ON CONFLICT (organization_id, key_code) DO UPDATE SET
+                overlay_scene_id = excluded.overlay_scene_id,
+                updated_at = CURRENT_TIMESTAMP
+            """,
+            (organization_id, key_code, overlay_scene_id),
+        )
+    row = get_overlay_scene_binding_by_key(db_path, organization_id, key_code)
+    if row is None:
+        raise RuntimeError("Overlay scene binding could not be loaded")
+    return row
+
+
+def get_overlay_scene_binding_by_key(
+    db_path: Path,
+    organization_id: str,
+    key_code: str,
+) -> dict[str, Any] | None:
+    with connect(db_path) as connection:
+        row = connection.execute(
+            """
+            SELECT overlay_scene_bindings.id,
+                   overlay_scene_bindings.organization_id,
+                   overlay_scene_bindings.key_code,
+                   overlay_scene_bindings.overlay_scene_id,
+                   overlay_scene_bindings.created_at,
+                   overlay_scene_bindings.updated_at,
+                   scenes.title AS overlay_scene_title,
+                   scenes.presentation_mode AS overlay_scene_presentation_mode
+            FROM overlay_scene_bindings
+            JOIN scenes ON scenes.id = overlay_scene_bindings.overlay_scene_id
+            WHERE overlay_scene_bindings.organization_id = ?
+              AND overlay_scene_bindings.key_code = ?
+            """,
+            (organization_id, key_code),
+        ).fetchone()
+    return dict(row) if row else None
+
+
+def delete_overlay_scene_binding(
+    db_path: Path,
+    organization_id: str,
+    binding_id: int,
+) -> None:
+    with connect(db_path) as connection:
+        connection.execute(
+            """
+            DELETE FROM overlay_scene_bindings
+            WHERE id = ?
+              AND organization_id = ?
+            """,
+            (binding_id, organization_id),
+        )
+
+
 def upsert_script_line(
     db_path: Path,
     organization_id: str,
@@ -1059,6 +1303,36 @@ def upsert_script_line(
             (organization_id, line_id),
         ).fetchone()
     return dict(row)
+
+
+def get_next_script_line_id(db_path: Path, organization_id: str) -> int:
+    with connect(db_path) as connection:
+        row = connection.execute(
+            """
+            SELECT COALESCE(MAX(line_id), 0) + 1 AS next_line_id
+            FROM script_lines
+            WHERE organization_id = ?
+            """,
+            (organization_id,),
+        ).fetchone()
+    return int(row["next_line_id"] if row else 1)
+
+
+def create_script_line(
+    db_path: Path,
+    organization_id: str,
+    source_text: str,
+    path_parts: list[str],
+) -> dict[str, Any]:
+    line_id = get_next_script_line_id(db_path, organization_id)
+    return upsert_script_line(
+        db_path,
+        organization_id=organization_id,
+        line_id=line_id,
+        script_index=line_id,
+        source_text=source_text,
+        path_parts=path_parts,
+    )
 
 
 def upsert_script_translation(
@@ -1413,6 +1687,7 @@ def get_script_line_detail(
         "path_parts": _json_loads(line["path_json"], []),
         "translations": [_translation_from_row(row) for row in translations],
         "audio_candidates": [_audio_candidate_from_row(row) for row in audio_candidates],
+        "usage_references": list_script_line_references(db_path, organization_id, line_id),
     }
 
 
@@ -1518,6 +1793,34 @@ def update_script_audio_candidate(
         )
         row = _get_audio_candidate_row(connection, organization_id, candidate_id)
     return _audio_candidate_from_row(row) if row else None
+
+
+def delete_script_line(
+    db_path: Path,
+    organization_id: str,
+    line_id: int,
+) -> bool:
+    with connect(db_path) as connection:
+        line = _get_script_line_row(connection, organization_id, line_id)
+        if line is None:
+            return False
+        connection.execute(
+            "DELETE FROM script_audio_candidates WHERE script_line_id = ?",
+            (line["id"],),
+        )
+        connection.execute(
+            "DELETE FROM script_translations WHERE script_line_id = ?",
+            (line["id"],),
+        )
+        connection.execute(
+            """
+            DELETE FROM script_lines
+            WHERE id = ?
+              AND organization_id = ?
+            """,
+            (line["id"], organization_id),
+        )
+    return True
 
 
 def get_script_audio_candidate_by_id(
@@ -1888,6 +2191,44 @@ def script_line_ids_exist(
     return int(row["count"] if row else 0) == len(unique_ids)
 
 
+def list_script_line_references(
+    db_path: Path,
+    organization_id: str,
+    line_id: int,
+) -> list[dict[str, Any]]:
+    references: list[dict[str, Any]] = []
+    with connect(db_path) as connection:
+        rows = connection.execute(
+            """
+            SELECT scene_interactions.id AS interaction_id,
+                   scene_interactions.name AS interaction_name,
+                   scene_interactions.action_tree_json,
+                   scenes.id AS scene_id,
+                   scenes.title AS scene_title
+            FROM scene_interactions
+            JOIN scenes ON scenes.id = scene_interactions.scene_id
+            WHERE scenes.organization_id = ?
+            ORDER BY scenes.id ASC, scene_interactions.id ASC
+            """,
+            (organization_id,),
+        ).fetchall()
+    for row in rows:
+        action_tree = _json_loads(row["action_tree_json"], [])
+        step_types = sorted(_collect_script_line_reference_step_types(action_tree, int(line_id)))
+        if not step_types:
+            continue
+        references.append(
+            {
+                "scene_id": row["scene_id"],
+                "scene_title": row["scene_title"],
+                "interaction_id": row["interaction_id"],
+                "interaction_name": row["interaction_name"],
+                "step_types": step_types,
+            }
+        )
+    return references
+
+
 def create_upload_batch(
     db_path: Path,
     organization_id: str,
@@ -2135,6 +2476,7 @@ def create_scene(
     representative_hash: str,
     title: str,
     description: str,
+    presentation_mode: str = "base",
 ) -> dict[str, Any]:
     with connect(db_path) as connection:
         cursor = connection.execute(
@@ -2143,16 +2485,18 @@ def create_scene(
                 organization_id,
                 title,
                 description,
+                presentation_mode,
                 representative_uploaded_file_id,
                 representative_hash,
                 created_by_user_id
             )
-            VALUES (?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 organization_id,
                 title,
                 description,
+                presentation_mode,
                 representative_uploaded_file_id,
                 representative_hash,
                 created_by_user_id,
@@ -2164,6 +2508,7 @@ def create_scene(
                    organization_id,
                    title,
                    description,
+                   presentation_mode,
                    status,
                    representative_uploaded_file_id,
                    representative_hash,
@@ -2188,6 +2533,14 @@ def add_scene_image(
     height: int,
 ) -> dict[str, Any]:
     with connect(db_path) as connection:
+        next_sort_order = connection.execute(
+            """
+            SELECT COALESCE(MAX(sort_order), -1) + 1 AS next_sort_order
+            FROM scene_images
+            WHERE scene_id = ?
+            """,
+            (scene_id,),
+        ).fetchone()["next_sort_order"]
         connection.execute(
             """
             INSERT INTO scene_images (
@@ -2195,20 +2548,22 @@ def add_scene_image(
                 uploaded_file_id,
                 perceptual_hash,
                 width,
-                height
+                height,
+                sort_order
             )
-            VALUES (?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?)
             ON CONFLICT(uploaded_file_id)
             DO UPDATE SET scene_id = excluded.scene_id,
                           perceptual_hash = excluded.perceptual_hash,
                           width = excluded.width,
-                          height = excluded.height
+                          height = excluded.height,
+                          sort_order = excluded.sort_order
             """,
-            (scene_id, uploaded_file_id, perceptual_hash, width, height),
+            (scene_id, uploaded_file_id, perceptual_hash, width, height, int(next_sort_order)),
         )
         row = connection.execute(
             """
-            SELECT id, scene_id, uploaded_file_id, perceptual_hash, width, height, created_at
+            SELECT id, scene_id, uploaded_file_id, perceptual_hash, width, height, sort_order, created_at
             FROM scene_images
             WHERE uploaded_file_id = ?
             """,
@@ -2226,6 +2581,7 @@ def get_scene_with_images(db_path: Path, scene_id: int) -> dict[str, Any] | None
                    organization_id,
                    title,
                    description,
+                   presentation_mode,
                    status,
                    representative_uploaded_file_id,
                    representative_hash,
@@ -2247,20 +2603,18 @@ def get_scene_with_images(db_path: Path, scene_id: int) -> dict[str, Any] | None
                    scene_images.perceptual_hash,
                    scene_images.width,
                    scene_images.height,
+                   scene_images.sort_order,
                    scene_images.created_at,
                    uploaded_files.original_filename,
                    uploaded_files.relative_path
             FROM scene_images
             JOIN uploaded_files ON uploaded_files.id = scene_images.uploaded_file_id
             WHERE scene_images.scene_id = ?
-            ORDER BY scene_images.id ASC
+            ORDER BY scene_images.sort_order ASC, scene_images.id ASC
             """,
             (scene_id,),
         ).fetchall()
-        images = sorted(
-            [dict(row) for row in images],
-            key=lambda row: (_original_filename_sort_key(row), row["id"]),
-        )
+        images = [dict(row) for row in images]
         objects = connection.execute(
             """
             SELECT scene_objects.id,
@@ -2270,6 +2624,9 @@ def get_scene_with_images(db_path: Path, scene_id: int) -> dict[str, Any] | None
                    scene_objects.prompt,
                    scene_objects.category,
                    scene_objects.source,
+                   scene_objects.sort_order,
+                   scene_objects.keyboard_target_enabled,
+                   scene_objects.inventory_image_relative_path,
                    scene_objects.status,
                    scene_objects.created_at,
                    scene_objects.updated_at,
@@ -2280,7 +2637,7 @@ def get_scene_with_images(db_path: Path, scene_id: int) -> dict[str, Any] | None
             LEFT JOIN object_animations ON object_animations.scene_object_id = scene_objects.id
             WHERE scene_objects.scene_id = ?
             GROUP BY scene_objects.id
-            ORDER BY lower(scene_objects.name) ASC
+            ORDER BY scene_objects.sort_order ASC, scene_objects.id ASC
             """,
             (scene_id,),
         ).fetchall()
@@ -2327,6 +2684,7 @@ def get_scene_with_images(db_path: Path, scene_id: int) -> dict[str, Any] | None
         "objects": [
             {
                 **dict(row),
+                "keyboard_target_enabled": bool(row["keyboard_target_enabled"]),
                 "masks": masks_by_object_id[row["id"]],
             }
             for row in objects
@@ -2342,6 +2700,7 @@ def list_scenes(db_path: Path, organization_id: str, limit: int = 20) -> list[di
                    scenes.organization_id,
                    scenes.title,
                    scenes.description,
+                   scenes.presentation_mode,
                    scenes.status,
                    scenes.representative_uploaded_file_id,
                    scenes.representative_hash,
@@ -2376,10 +2735,18 @@ def create_scene_object(
     normalized_name = name.strip()
     normalized_prompt = (prompt or normalized_name).strip()
     with connect(db_path) as connection:
+        next_sort_order = connection.execute(
+            """
+            SELECT COALESCE(MAX(sort_order), -1) + 1 AS next_sort_order
+            FROM scene_objects
+            WHERE scene_id = ?
+            """,
+            (scene_id,),
+        ).fetchone()["next_sort_order"]
         cursor = connection.execute(
             """
-            INSERT INTO scene_objects (scene_id, name, description, prompt, category, source)
-            VALUES (?, ?, ?, ?, ?, ?)
+            INSERT INTO scene_objects (scene_id, name, description, prompt, category, source, sort_order)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 scene_id,
@@ -2388,18 +2755,20 @@ def create_scene_object(
                 normalized_prompt,
                 category.strip(),
                 source.strip(),
+                int(next_sort_order),
             ),
         )
         row = connection.execute(
             """
-            SELECT id, scene_id, name, description, prompt, category, source, status, created_at, updated_at
+            SELECT id, scene_id, name, description, prompt, category, source, sort_order, keyboard_target_enabled, inventory_image_relative_path, status, created_at, updated_at
             FROM scene_objects
             WHERE id = ?
             """,
             (cursor.lastrowid,),
         ).fetchone()
-
-    return dict(row)
+    result = dict(row)
+    result["keyboard_target_enabled"] = bool(result["keyboard_target_enabled"])
+    return result
 
 
 def create_scene_mask_prompt(
@@ -2533,6 +2902,7 @@ def list_scene_images_for_scene(db_path: Path, scene_id: int) -> list[dict[str, 
                    scene_images.perceptual_hash,
                    scene_images.width,
                    scene_images.height,
+                   scene_images.sort_order,
                    scene_images.created_at,
                    uploaded_files.original_filename,
                    uploaded_files.relative_path,
@@ -2540,15 +2910,11 @@ def list_scene_images_for_scene(db_path: Path, scene_id: int) -> list[dict[str, 
             FROM scene_images
             JOIN uploaded_files ON uploaded_files.id = scene_images.uploaded_file_id
             WHERE scene_images.scene_id = ?
-            ORDER BY scene_images.id ASC
+            ORDER BY scene_images.sort_order ASC, scene_images.id ASC
             """,
             (scene_id,),
         ).fetchall()
-
-    return sorted(
-        [dict(row) for row in rows],
-        key=lambda row: (_original_filename_sort_key(row), row["id"]),
-    )
+    return [dict(row) for row in rows]
 
 
 def mask_candidate_exists(
@@ -2670,7 +3036,7 @@ def create_scene_object_if_missing(
     with connect(db_path) as connection:
         existing = connection.execute(
             """
-            SELECT id, scene_id, name, description, prompt, category, source, status, created_at, updated_at
+            SELECT id, scene_id, name, description, prompt, category, source, sort_order, keyboard_target_enabled, inventory_image_relative_path, status, created_at, updated_at
             FROM scene_objects
             WHERE scene_id = ?
               AND lower(name) = ?
@@ -2678,12 +3044,23 @@ def create_scene_object_if_missing(
             (scene_id, normalized_name.lower()),
         ).fetchone()
         if existing:
-            return dict(existing), False
+            result = dict(existing)
+            result["keyboard_target_enabled"] = bool(result["keyboard_target_enabled"])
+            return result, False
+
+        next_sort_order = connection.execute(
+            """
+            SELECT COALESCE(MAX(sort_order), -1) + 1 AS next_sort_order
+            FROM scene_objects
+            WHERE scene_id = ?
+            """,
+            (scene_id,),
+        ).fetchone()["next_sort_order"]
 
         cursor = connection.execute(
             """
-            INSERT INTO scene_objects (scene_id, name, description, prompt, category, source)
-            VALUES (?, ?, ?, ?, ?, ?)
+            INSERT INTO scene_objects (scene_id, name, description, prompt, category, source, sort_order)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 scene_id,
@@ -2692,18 +3069,20 @@ def create_scene_object_if_missing(
                 (prompt or normalized_name).strip(),
                 category.strip() or "other",
                 source.strip() or "vlm",
+                int(next_sort_order),
             ),
         )
         row = connection.execute(
             """
-            SELECT id, scene_id, name, description, prompt, category, source, status, created_at, updated_at
+            SELECT id, scene_id, name, description, prompt, category, source, sort_order, keyboard_target_enabled, inventory_image_relative_path, status, created_at, updated_at
             FROM scene_objects
             WHERE id = ?
             """,
             (cursor.lastrowid,),
         ).fetchone()
-
-    return dict(row), True
+    result = dict(row)
+    result["keyboard_target_enabled"] = bool(result["keyboard_target_enabled"])
+    return result, True
 
 
 def update_scene_object(
@@ -2713,6 +3092,8 @@ def update_scene_object(
     name: str | None = None,
     description: str | None = None,
     prompt: str | None = None,
+    sort_order: int | None = None,
+    keyboard_target_enabled: bool | None = None,
 ) -> dict[str, Any] | None:
     assignments = []
     values: list[Any] = []
@@ -2725,6 +3106,12 @@ def update_scene_object(
     if prompt is not None:
         assignments.append("prompt = ?")
         values.append(prompt.strip())
+    if sort_order is not None:
+        assignments.append("sort_order = ?")
+        values.append(int(sort_order))
+    if keyboard_target_enabled is not None:
+        assignments.append("keyboard_target_enabled = ?")
+        values.append(int(bool(keyboard_target_enabled)))
     if assignments:
         assignments.append("updated_at = CURRENT_TIMESTAMP")
         with connect(db_path) as connection:
@@ -2810,15 +3197,38 @@ def get_scene_object(
     with connect(db_path) as connection:
         row = connection.execute(
             """
-            SELECT id, scene_id, name, description, prompt, category, source, status, created_at, updated_at
+            SELECT id, scene_id, name, description, prompt, category, source, sort_order, keyboard_target_enabled, inventory_image_relative_path, status, created_at, updated_at
             FROM scene_objects
             WHERE id = ?
               AND scene_id = ?
             """,
             (object_id, scene_id),
         ).fetchone()
+    if row is None:
+        return None
+    result = dict(row)
+    result["keyboard_target_enabled"] = bool(result["keyboard_target_enabled"])
+    return result
 
-    return dict(row) if row else None
+
+def set_scene_object_inventory_image(
+    db_path: Path,
+    scene_id: int,
+    object_id: int,
+    relative_path: str | None,
+) -> dict[str, Any] | None:
+    with connect(db_path) as connection:
+        connection.execute(
+            """
+            UPDATE scene_objects
+            SET inventory_image_relative_path = ?,
+                updated_at = CURRENT_TIMESTAMP
+            WHERE id = ?
+              AND scene_id = ?
+            """,
+            (relative_path, object_id, scene_id),
+        )
+    return get_scene_object(db_path, scene_id, object_id)
 
 
 def get_scene_object_for_organization(
@@ -2836,6 +3246,9 @@ def get_scene_object_for_organization(
                    scene_objects.prompt,
                    scene_objects.category,
                    scene_objects.source,
+                   scene_objects.sort_order,
+                   scene_objects.keyboard_target_enabled,
+                   scene_objects.inventory_image_relative_path,
                    scene_objects.status,
                    scene_objects.created_at,
                    scene_objects.updated_at
@@ -2847,7 +3260,11 @@ def get_scene_object_for_organization(
             (object_id, organization_id),
         ).fetchone()
 
-    return dict(row) if row else None
+    if row is None:
+        return None
+    result = dict(row)
+    result["keyboard_target_enabled"] = bool(result["keyboard_target_enabled"])
+    return result
 
 
 def list_object_animations_for_object(
@@ -3056,16 +3473,20 @@ def list_scene_objects_for_scene(db_path: Path, scene_id: int) -> list[dict[str,
     with connect(db_path) as connection:
         rows = connection.execute(
             """
-            SELECT id, scene_id, name, description, prompt, category, source, status, created_at, updated_at
+            SELECT id, scene_id, name, description, prompt, category, source, sort_order, keyboard_target_enabled, inventory_image_relative_path, status, created_at, updated_at
             FROM scene_objects
             WHERE scene_id = ?
               AND trim(prompt) != ''
-            ORDER BY lower(name) ASC
+            ORDER BY sort_order ASC, id ASC
             """,
             (scene_id,),
         ).fetchall()
-
-    return [dict(row) for row in rows]
+    results: list[dict[str, Any]] = []
+    for row in rows:
+        result = dict(row)
+        result["keyboard_target_enabled"] = bool(result["keyboard_target_enabled"])
+        results.append(result)
+    return results
 
 
 def object_mask_exists_for_prompt(
@@ -3281,6 +3702,7 @@ def update_scene_description(
                    organization_id,
                    title,
                    description,
+                   presentation_mode,
                    status,
                    representative_uploaded_file_id,
                    representative_hash,
@@ -3294,6 +3716,199 @@ def update_scene_description(
         ).fetchone()
 
     return dict(row)
+
+
+def update_scene(
+    db_path: Path,
+    scene_id: int,
+    organization_id: str,
+    title: str | None = None,
+    description: str | None = None,
+    presentation_mode: str | None = None,
+) -> dict[str, Any] | None:
+    assignments: list[str] = ["updated_at = CURRENT_TIMESTAMP"]
+    values: list[Any] = []
+    if title is not None:
+        assignments.append("title = ?")
+        values.append(title)
+    if description is not None:
+        assignments.append("description = ?")
+        values.append(description)
+    if presentation_mode is not None:
+        assignments.append("presentation_mode = ?")
+        values.append(presentation_mode)
+    with connect(db_path) as connection:
+        cursor = connection.execute(
+            f"""
+            UPDATE scenes
+            SET {", ".join(assignments)}
+            WHERE id = ?
+              AND organization_id = ?
+            """,
+            (*values, scene_id, organization_id),
+        )
+    if cursor.rowcount == 0:
+        return None
+    return get_scene_with_images(db_path, scene_id)
+
+
+def merge_scene_into_scene(
+    db_path: Path,
+    organization_id: str,
+    source_scene_id: int,
+    target_scene_id: int,
+) -> dict[str, Any] | None:
+    if source_scene_id == target_scene_id:
+        raise ValueError("Source and target scenes must be different")
+
+    with connect(db_path) as connection:
+        source_scene = connection.execute(
+            """
+            SELECT id, organization_id
+            FROM scenes
+            WHERE id = ?
+              AND organization_id = ?
+            """,
+            (source_scene_id, organization_id),
+        ).fetchone()
+        target_scene = connection.execute(
+            """
+            SELECT id, organization_id, presentation_mode
+            FROM scenes
+            WHERE id = ?
+              AND organization_id = ?
+            """,
+            (target_scene_id, organization_id),
+        ).fetchone()
+        if source_scene is None or target_scene is None:
+            return None
+
+        target_image_offset = connection.execute(
+            """
+            SELECT COUNT(*) AS image_count
+            FROM scene_images
+            WHERE scene_id = ?
+            """,
+            (target_scene_id,),
+        ).fetchone()["image_count"]
+        target_max_image_sort_order = connection.execute(
+            """
+            SELECT COALESCE(MAX(sort_order), -1) AS max_sort_order
+            FROM scene_images
+            WHERE scene_id = ?
+            """,
+            (target_scene_id,),
+        ).fetchone()["max_sort_order"]
+        target_max_object_sort_order = connection.execute(
+            """
+            SELECT COALESCE(MAX(sort_order), -1) AS max_sort_order
+            FROM scene_objects
+            WHERE scene_id = ?
+            """,
+            (target_scene_id,),
+        ).fetchone()["max_sort_order"]
+
+        source_image_rows = connection.execute(
+            """
+            SELECT id
+            FROM scene_images
+            WHERE scene_id = ?
+            ORDER BY sort_order ASC, id ASC
+            """,
+            (source_scene_id,),
+        ).fetchall()
+        for index, row in enumerate(source_image_rows, start=1):
+            connection.execute(
+                """
+                UPDATE scene_images
+                SET scene_id = ?,
+                    sort_order = ?
+                WHERE id = ?
+                """,
+                (target_scene_id, int(target_max_image_sort_order) + index, row["id"]),
+            )
+
+        source_object_rows = connection.execute(
+            """
+            SELECT id
+            FROM scene_objects
+            WHERE scene_id = ?
+            ORDER BY sort_order ASC, id ASC
+            """,
+            (source_scene_id,),
+        ).fetchall()
+        source_object_ids = [int(row["id"]) for row in source_object_rows]
+        for index, row in enumerate(source_object_rows, start=1):
+            connection.execute(
+                """
+                UPDATE scene_objects
+                SET scene_id = ?,
+                    sort_order = ?
+                WHERE id = ?
+                """,
+                (target_scene_id, int(target_max_object_sort_order) + index, row["id"]),
+            )
+
+        if source_object_ids and int(target_image_offset) > 0:
+            placeholders = ",".join("?" for _ in source_object_ids)
+            connection.execute(
+                f"""
+                UPDATE object_animation_segments
+                SET start_frame = start_frame + ?,
+                    end_frame = end_frame + ?
+                WHERE object_animation_id IN (
+                    SELECT id
+                    FROM object_animations
+                    WHERE scene_object_id IN ({placeholders})
+                )
+                """,
+                (int(target_image_offset), int(target_image_offset), *source_object_ids),
+            )
+
+        connection.execute(
+            """
+            UPDATE scene_mask_prompts
+            SET scene_id = ?
+            WHERE scene_id = ?
+            """,
+            (target_scene_id, source_scene_id),
+        )
+        connection.execute(
+            """
+            UPDATE scene_interactions
+            SET scene_id = ?
+            WHERE scene_id = ?
+            """,
+            (target_scene_id, source_scene_id),
+        )
+        connection.execute(
+            """
+            UPDATE global_settings
+            SET start_scene_id = ?,
+                updated_at = CURRENT_TIMESTAMP
+            WHERE organization_id = ?
+              AND start_scene_id = ?
+            """,
+            (target_scene_id, organization_id, source_scene_id),
+        )
+        connection.execute(
+            """
+            DELETE FROM overlay_scene_bindings
+            WHERE organization_id = ?
+              AND overlay_scene_id = ?
+            """,
+            (organization_id, source_scene_id),
+        )
+        connection.execute(
+            """
+            DELETE FROM scenes
+            WHERE id = ?
+              AND organization_id = ?
+            """,
+            (source_scene_id, organization_id),
+        )
+
+    return get_scene_with_images(db_path, target_scene_id)
 
 
 def scene_belongs_to_organization(
@@ -3710,8 +4325,24 @@ def _scene_interaction_from_row(row: sqlite3.Row) -> dict[str, Any]:
     result = dict(row)
     result["enabled"] = bool(result["enabled"])
     result["trigger"] = _json_loads(result.pop("trigger_json", "{}"), {})
+    if result["trigger"].get("type") == "object_hover":
+        result["trigger"]["type"] = "object_mouseover"
     result["action_tree"] = _json_loads(result.pop("action_tree_json", "[]"), [])
     return result
+
+
+def _collect_script_line_reference_step_types(
+    steps: list[dict[str, Any]],
+    target_line_id: int,
+) -> set[str]:
+    step_types: set[str] = set()
+    for step in steps:
+        if step.get("type") in {"show_subtitle", "play_audio"}:
+            if target_line_id in {int(item) for item in (step.get("script_line_ids") or []) if item is not None}:
+                step_types.add(str(step.get("type")))
+        step_types.update(_collect_script_line_reference_step_types(step.get("then_steps") or [], target_line_id))
+        step_types.update(_collect_script_line_reference_step_types(step.get("else_steps") or [], target_line_id))
+    return step_types
 
 
 def _json_loads(raw: Any, fallback: Any) -> Any:

@@ -1,8 +1,7 @@
 const PREVIEW_CHANNEL_NAME = 'wonky-scene-preview';
 
-function openScenePreview(sceneId) {
-  const route = `/preview/${sceneId}`;
-  const features = [
+function buildPreviewWindowFeatures() {
+  return [
     'popup=yes',
     'width=1600',
     'height=1000',
@@ -11,7 +10,17 @@ function openScenePreview(sceneId) {
     'resizable=yes',
     'scrollbars=yes'
   ].join(',');
-  const previewWindow = window.open(route, `wonky-scene-preview-${sceneId}`, features);
+}
+
+function openScenePreview(sceneId) {
+  const route = `/preview/${sceneId}`;
+  const previewWindow = window.open(route, `wonky-scene-preview-${sceneId}`, buildPreviewWindowFeatures());
+  previewWindow?.focus();
+  return previewWindow;
+}
+
+function openGamePreview() {
+  const previewWindow = window.open('/preview-game', 'wonky-game-preview', buildPreviewWindowFeatures());
   previewWindow?.focus();
   return previewWindow;
 }
@@ -44,4 +53,4 @@ function listenScenePreview(sceneId, handler) {
   };
 }
 
-export {listenScenePreview, notifyScenePreview, openScenePreview};
+export {listenScenePreview, notifyScenePreview, openGamePreview, openScenePreview};

@@ -35,6 +35,10 @@ const ScriptReviewCtrl = app => async () => {
       this.bind(this.root, 'click', event => this.onClick(event));
       this.bind(this.root, 'submit', event => this.onSubmit(event));
       this.bind(this.root, 'change', event => this.onChange(event));
+      this.bind(window, 'dragenter', event => this.onDrag(event));
+      this.bind(window, 'dragover', event => this.onDrag(event));
+      this.bind(window, 'dragleave', event => this.onDrag(event));
+      this.bind(window, 'drop', event => this.onDrop(event));
       this.setControlValues();
     },
 
@@ -73,6 +77,18 @@ const ScriptReviewCtrl = app => async () => {
       const importButton = event.target.closest('[data-action="import-script-audio"]');
       if (importButton) {
         await this.importScriptAudio(importButton);
+        return;
+      }
+
+      const uploadAudioButton = event.target.closest('[data-action="browse-review-audio"]');
+      if (uploadAudioButton) {
+        this.root?.querySelector('[data-script-audio-upload-input]')?.click();
+        return;
+      }
+
+      const deleteButton = event.target.closest('[data-action="delete-script-line"]');
+      if (deleteButton) {
+        await this.deleteSelectedLine();
       }
     },
 
@@ -93,6 +109,13 @@ const ScriptReviewCtrl = app => async () => {
         return;
       }
 
+      const createLineForm = event.target.closest('[data-script-line-create-form]');
+      if (createLineForm) {
+        event.preventDefault();
+        await this.createScriptLine(createLineForm);
+        return;
+      }
+
       const audioForm = event.target.closest('[data-audio-candidate-form]');
       if (audioForm) {
         event.preventDefault();
@@ -106,7 +129,32 @@ const ScriptReviewCtrl = app => async () => {
         this.readFilters(form);
         this.offset = 0;
         await this.loadLines();
+        return;
       }
+
+      if (event.target.matches('[data-script-audio-upload-input]')) {
+        await this.uploadAudioFiles(event.target.files);
+        event.target.value = '';
+      }
+    },
+
+    onDrag(event) {
+      const dropZone = this.root?.querySelector('[data-script-audio-dropzone]');
+      if (!dropZone) return;
+      event.preventDefault();
+      if (event.type === 'dragenter' || event.type === 'dragover') {
+        dropZone.classList.add('is-dragging');
+      } else {
+        dropZone.classList.remove('is-dragging');
+      }
+    },
+
+    async onDrop(event) {
+      const dropZone = this.root?.querySelector('[data-script-audio-dropzone]');
+      if (!dropZone) return;
+      event.preventDefault();
+      dropZone.classList.remove('is-dragging');
+      await this.uploadAudioFiles(event.dataTransfer?.files);
     },
 
     readFilters(form) {
@@ -246,6 +294,86 @@ const ScriptReviewCtrl = app => async () => {
       }
     },
 
+    async createScriptLine(form) {
+      const formData = new FormData(form);
+      const translationText = String(formData.get('translation_text') ?? '');
+      this.setStatus('Creating script line...');
+      try {
+        const created = await apiFetch('/api/script-lines', {
+          method: 'POST',
+          body: JSON.stringify({
+            source_text: String(formData.get('source_text') ?? ''),
+            path_text: String(formData.get('path_text') ?? ''),
+            translations: translationText.trim()
+              ? [{
+                language: this.language,
+                text: translationText,
+                review_status: 'needs_review',
+                notes: ''
+              }]
+              : []
+          })
+        });
+        form.reset();
+        this.pathOptions = await loadPathOptions();
+        await this.loadLines();
+        await this.selectLine(created.line_id);
+        this.setStatus(`Created line #${created.line_id}.`);
+      } catch (error) {
+        this.setStatus(await readErrorDetail(error, 'Could not create script line.'));
+      }
+    },
+
+    async deleteSelectedLine() {
+      if (!this.selectedLineId || !this.selectedLine) return;
+      if (this.selectedLine.usage_references?.length) {
+        this.setStatus(
+          `Line #${this.selectedLineId} is still in use by ${this.selectedLine.usage_references.length} interaction` +
+            `${this.selectedLine.usage_references.length === 1 ? '' : 's'}.`
+        );
+        return;
+      }
+      const confirmed = window.confirm(`Delete script line #${this.selectedLineId}? This cannot be undone.`);
+      if (!confirmed) return;
+      this.setStatus('Deleting script line...');
+      try {
+        await apiFetch(`/api/script-lines/${this.selectedLineId}`, {method: 'DELETE'});
+        this.selectedLineId = null;
+        this.selectedLine = null;
+        this.hasSelectedLine = false;
+        await this.loadLines();
+        this.setStatus('Script line deleted.');
+      } catch (error) {
+        this.setStatus(await readErrorDetail(error, 'Could not delete script line.'));
+      }
+    },
+
+    async uploadAudioFiles(files) {
+      const selectedFiles = Array.from(files ?? []).filter(file => file);
+      if (!selectedFiles.length || !this.selectedLineId) return;
+      this.setStatus(
+        `Uploading ${selectedFiles.length} audio clip${selectedFiles.length === 1 ? '' : 's'} to line #${this.selectedLineId}...`
+      );
+      try {
+        for (const file of selectedFiles) {
+          const body = new FormData();
+          body.append('file', file);
+          body.append('language', this.language);
+          await apiFetch(`/api/script-lines/${this.selectedLineId}/audio-candidates`, {
+            method: 'POST',
+            body
+          });
+        }
+        await this.selectLine(this.selectedLineId);
+        await this.loadLines();
+        this.setStatus(
+          `Added ${selectedFiles.length} audio clip${selectedFiles.length === 1 ? '' : 's'} to ${this.language.toUpperCase()}.`
+        );
+      } catch (error) {
+        this.setStatus(await readErrorDetail(error, 'Could not upload review audio.'));
+      }
+    },
+
     setStatus(message) {
       this.status = message;
       const status = this.root?.querySelector('[data-script-status]');
@@ -342,11 +470,23 @@ function prepareLineDetail(line, activeLanguage) {
 function sourceLabel(value) {
   if (value === 'narrator_candidate') return 'Narrator';
   if (value === 'tts') return 'TTS';
+  if (value === 'uploaded_review') return 'Uploaded';
   return value;
 }
 
 function statusLabel(value) {
   return String(value || 'missing').replace(/_/g, ' ');
+}
+
+async function readErrorDetail(error, fallback) {
+  const response = error?.response;
+  if (!response) return fallback;
+  try {
+    const payload = await response.json();
+    return payload?.detail || fallback;
+  } catch {
+    return fallback;
+  }
 }
 
 export {ScriptReviewCtrl};

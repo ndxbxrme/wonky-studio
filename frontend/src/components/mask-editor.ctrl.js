@@ -121,7 +121,13 @@ const MaskEditorCtrl = app => async params => {
 
     async processMask(event) {
       if (!this.currentMask) return;
-      const label = event.detail.operation === 'grow' ? 'Growing mask...' : 'Filling holes...';
+      const operationLabels = {
+        grow: 'Growing mask...',
+        fill_holes: 'Filling holes...',
+        invert: 'Inverting mask...',
+        solid: 'Creating solid mask...'
+      };
+      const label = operationLabels[event.detail.operation] ?? 'Processing mask...';
       this.setStatus(event.detail.applyAll ? `${label} Applying to all frames...` : label);
       try {
         await apiFetch(`/api/object-masks/${this.currentMask.id}/process`, {

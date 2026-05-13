@@ -5,12 +5,16 @@ class WonkyScenePreviewElement extends HTMLElement {
     super();
     this.attachShadow({mode: 'open'});
     this.preview = null;
+    this.currentSubtitle = null;
     this.runtimeObjectStates = {};
     this.showBackground = true;
+    this.transparentStage = false;
     this.currentBackgroundUrl = '';
     this.currentObjectRenders = new Map();
     this.activeObjectIds = new Set();
     this.objectPlaybackState = new Map();
+    this.hoveredObjectId = null;
+    this.focusedObjectId = null;
     this.resizeObserver = new ResizeObserver(() => this.renderCanvas());
     this.shadowRoot.innerHTML = `
       <style>
@@ -31,12 +35,24 @@ class WonkyScenePreviewElement extends HTMLElement {
           overflow: hidden;
         }
 
+        .shell.is-transparent {
+          background: transparent;
+          border-radius: 0;
+        }
+
         .stage {
-          width: min(100%, calc(100vh - 220px));
+          width: 100%;
           max-width: 100%;
+          max-height: 100%;
           aspect-ratio: var(--scene-width, 16) / var(--scene-height, 9);
           background: #18212a;
           display: grid;
+          position: relative;
+          place-self: center;
+        }
+
+        .stage.is-transparent {
+          background: transparent;
         }
 
         canvas {
@@ -45,6 +61,73 @@ class WonkyScenePreviewElement extends HTMLElement {
           display: block;
           background: #18212a;
           cursor: default;
+        }
+
+        .stage.is-transparent canvas {
+          background: transparent;
+        }
+
+        .subtitles {
+          position: absolute;
+          left: 28px;
+          right: 28px;
+          bottom: 34px;
+          display: grid;
+          justify-items: center;
+          pointer-events: none;
+        }
+
+        .subtitle-card {
+          max-width: min(100%, 82%);
+          padding: 12px 18px 14px;
+          border-radius: 12px;
+          background: rgba(12, 18, 24, 0.82);
+          box-shadow: 0 16px 36px rgba(0, 0, 0, 0.28);
+          text-align: center;
+          color: #f7fbff;
+        }
+
+        .subtitle-primary,
+        .subtitle-secondary {
+          margin: 0;
+          line-height: 1.25;
+        }
+
+        .subtitle-secondary {
+          margin-top: 4px;
+          color: #c8e2ff;
+        }
+
+        .subtitle-card.is-large .subtitle-primary {
+          font-size: 1.55rem;
+        }
+
+        .subtitle-card.is-large .subtitle-secondary {
+          font-size: 1.2rem;
+        }
+
+        .subtitle-card.is-medium .subtitle-primary {
+          font-size: 1.35rem;
+        }
+
+        .subtitle-card.is-medium .subtitle-secondary {
+          font-size: 1.05rem;
+        }
+
+        .subtitle-card.is-small .subtitle-primary {
+          font-size: 1.12rem;
+        }
+
+        .subtitle-card.is-small .subtitle-secondary {
+          font-size: 0.94rem;
+        }
+
+        .subtitle-card.is-xsmall .subtitle-primary {
+          font-size: 0.98rem;
+        }
+
+        .subtitle-card.is-xsmall .subtitle-secondary {
+          font-size: 0.84rem;
         }
 
         .empty {
@@ -70,9 +153,11 @@ class WonkyScenePreviewElement extends HTMLElement {
   async configure(preview) {
     this.preview = preview;
     this.showBackground = preview?.showBackground !== false;
+    this.transparentStage = preview?.transparentStage === true;
     this.currentObjectRenders.clear();
     this.activeObjectIds.clear();
     this.objectPlaybackState.clear();
+    this.hoveredObjectId = null;
     if (!preview?.images?.length) {
       this.renderEmpty();
       return;
@@ -96,6 +181,18 @@ class WonkyScenePreviewElement extends HTMLElement {
       if (state?.render) this.currentObjectRenders.set(numericId, state.render);
       else this.currentObjectRenders.delete(numericId);
     }
+    this.syncHoveredObjectState();
+    this.renderCanvas();
+  }
+
+  setSubtitle(subtitle) {
+    this.currentSubtitle = subtitle ?? null;
+    this.renderSubtitleOverlay();
+  }
+
+  setFocusedObjectId(objectId) {
+    const numericId = Number(objectId);
+    this.focusedObjectId = Number.isFinite(numericId) && numericId > 0 ? numericId : null;
     this.renderCanvas();
   }
 
@@ -108,19 +205,22 @@ class WonkyScenePreviewElement extends HTMLElement {
   renderStage() {
     const shell = this.shadowRoot.querySelector('.shell');
     if (!shell) return;
+    shell.classList.toggle('is-transparent', this.transparentStage);
     shell.innerHTML = `
       <div
-        class="stage"
+        class="stage ${this.transparentStage ? 'is-transparent' : ''}"
         style="--scene-width:${Math.max(1, this.preview.width || 1)}; --scene-height:${Math.max(1, this.preview.height || 1)};"
       >
         <canvas data-preview-canvas></canvas>
+        <div class="subtitles" data-preview-subtitles></div>
       </div>
     `;
     this.canvas = this.shadowRoot.querySelector('[data-preview-canvas]');
     this.context = this.canvas?.getContext('2d');
     this.canvas?.addEventListener('click', event => this.onCanvasClick(event));
     this.canvas?.addEventListener('pointermove', event => this.onCanvasPointerMove(event));
-    this.canvas?.addEventListener('pointerleave', () => this.setCanvasCursor(false));
+    this.canvas?.addEventListener('pointerleave', () => this.onCanvasPointerLeave());
+    this.renderSubtitleOverlay();
   }
 
   async primeImages(preview) {
@@ -198,12 +298,32 @@ class WonkyScenePreviewElement extends HTMLElement {
     return promise;
   }
 
+  setObjectRender(objectId, render) {
+    const numericObjectId = Number(objectId);
+    if (!Number.isFinite(numericObjectId) || numericObjectId <= 0) return;
+    const playbackState = this.objectPlaybackState.get(numericObjectId);
+    if (playbackState) {
+      playbackState.token += 1;
+      playbackState.chain = Promise.resolve();
+      this.objectPlaybackState.set(numericObjectId, playbackState);
+    }
+    this.activeObjectIds.delete(numericObjectId);
+    if (render) this.currentObjectRenders.set(numericObjectId, render);
+    else this.currentObjectRenders.delete(numericObjectId);
+    if (this.runtimeObjectStates[numericObjectId]) {
+      this.runtimeObjectStates[numericObjectId].render = render;
+    }
+    this.renderCanvas();
+  }
+
   stop() {
     for (const playbackState of this.objectPlaybackState.values()) {
       playbackState.token += 1;
       playbackState.chain = Promise.resolve();
     }
     this.activeObjectIds.clear();
+    this.hoveredObjectId = null;
+    this.focusedObjectId = null;
     this.currentObjectRenders.clear();
     for (const [objectId, state] of Object.entries(this.runtimeObjectStates ?? {})) {
       const numericId = Number(objectId);
@@ -235,8 +355,10 @@ class WonkyScenePreviewElement extends HTMLElement {
 
     ctx.setTransform(1, 0, 0, 1, 0, 0);
     ctx.clearRect(0, 0, canvasWidth, canvasHeight);
-    ctx.fillStyle = '#18212a';
-    ctx.fillRect(0, 0, canvasWidth, canvasHeight);
+    if (!this.transparentStage) {
+      ctx.fillStyle = '#18212a';
+      ctx.fillRect(0, 0, canvasWidth, canvasHeight);
+    }
     ctx.imageSmoothingEnabled = true;
 
     const backgroundImage = imageCache.get(this.currentBackgroundUrl)?.value ?? null;
@@ -264,6 +386,14 @@ class WonkyScenePreviewElement extends HTMLElement {
       const height = (render.height / sceneHeight) * canvasHeight;
       if (width <= 0 || height <= 0) continue;
       ctx.drawImage(image, x, y, width, height);
+      if (Number(object.id) === Number(this.focusedObjectId)) {
+        ctx.save();
+        ctx.strokeStyle = '#f2c94c';
+        ctx.lineWidth = Math.max(2, canvasWidth / 320);
+        ctx.setLineDash([10, 6]);
+        ctx.strokeRect(x, y, width, height);
+        ctx.restore();
+      }
     }
   }
 
@@ -278,12 +408,55 @@ class WonkyScenePreviewElement extends HTMLElement {
 
   onCanvasPointerMove(event) {
     const object = this.findObjectAtCanvasEvent(event);
-    this.setCanvasCursor(Boolean(object));
+    this.updateHoveredObject(object ? Number(object.id) : null);
+  }
+
+  onCanvasPointerLeave() {
+    this.updateHoveredObject(null);
   }
 
   setCanvasCursor(active) {
     if (!this.canvas) return;
     this.canvas.style.cursor = active ? 'pointer' : 'default';
+  }
+
+  updateHoveredObject(nextObjectId) {
+    const normalizedNext = Number.isFinite(Number(nextObjectId)) ? Number(nextObjectId) : null;
+    if (normalizedNext === this.hoveredObjectId) {
+      this.setCanvasCursor(Boolean(normalizedNext));
+      return;
+    }
+    const previousObjectId = this.hoveredObjectId;
+    this.hoveredObjectId = normalizedNext;
+    this.setCanvasCursor(Boolean(normalizedNext));
+    if (previousObjectId) {
+      this.dispatchEvent(new CustomEvent('preview-object-mouseout', {
+        bubbles: true,
+        detail: {objectId: previousObjectId}
+      }));
+    }
+    if (normalizedNext) {
+      this.dispatchEvent(new CustomEvent('preview-object-mouseover', {
+        bubbles: true,
+        detail: {objectId: normalizedNext}
+      }));
+    }
+  }
+
+  syncHoveredObjectState() {
+    if (!this.hoveredObjectId) return;
+    const hoveredObject = (this.preview?.objects ?? []).find(
+      object => Number(object.id) === Number(this.hoveredObjectId)
+    );
+    if (!hoveredObject) {
+      this.updateHoveredObject(null);
+      return;
+    }
+    const objectState = this.runtimeObjectStates?.[hoveredObject.id];
+    const render = this.currentObjectRenders.get(Number(hoveredObject.id));
+    if (!objectState?.enabled || objectState?.visible === false || !render) {
+      this.updateHoveredObject(null);
+    }
   }
 
   findObjectAtCanvasEvent(event) {
@@ -322,6 +495,12 @@ class WonkyScenePreviewElement extends HTMLElement {
       bubbles: true,
       detail: {message: error?.message || 'Preview could not load one or more images.'}
     }));
+  }
+
+  renderSubtitleOverlay() {
+    const subtitleRoot = this.shadowRoot.querySelector('[data-preview-subtitles]');
+    if (!subtitleRoot) return;
+    subtitleRoot.innerHTML = renderSubtitleMarkup(this.currentSubtitle);
   }
 }
 
@@ -402,6 +581,25 @@ function previewBounds(render, sceneWidth, sceneHeight, canvasWidth, canvasHeigh
     width: (render.width / Math.max(1, sceneWidth || 1)) * canvasWidth,
     height: (render.height / Math.max(1, sceneHeight || 1)) * canvasHeight
   };
+}
+
+function renderSubtitleMarkup(subtitle) {
+  if (!subtitle?.primaryText && !subtitle?.secondaryText) return '';
+  return `
+    <div class="subtitle-card ${subtitle.sizeClass}">
+      ${subtitle.primaryText ? `<p class="subtitle-primary">${escapeHtml(subtitle.primaryText)}</p>` : ''}
+      ${subtitle.secondaryText ? `<p class="subtitle-secondary">${escapeHtml(subtitle.secondaryText)}</p>` : ''}
+    </div>
+  `;
+}
+
+function escapeHtml(value) {
+  return String(value ?? '')
+    .replaceAll('&', '&amp;')
+    .replaceAll('<', '&lt;')
+    .replaceAll('>', '&gt;')
+    .replaceAll('"', '&quot;')
+    .replaceAll("'", '&#39;');
 }
 
 if (!customElements.get('wonky-scene-preview')) {

@@ -48,7 +48,11 @@ function prepareScene(scene) {
         ? objectMaskUrl(mask.id, 'soft', maskCacheKey(mask))
         : ''
     }));
-    const thumbnailCacheKey = masks.map(maskCacheKey).join('~');
+    const thumbnailCacheKey = [
+      masks.map(maskCacheKey).join('~'),
+      object.inventory_image_relative_path ?? '',
+      object.updated_at ?? ''
+    ].join('~');
     return {
       ...object,
       prompt: object.prompt ?? object.name,
@@ -66,6 +70,7 @@ function prepareScene(scene) {
 
   return {
     ...scene,
+    presentation_mode: scene.presentation_mode ?? 'base',
     images: scene.images ?? [],
     objects,
     thumbnailUrl: scene.representative_uploaded_file_id

@@ -1,13 +1,36 @@
 <main class="scene-runtime-page" data-preview-page>
+  <nav class="app-topbar" aria-label="Primary">
+    <a class="app-topbar__brand" href="/">Wonky Studio</a>
+    <div class="app-topbar__links">
+      <a class="app-topbar__link" href="/">Scenes</a>
+      <a class="app-topbar__link" href="/script-review">Transcript library</a>
+      <a class="app-topbar__link" href="/audio-library">Audio library</a>
+      <a class="app-topbar__link" href="/global-settings">Global settings</a>
+      <button class="app-topbar__link app-topbar__link--primary" type="button" data-action="open-game-preview">Preview game</button>
+    </div>
+  </nav>
+
   {{#if editorReady}}
     <header class="scene-header preview-header">
       <div>
-        <a class="back-link" href="/scene/{{sceneId}}">Scene {{sceneId}}</a>
         <p class="eyebrow">Preview</p>
         <h1>{{previewData.title}}</h1>
         <p>{{previewData.images.length}} frames · {{previewObjects.length}} objects · click the scene to trigger actions</p>
       </div>
       <div class="scene-header__actions">
+        <div class="scene-switcher">
+          {{#if previousSceneId}}<a class="button secondary compact" href="/preview/{{previousSceneId}}">Prev scene</a>{{/if}}
+          <form class="scene-switcher__form" data-scene-jump-form>
+            <select name="scene_id">
+              {{#each sceneOptions as sceneOption}}
+                <option value="{{sceneOption.id}}" {{#if sceneOption.isCurrent}}selected{{/if}}>Scene {{sceneOption.id}}</option>
+              {{/each}}
+            </select>
+            <button class="button secondary compact" type="submit">Go</button>
+          </form>
+          {{#if nextSceneId}}<a class="button secondary compact" href="/preview/{{nextSceneId}}">Next scene</a>{{/if}}
+        </div>
+        <a class="button secondary compact" href="/actions/{{sceneId}}">Edit actions</a>
         <button class="button secondary compact" type="button" data-action="refresh-preview">Refresh</button>
         <button class="button secondary compact" type="button" data-action="toggle-background">
           {{#if showBackground}}Hide background{{/if}}
@@ -20,9 +43,15 @@
 
     <section class="scene-runtime-grid">
       <section class="scene-runtime-stage">
-        <wonky-scene-preview></wonky-scene-preview>
-        <div class="scene-runtime-fade" data-preview-fade></div>
-        <div class="scene-runtime-subtitles" data-preview-subtitles></div>
+        <wonky-scene-preview data-preview-layer="base"></wonky-scene-preview>
+        <div class="scene-runtime-fade" data-preview-fade="base"></div>
+        <div class="scene-runtime-overlay-shell is-hidden" data-preview-overlay-shell>
+          <div class="scene-runtime-overlay-backdrop" data-preview-overlay-backdrop></div>
+          <div class="scene-runtime-overlay-frame" data-preview-overlay-frame>
+            <wonky-scene-preview data-preview-layer="overlay"></wonky-scene-preview>
+            <div class="scene-runtime-fade scene-runtime-fade--overlay" data-preview-fade="overlay"></div>
+          </div>
+        </div>
       </section>
 
       <aside class="scene-runtime-sidebar">

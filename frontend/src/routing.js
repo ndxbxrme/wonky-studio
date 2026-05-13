@@ -16,6 +16,10 @@ import {PreviewCtrl} from './components/preview.ctrl.js';
 import previewTemplate from './components/preview.html?raw';
 import {AudioLibraryCtrl} from './components/audio-library.ctrl.js';
 import audioLibraryTemplate from './components/audio-library.html?raw';
+import {GlobalSettingsCtrl} from './components/global-settings.ctrl.js';
+import globalSettingsTemplate from './components/global-settings.html?raw';
+import {PreviewGameCtrl} from './components/preview-game.ctrl.js';
+import previewGameTemplate from './components/preview-game.html?raw';
 import {authMiddleware} from './auth-middleware.js';
 
 const initRoutes = async (app) => {
@@ -41,6 +45,10 @@ const initRoutes = async (app) => {
   app.controller('preview', PreviewCtrl(app));
   app.template('audio-library', audioLibraryTemplate);
   app.controller('audio-library', AudioLibraryCtrl(app));
+  app.template('global-settings', globalSettingsTemplate);
+  app.controller('global-settings', GlobalSettingsCtrl(app));
+  app.template('preview-game', previewGameTemplate);
+  app.controller('preview-game', PreviewGameCtrl(app));
 }
 
 function formatBytes(bytes) {
