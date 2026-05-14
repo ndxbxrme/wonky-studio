@@ -12,6 +12,9 @@ const ACTION_TYPES = [
   {value: 'set_variable', label: 'Set variable'},
   {value: 'increment_variable', label: 'Increment variable'},
   {value: 'toggle_variable', label: 'Toggle variable'},
+  {value: 'add_inventory_item', label: 'Add inventory item'},
+  {value: 'remove_inventory_item', label: 'Remove inventory item'},
+  {value: 'clear_held_inventory_item', label: 'Clear held inventory item'},
   {value: 'if_variable', label: 'If variable'},
   {value: 'fade_out', label: 'Fade out'},
   {value: 'fade_in', label: 'Fade in'},
@@ -53,6 +56,8 @@ const ActionsCtrl = app => async params => {
     sfxOptions: [],
     overlayBindings: [],
     overlaySceneOptions: [],
+    verbs: [],
+    inventoryObjectOptions: [],
     keyCodeOptions: KEY_CODE_OPTIONS,
     previousSceneId: null,
     nextSceneId: null,
@@ -102,6 +107,8 @@ const ActionsCtrl = app => async params => {
         this.variables = await apiFetch('/api/variables');
         this.sceneOptions = await apiFetch('/api/scenes');
         this.overlayBindings = await apiFetch('/api/overlay-bindings');
+        this.verbs = await apiFetch('/api/verbs');
+        this.inventoryObjectOptions = await apiFetch('/api/scene-objects');
         this.audioAssetOptions = await apiFetch('/api/audio-assets');
         this.bgmOptions = this.audioAssetOptions.filter(asset => asset.kind === 'bgm');
         this.sfxOptions = this.audioAssetOptions.filter(asset => asset.kind === 'sfx');
@@ -164,9 +171,13 @@ const ActionsCtrl = app => async params => {
           ?? binding.overlay_scene_title
           ?? `Scene ${binding.overlay_scene_id}`
       }));
+      this.verbs = this.verbs.map(verb => ({
+        ...verb,
+        label: verb.labels?.en || Object.values(verb.labels ?? {})[0] || verb.key
+      }));
       this.interactions = this.interactions.map(interaction => ({
         ...interaction,
-        triggerLabel: triggerLabel(interaction, this.scene, this.variables),
+        triggerLabel: triggerLabel(interaction, this.scene, this.variables, this.verbs, this.inventoryObjectOptions),
         stepCount: countSteps(interaction.action_tree ?? []),
         isSelected: interaction.id === this.selectedInteractionId
       }));
@@ -293,7 +304,7 @@ const ActionsCtrl = app => async params => {
     },
 
     async onChange(event) {
-      if (event.target.matches('[name="action_type"]')) {
+      if (event.target.matches('[name="action_type"], [name="target_scope"]')) {
         this.updateActionFormVisibility(event.target.closest('[data-action-step-form]'));
         return;
       }
@@ -550,6 +561,7 @@ const ActionsCtrl = app => async params => {
       if (!form) return;
       const selectedType = form.elements.action_type?.value ?? 'play_animation';
       const selectedProperty = form.elements.property?.value ?? 'visible';
+      const targetScope = form.elements.target_scope?.value ?? 'object';
       form.querySelector('[data-action-type-help]')?.replaceChildren(
         document.createTextNode(actionTypeHelp(selectedType))
       );
@@ -557,6 +569,10 @@ const ActionsCtrl = app => async params => {
         const visibleFor = (field.dataset.visibleFor ?? '').split(/\s+/);
         field.hidden = !visibleFor.includes(selectedType);
       });
+      const targetObjectField = form.querySelector('[data-form-field="target-object"]');
+      if (targetObjectField && selectedType === 'go_to_frame' && targetScope === 'background') {
+        targetObjectField.hidden = true;
+      }
       form.querySelectorAll('[data-property-visible-for]').forEach(field => {
         const visibleFor = (field.dataset.propertyVisibleFor ?? '').split(/\s+/);
         field.hidden = selectedType !== 'set_object_property' || !visibleFor.includes(selectedProperty);
@@ -645,7 +661,11 @@ function interactionPayload(interaction) {
 function readTrigger(formData) {
   const type = String(formData.get('trigger_type') ?? 'scene_enter');
   const trigger = {type};
-  if (type.startsWith('object_')) trigger.object_id = Number(formData.get('trigger_object_id'));
+  if (['object_mouseover', 'object_mouseout', 'object_click', 'object_use', 'object_verb', 'inventory_use'].includes(type)) {
+    trigger.object_id = Number(formData.get('trigger_object_id'));
+  }
+  if (type === 'object_verb') trigger.verb_id = Number(formData.get('trigger_verb_id'));
+  if (type === 'inventory_use') trigger.inventory_object_id = Number(formData.get('trigger_inventory_object_id'));
   if (type === 'variable_changed') trigger.variable_id = Number(formData.get('trigger_variable_id'));
   if (type === 'key_press') trigger.key_code = String(formData.get('trigger_key_code') ?? '');
   return trigger;
@@ -678,12 +698,17 @@ function readActionStepForm(form) {
     };
   }
   if (type === 'go_to_frame') {
-    return {
+    const targetScope = String(formData.get('target_scope') ?? 'object');
+    const step = {
       type,
-      target_object_id: Number(formData.get('target_object_id')),
+      target_scope: targetScope,
       frame_index: Number(formData.get('frame_index') || 0),
       wait
     };
+    if (targetScope === 'object') {
+      step.target_object_id = Number(formData.get('target_object_id'));
+    }
+    return step;
   }
   if (type === 'show_subtitle') {
     return {
@@ -721,6 +746,19 @@ function readActionStepForm(form) {
     return {
       type,
       variable_id: Number(formData.get('variable_id')),
+      wait
+    };
+  }
+  if (type === 'add_inventory_item' || type === 'remove_inventory_item') {
+    return {
+      type,
+      scene_object_id: Number(formData.get('inventory_scene_object_id')),
+      wait
+    };
+  }
+  if (type === 'clear_held_inventory_item') {
+    return {
+      type,
       wait
     };
   }
@@ -792,6 +830,12 @@ function setInteractionFormValues(form, interaction) {
   form.elements.trigger_type.value = interaction.trigger?.type ?? 'scene_enter';
   if (form.elements.trigger_object_id) {
     form.elements.trigger_object_id.value = interaction.trigger?.object_id ?? '';
+  }
+  if (form.elements.trigger_verb_id) {
+    form.elements.trigger_verb_id.value = interaction.trigger?.verb_id ?? '';
+  }
+  if (form.elements.trigger_inventory_object_id) {
+    form.elements.trigger_inventory_object_id.value = interaction.trigger?.inventory_object_id ?? '';
   }
   if (form.elements.trigger_variable_id) {
     form.elements.trigger_variable_id.value = interaction.trigger?.variable_id ?? '';
@@ -904,11 +948,21 @@ function countSteps(tree) {
   );
 }
 
-function triggerLabel(interaction, scene, variables) {
+function triggerLabel(interaction, scene, variables, verbs, inventoryObjects) {
   const trigger = interaction.trigger ?? {};
-  if (trigger.type?.startsWith('object_')) {
+  if (['object_mouseover', 'object_mouseout', 'object_click', 'object_use'].includes(trigger.type)) {
     const object = scene?.objects?.find(item => item.id === trigger.object_id);
     return `${trigger.type.replace(/_/g, ' ')} · ${object?.name ?? 'object'}`;
+  }
+  if (trigger.type === 'object_verb') {
+    const object = scene?.objects?.find(item => item.id === trigger.object_id);
+    const verb = verbs.find(item => item.id === trigger.verb_id);
+    return `on verb · ${object?.name ?? 'object'} · ${verb?.label ?? verb?.key ?? 'verb'}`;
+  }
+  if (trigger.type === 'inventory_use') {
+    const object = scene?.objects?.find(item => item.id === trigger.object_id);
+    const inventoryObject = inventoryObjects.find(item => item.id === trigger.inventory_object_id);
+    return `inventory use · ${inventoryObject?.name ?? 'item'} -> ${object?.name ?? 'object'}`;
   }
   if (trigger.type === 'variable_changed') {
     const variable = variables.find(item => item.id === trigger.variable_id);
@@ -927,11 +981,16 @@ function actionLabel(step) {
 function actionMeta(step) {
   if (step.type === 'play_audio') return `audio lines ${step.script_line_ids?.join(', ')}`;
   if (step.type === 'show_subtitle') return `subtitle lines ${step.script_line_ids?.join(', ')}`;
-  if (step.type === 'go_to_frame') return `object ${step.target_object_id} · frame ${step.frame_index}`;
+  if (step.type === 'go_to_frame') {
+    return `${step.target_scope === 'background' ? 'background' : `object ${step.target_object_id}`} · frame ${step.frame_index}`;
+  }
   if (step.type === 'set_object_property') return `${step.property} = ${step.value}`;
   if (step.type === 'set_variable') return `variable ${step.variable_id} = ${step.value}`;
   if (step.type === 'increment_variable') return `variable ${step.variable_id} += ${step.amount}`;
   if (step.type === 'toggle_variable') return `toggle variable ${step.variable_id}`;
+  if (step.type === 'add_inventory_item') return `add inventory item ${step.scene_object_id}`;
+  if (step.type === 'remove_inventory_item') return `remove inventory item ${step.scene_object_id}`;
+  if (step.type === 'clear_held_inventory_item') return 'clear held inventory item';
   if (step.type === 'if_variable') return `if variable ${step.variable_id} ${step.operator} ${step.value}`;
   if (step.type === 'fade_out' || step.type === 'fade_in') return `${step.color} · ${step.duration_seconds}s${step.affect_audio ? ' · audio' : ''}`;
   if (step.type === 'crossfade_bgm') return `audio ${step.audio_asset_id} · ${step.duration_seconds}s`;
@@ -947,13 +1006,16 @@ function actionMeta(step) {
 function actionTypeHelp(type) {
   return {
     play_animation: 'Uses the animation picker. Mode controls queued vs immediate playback.',
-    go_to_frame: 'Uses a target object and a raw frame index from this scene.',
+    go_to_frame: 'Uses a target scope plus a raw frame index from this scene. Background changes the scene backdrop.',
     set_object_property: 'Uses target object, property, and value fields.',
     show_subtitle: 'Uses script line IDs and duration. Search below and add matching lines.',
     play_audio: 'Uses script line IDs. Search below and add matching lines.',
     set_variable: 'Uses variable, value type, and value.',
     increment_variable: 'Uses a number variable and a positive or negative amount.',
     toggle_variable: 'Uses a bool variable and flips true/false.',
+    add_inventory_item: 'Adds a scene object into the global inventory runtime.',
+    remove_inventory_item: 'Removes a scene object from the global inventory runtime.',
+    clear_held_inventory_item: 'Cancels any item currently attached to the pointer.',
     if_variable: 'Creates a branch target; add child steps into then/else after saving it.',
     fade_out: 'Fades the preview to a color. Optionally ramps active narration audio down too.',
     fade_in: 'Fades the preview back in from a color. Optionally ramps active narration audio up too.',

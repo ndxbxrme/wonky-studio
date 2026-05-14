@@ -13,6 +13,7 @@ const DefaultCtrl = app => async () => {
     scenes,
     hasScenes: false,
     uploadStatus: '',
+    sceneCreateStatus: '',
     unloadHandlers: [],
 
     async postLoad() {
@@ -44,12 +45,6 @@ const DefaultCtrl = app => async () => {
         return;
       }
 
-      const processButton = event.target.closest('[data-action="process-batch"]');
-      if (processButton) {
-        await this.processBatch(processButton);
-        return;
-      }
-
       const logoutButton = event.target.closest('[data-action="logout"]');
       if (logoutButton) {
         await logoutUser();
@@ -64,6 +59,12 @@ const DefaultCtrl = app => async () => {
     },
 
     async onSubmit(event) {
+      const sceneCreateForm = event.target.closest('[data-scene-create-form]');
+      if (sceneCreateForm) {
+        event.preventDefault();
+        await this.createScene(sceneCreateForm);
+        return;
+      }
       const inviteForm = event.target.closest('[data-invite-form]');
       if (inviteForm) {
         event.preventDefault();
@@ -91,6 +92,11 @@ const DefaultCtrl = app => async () => {
     async onDrop(event) {
       event.preventDefault();
       document.querySelector('[data-upload-dropzone]')?.classList.remove('is-dragging');
+      const sceneCard = event.target.closest('[data-scene-card]');
+      if (sceneCard) {
+        await this.uploadFilesToScene(sceneCard.dataset.sceneId, event.dataTransfer?.files);
+        return;
+      }
       await this.uploadFiles(event.dataTransfer?.files);
     },
 
@@ -112,25 +118,12 @@ const DefaultCtrl = app => async () => {
         });
         this.uploadBatches = [batch, ...this.uploadBatches];
         this.hasUploadBatches = this.uploadBatches.length > 0;
-        if (status && hasImageFiles) {
-          status.textContent = `Uploaded ${batch.file_count} file${batch.file_count === 1 ? '' : 's'}. Processing scene...`;
-        }
-        if (hasImageFiles) {
-          const processResult = await this.processBatchById(batch.id, {auto: true});
-          if (processResult?.scene?.id) {
-            if (processResult.created) {
-              if (status) status.textContent = `Scene ${processResult.scene.id} created. Running VLM analysis...`;
-              await apiFetch(`/api/scenes/${processResult.scene.id}/analyze-vlm`, {method: 'POST'});
-            }
-            await this.reloadScenes();
-            if (status) {
-              status.textContent = processResult.created
-                ? `Created scene ${processResult.scene.id} and analyzed it with VLM.`
-                : `Matched uploaded files to scene ${processResult.scene.id}.`;
-            }
+        if (status) {
+          if (hasImageFiles) {
+            status.textContent = `Uploaded ${batch.file_count} file${batch.file_count === 1 ? '' : 's'}. Assign them from Images or by dropping them onto a scene.`;
+          } else {
+            status.textContent = `Queued ${batch.file_count} file${batch.file_count === 1 ? '' : 's'}.`;
           }
-        } else if (status) {
-          status.textContent = `Queued ${batch.file_count} file${batch.file_count === 1 ? '' : 's'}.`;
         }
         app.refresh();
       } catch {
@@ -138,27 +131,53 @@ const DefaultCtrl = app => async () => {
       }
     },
 
-    async processBatch(button) {
-      const batchId = button.dataset.batchId;
-      if (!batchId) return;
-      button.disabled = true;
-      button.textContent = 'Processing...';
+    async uploadFilesToScene(sceneId, files) {
+      const selectedFiles = Array.from(files ?? []).filter(file => String(file.type || '').startsWith('image/'));
+      if (!sceneId || !selectedFiles.length) return;
+      const status = document.querySelector('[data-upload-status]');
+      if (status) status.textContent = `Uploading ${selectedFiles.length} image${selectedFiles.length === 1 ? '' : 's'} to scene ${sceneId}...`;
+      const formData = new FormData();
+      selectedFiles.forEach(file => formData.append('files', file));
       try {
-        await this.processBatchById(batchId);
+        await apiFetch(`/api/scenes/${sceneId}/images`, {
+          method: 'POST',
+          body: formData
+        });
         await this.reloadScenes();
-        button.textContent = 'Process scene';
-        button.disabled = false;
+        if (status) status.textContent = `Added ${selectedFiles.length} image${selectedFiles.length === 1 ? '' : 's'} to scene ${sceneId}.`;
         app.refresh();
       } catch {
-        button.disabled = false;
-        button.textContent = 'Process scene';
+        if (status) status.textContent = `Could not add images to scene ${sceneId}.`;
       }
     },
 
-    async processBatchById(batchId, options = {}) {
-      const result = await apiFetch(`/api/uploads/batches/${batchId}/process-scene`, {method: 'POST'});
-      if (!options.auto) await this.reloadScenes();
-      return result;
+    async createScene(form) {
+      const formData = new FormData(form);
+      const title = String(formData.get('title') ?? '').trim();
+      if (!title) {
+        this.sceneCreateStatus = 'Scene title is required.';
+        app.refresh();
+        return;
+      }
+      this.sceneCreateStatus = 'Creating scene...';
+      app.refresh();
+      try {
+        const scene = await apiFetch('/api/scenes', {
+          method: 'POST',
+          body: JSON.stringify({
+            title,
+            description: String(formData.get('description') ?? '').trim(),
+            presentation_mode: 'base'
+          })
+        });
+        form.reset();
+        this.sceneCreateStatus = `Scene ${scene.id} created.`;
+        await this.reloadScenes();
+        app.refresh();
+      } catch {
+        this.sceneCreateStatus = 'Could not create scene.';
+        app.refresh();
+      }
     },
 
     async generateInvite(form) {

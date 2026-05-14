@@ -22,9 +22,11 @@ from pydantic import BaseModel, EmailStr, Field
 
 from .config import Settings, get_settings
 from .database import (
+    assign_uploaded_file_to_scene,
     add_uploaded_file,
     create_audio_asset,
     create_asset,
+    create_empty_scene,
     create_game_variable,
     create_invite,
     create_or_update_overlay_scene_binding,
@@ -42,6 +44,7 @@ from .database import (
     delete_audio_asset,
     delete_game_variable,
     delete_overlay_scene_binding,
+    delete_verb,
     delete_script_line,
     delete_scene_mask_prompt,
     delete_scene_object,
@@ -77,14 +80,17 @@ from .database import (
     list_overlay_scene_bindings,
     list_object_animations_for_object,
     list_object_masks_for_object,
+    list_scene_objects_for_organization,
     list_script_line_references,
     list_script_lines,
     list_script_path_options,
+    list_uploaded_image_files,
     list_scene_objects_for_scene,
     list_scene_images_for_scene,
     list_scene_interactions,
     list_scenes,
     list_upload_batches,
+    list_verbs,
     merge_scene_into_scene,
     object_mask_exists_for_prompt,
     mark_invite_used,
@@ -93,6 +99,7 @@ from .database import (
     complete_processing_job,
     requeue_interrupted_processing_jobs,
     reset_workspace_tables,
+    reorder_scene_images,
     scene_belongs_to_organization,
     scene_object_belongs_to_scene,
     set_scene_object_inventory_image,
@@ -110,8 +117,11 @@ from .database import (
     update_scene_object,
     update_scene_description,
     update_processing_job_progress,
+    update_verb,
     upsert_user,
     upsert_script_audio_candidate,
+    create_verb,
+    get_verb_by_id,
 )
 from .object_rendering import render_masked_object_crop
 from .inventory_images import (
@@ -119,7 +129,7 @@ from .inventory_images import (
     InventoryImageProviderUnavailable,
     build_inventory_image_provider,
 )
-from .scene_processing import process_upload_batch_into_scene
+from .scene_processing import fingerprint_image, process_upload_batch_into_scene
 from .security import sign_state, verify_state
 from .segmentation import SegmentationProvider, build_segmentation_provider
 from .script_import import import_script_audio_data
@@ -129,6 +139,7 @@ from .vlm import SceneVlmProvider, build_scene_vlm_provider, scene_draft_to_dict
 GOOGLE_AUTHORIZATION_ENDPOINT = "https://accounts.google.com/o/oauth2/v2/auth"
 GOOGLE_TOKEN_ENDPOINT = "https://oauth2.googleapis.com/token"
 GOOGLE_USERINFO_ENDPOINT = "https://openidconnect.googleapis.com/v1/userinfo"
+DEFAULT_ANIMATION_FRAME_DURATION_SECONDS = 0.066
 
 
 class AssetCreate(BaseModel):
@@ -330,6 +341,7 @@ class Scene(BaseModel):
     description: str
     presentation_mode: str = "base"
     status: str
+    background_frame_index: int = 0
     representative_uploaded_file_id: int | None
     representative_hash: str | None
     created_by_user_id: int
@@ -346,6 +358,7 @@ class SceneSummary(BaseModel):
     description: str
     presentation_mode: str = "base"
     status: str
+    background_frame_index: int = 0
     representative_uploaded_file_id: int | None
     representative_hash: str | None
     created_by_user_id: int
@@ -353,6 +366,12 @@ class SceneSummary(BaseModel):
     updated_at: str
     image_count: int
     object_count: int
+
+
+class SceneCreate(BaseModel):
+    title: str = Field(min_length=1, max_length=160)
+    description: str = Field(default="", max_length=5000)
+    presentation_mode: str = Field(default="base", pattern="^(base|overlay)$")
 
 
 class BatchSceneProcessResult(BaseModel):
@@ -380,6 +399,32 @@ class SceneUpdate(BaseModel):
     title: str | None = Field(default=None, min_length=1, max_length=160)
     description: str | None = Field(default=None, max_length=5000)
     presentation_mode: str | None = Field(default=None, pattern="^(base|overlay)$")
+    background_frame_index: int | None = Field(default=None, ge=0)
+
+
+class UploadedImageSummary(BaseModel):
+    uploaded_file_id: int
+    batch_id: int
+    original_filename: str
+    relative_path: str
+    content_type: str | None
+    file_size: int
+    created_at: str
+    scene_image_id: int | None = None
+    scene_id: int | None = None
+    scene_title: str | None = None
+    width: int | None = None
+    height: int | None = None
+    sort_order: int | None = None
+
+
+class ImageMoveRequest(BaseModel):
+    uploaded_file_ids: list[int] = Field(min_length=1)
+    target_scene_id: int
+
+
+class SceneImageReorderRequest(BaseModel):
+    ordered_scene_image_ids: list[int] = Field(min_length=1)
 
 
 class SceneMergeRequest(BaseModel):
@@ -440,7 +485,7 @@ class SceneMaskExtractionResult(BaseModel):
 
 
 class ObjectMaskProcessRequest(BaseModel):
-    operation: str = Field(pattern="^(grow|fill_holes|invert|solid)$")
+    operation: str = Field(pattern="^(grow|fill_holes|invert|solid|clear|combine)$")
     apply_all: bool = False
     pixels: int = Field(default=2, ge=1, le=32)
 
@@ -622,12 +667,40 @@ class OverlaySceneBinding(OverlaySceneBindingCreate):
     updated_at: str
 
 
+class InventorySlot(BaseModel):
+    x: float
+    y: float
+    size: float = Field(gt=0)
+    origin: str = Field(default="center", pattern="^(center|top_left)$")
+
+
+class VerbBase(BaseModel):
+    key: str = Field(min_length=1, max_length=64)
+    labels: dict[str, str] = Field(default_factory=dict)
+    enabled: bool = True
+    sort_order: int = Field(default=0, ge=0, le=100000)
+
+
+class VerbCreate(VerbBase):
+    pass
+
+
+class Verb(VerbBase):
+    id: int
+    organization_id: str
+    created_at: str
+    updated_at: str
+
+
 class GlobalSettingsUpdate(BaseModel):
     overlay_open_duration_seconds: float | None = Field(default=None, gt=0, le=10)
     overlay_close_duration_seconds: float | None = Field(default=None, gt=0, le=10)
     overlay_fade_color: str | None = Field(default=None, min_length=1, max_length=32)
     overlay_affect_audio: bool | None = None
     start_scene_id: int | None = Field(default=None, ge=1)
+    inventory_key_code: str | None = Field(default=None, min_length=1, max_length=32)
+    verb_menu_timeout_seconds: float | None = Field(default=None, gt=0.25, le=30)
+    inventory_slots: list[InventorySlot] | None = None
 
 
 class GlobalSettings(GlobalSettingsUpdate):
@@ -637,17 +710,24 @@ class GlobalSettings(GlobalSettingsUpdate):
     overlay_fade_color: str = "#000000"
     overlay_affect_audio: bool = False
     start_scene_id: int | None = None
+    inventory_key_code: str = "KeyI"
+    verb_menu_timeout_seconds: float = 4.0
+    inventory_slots: list[InventorySlot] = []
+    inventory_background_relative_path: str | None = None
+    verb_tag_background_relative_path: str | None = None
     created_at: str
     updated_at: str
 
 
 class InteractionTrigger(BaseModel):
     type: str = Field(
-        pattern="^(scene_enter|scene_exit|overlay_open|overlay_close|object_mouseover|object_mouseout|object_click|object_use|variable_changed|key_press)$"
+        pattern="^(scene_enter|scene_exit|overlay_open|overlay_close|object_mouseover|object_mouseout|object_click|object_use|object_verb|inventory_use|variable_changed|key_press)$"
     )
     object_id: int | None = None
     variable_id: int | None = None
     key_code: str | None = None
+    verb_id: int | None = None
+    inventory_object_id: int | None = None
 
 
 class SceneInteractionCreate(BaseModel):
@@ -722,6 +802,7 @@ class ScenePreview(BaseModel):
     title: str
     description: str
     presentation_mode: str = "base"
+    background_frame_index: int = 0
     width: int
     height: int
     available_scenes: list[dict[str, Any]] = []
@@ -732,8 +813,18 @@ class ScenePreview(BaseModel):
     objects: list[PreviewObjectState] = []
     audio_assets: list[AudioAsset] = []
     variables: list[GameVariable] = []
+    verbs: list[Verb] = []
     interactions: list[SceneInteraction] = []
     script_lines: list[ScriptLineDetail] = []
+
+
+class SceneObjectReference(BaseModel):
+    id: int
+    scene_id: int
+    scene_title: str
+    name: str
+    keyboard_target_enabled: bool = False
+    inventory_image_relative_path: str | None = None
 
 
 def create_app(
@@ -1205,6 +1296,57 @@ def create_app(
     def get_overlay_bindings(user: dict[str, Any] = Depends(current_user)) -> list[dict[str, Any]]:
         return list_overlay_scene_bindings(database_path, user["organization_id"])
 
+    @app.get("/api/verbs", response_model=list[Verb])
+    def get_verbs(user: dict[str, Any] = Depends(current_user)) -> list[dict[str, Any]]:
+        return list_verbs(database_path, user["organization_id"])
+
+    @app.post("/api/verbs", response_model=Verb, status_code=201)
+    def post_verb(
+        verb: VerbCreate,
+        user: dict[str, Any] = Depends(current_user),
+    ) -> dict[str, Any]:
+        try:
+            return create_verb(
+                database_path,
+                organization_id=user["organization_id"],
+                key=_normalize_verb_key(verb.key),
+                labels=_normalize_verb_labels(verb.labels),
+                enabled=verb.enabled,
+                sort_order=verb.sort_order,
+            )
+        except sqlite3.IntegrityError as exc:
+            raise HTTPException(status_code=409, detail="Verb key already exists") from exc
+
+    @app.patch("/api/verbs/{verb_id}", response_model=Verb)
+    def patch_verb(
+        verb_id: int,
+        verb: VerbCreate,
+        user: dict[str, Any] = Depends(current_user),
+    ) -> dict[str, Any]:
+        try:
+            updated = update_verb(
+                database_path,
+                organization_id=user["organization_id"],
+                verb_id=verb_id,
+                key=_normalize_verb_key(verb.key),
+                labels=_normalize_verb_labels(verb.labels),
+                enabled=verb.enabled,
+                sort_order=verb.sort_order,
+            )
+        except sqlite3.IntegrityError as exc:
+            raise HTTPException(status_code=409, detail="Verb key already exists") from exc
+        if updated is None:
+            raise HTTPException(status_code=404, detail="Verb not found")
+        return updated
+
+    @app.delete("/api/verbs/{verb_id}", status_code=204)
+    def delete_verb_endpoint(
+        verb_id: int,
+        user: dict[str, Any] = Depends(current_user),
+    ) -> Response:
+        delete_verb(database_path, user["organization_id"], verb_id)
+        return Response(status_code=204)
+
     @app.get("/api/global-settings", response_model=GlobalSettings)
     def get_global_settings_endpoint(user: dict[str, Any] = Depends(current_user)) -> dict[str, Any]:
         return get_global_settings(database_path, user["organization_id"])
@@ -1229,7 +1371,68 @@ def create_app(
             overlay_fade_color=settings_update.overlay_fade_color,
             overlay_affect_audio=settings_update.overlay_affect_audio,
             start_scene_id=settings_update.start_scene_id,
+            inventory_key_code=_normalize_key_code(settings_update.inventory_key_code)
+            if settings_update.inventory_key_code
+            else None,
+            verb_menu_timeout_seconds=settings_update.verb_menu_timeout_seconds,
+            inventory_slots=[
+                slot.model_dump()
+                for slot in (settings_update.inventory_slots or [])
+            ] if "inventory_slots" in settings_update.model_fields_set else None,
             update_start_scene_id=update_start_scene_id,
+        )
+
+    @app.post("/api/global-settings/assets/{asset_kind}", response_model=GlobalSettings)
+    async def post_global_settings_asset(
+        asset_kind: str,
+        file: UploadFile = File(...),
+        user: dict[str, Any] = Depends(current_user),
+    ) -> dict[str, Any]:
+        if asset_kind not in {"inventory_background", "verb_tag_background"}:
+            raise HTTPException(status_code=404, detail="Global settings asset not found")
+        original_name = _safe_filename(file.filename or f"{asset_kind}.png")
+        suffix = Path(original_name).suffix.lower() or ".png"
+        if suffix not in {".png", ".jpg", ".jpeg", ".webp"}:
+            raise HTTPException(status_code=400, detail="Unsupported image type")
+        relative_path = str(
+            Path(_safe_path_segment(user["organization_id"]))
+            / "global-settings"
+            / f"{asset_kind}{suffix}"
+        )
+        output_path = app_settings.storage_root / relative_path
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        await _write_upload(file, output_path)
+        return update_global_settings(
+            database_path,
+            organization_id=user["organization_id"],
+            inventory_background_relative_path=relative_path if asset_kind == "inventory_background" else None,
+            verb_tag_background_relative_path=relative_path if asset_kind == "verb_tag_background" else None,
+            update_inventory_background_relative_path=asset_kind == "inventory_background",
+            update_verb_tag_background_relative_path=asset_kind == "verb_tag_background",
+        )
+
+    @app.get("/api/global-settings/assets/{asset_kind}/content")
+    def get_global_settings_asset(
+        asset_kind: str,
+        user: dict[str, Any] = Depends(current_user),
+    ) -> FileResponse:
+        if asset_kind not in {"inventory_background", "verb_tag_background"}:
+            raise HTTPException(status_code=404, detail="Global settings asset not found")
+        settings_row = get_global_settings(database_path, user["organization_id"])
+        relative_path = (
+            settings_row.get("inventory_background_relative_path")
+            if asset_kind == "inventory_background"
+            else settings_row.get("verb_tag_background_relative_path")
+        )
+        if not relative_path:
+            raise HTTPException(status_code=404, detail="Global settings asset not found")
+        file_path = app_settings.storage_root / relative_path
+        if not file_path.exists():
+            raise HTTPException(status_code=404, detail="Global settings asset content not found")
+        return FileResponse(
+            file_path,
+            media_type=_content_type_for_suffix(file_path.suffix),
+            headers={"Cache-Control": "no-store, max-age=0"},
         )
 
     @app.post("/api/overlay-bindings", response_model=OverlaySceneBinding, status_code=201)
@@ -1254,6 +1457,12 @@ def create_app(
     ) -> Response:
         delete_overlay_scene_binding(database_path, user["organization_id"], binding_id)
         return Response(status_code=204)
+
+    @app.get("/api/scene-objects", response_model=list[SceneObjectReference])
+    def get_scene_object_references(
+        user: dict[str, Any] = Depends(current_user),
+    ) -> list[dict[str, Any]]:
+        return list_scene_objects_for_organization(database_path, user["organization_id"])
 
     @app.get(
         "/api/scenes/{scene_id}/interactions",
@@ -1443,9 +1652,70 @@ def create_app(
         except FileNotFoundError as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
 
+    @app.get("/api/images", response_model=list[UploadedImageSummary])
+    def get_images(
+        user: dict[str, Any] = Depends(current_user),
+    ) -> list[dict[str, Any]]:
+        return list_uploaded_image_files(database_path, user["organization_id"])
+
+    @app.post("/api/images/move", response_model=list[UploadedImageSummary])
+    def post_move_images(
+        request: ImageMoveRequest,
+        user: dict[str, Any] = Depends(current_user),
+    ) -> list[dict[str, Any]]:
+        _require_scene(
+            database_path,
+            scene_id=request.target_scene_id,
+            organization_id=user["organization_id"],
+        )
+        seen_uploaded_file_ids: set[int] = set()
+        for uploaded_file_id in request.uploaded_file_ids:
+            normalized_uploaded_file_id = int(uploaded_file_id)
+            if normalized_uploaded_file_id in seen_uploaded_file_ids:
+                continue
+            seen_uploaded_file_ids.add(normalized_uploaded_file_id)
+            uploaded_file = get_uploaded_file_by_id(
+                database_path,
+                uploaded_file_id=normalized_uploaded_file_id,
+                organization_id=user["organization_id"],
+            )
+            if uploaded_file is None:
+                raise HTTPException(status_code=404, detail=f"Uploaded file {normalized_uploaded_file_id} not found")
+            image_path = app_settings.storage_root / uploaded_file["relative_path"]
+            if not image_path.exists():
+                raise HTTPException(status_code=404, detail=f"Uploaded file content missing for {normalized_uploaded_file_id}")
+            fingerprint = fingerprint_image(image_path)
+            assign_uploaded_file_to_scene(
+                database_path,
+                scene_id=request.target_scene_id,
+                uploaded_file_id=normalized_uploaded_file_id,
+                perceptual_hash=fingerprint.perceptual_hash,
+                width=fingerprint.width,
+                height=fingerprint.height,
+            )
+        return list_uploaded_image_files(database_path, user["organization_id"])
+
     @app.get("/api/scenes", response_model=list[SceneSummary])
     def get_scenes(user: dict[str, Any] = Depends(current_user)) -> list[dict[str, Any]]:
         return list_scenes(database_path, user["organization_id"])
+
+    @app.post("/api/scenes", response_model=Scene, status_code=201)
+    def post_scene(
+        payload: SceneCreate,
+        user: dict[str, Any] = Depends(current_user),
+    ) -> dict[str, Any]:
+        scene = create_empty_scene(
+            database_path,
+            organization_id=user["organization_id"],
+            created_by_user_id=user["id"],
+            title=payload.title.strip(),
+            description=payload.description.strip(),
+            presentation_mode=payload.presentation_mode,
+        )
+        full_scene = get_scene_with_images(database_path, int(scene["id"]))
+        if full_scene is None:
+            raise RuntimeError("Created scene could not be loaded")
+        return full_scene
 
     @app.get("/api/scenes/{scene_id}", response_model=Scene)
     def get_scene(
@@ -1463,12 +1733,15 @@ def create_app(
         update: SceneUpdate,
         user: dict[str, Any] = Depends(current_user),
     ) -> dict[str, Any]:
-        if not scene_belongs_to_organization(
-            database_path,
-            scene_id=scene_id,
-            organization_id=user["organization_id"],
-        ):
+        scene = get_scene_with_images(database_path, scene_id)
+        if scene is None or scene["organization_id"] != user["organization_id"]:
             raise HTTPException(status_code=404, detail="Scene not found")
+        image_count = len(scene.get("images", []))
+        if update.background_frame_index is not None:
+            if image_count == 0 and int(update.background_frame_index) != 0:
+                raise HTTPException(status_code=400, detail="Background frame must be 0 for scenes without images")
+            if image_count > 0 and int(update.background_frame_index) >= image_count:
+                raise HTTPException(status_code=400, detail="Background frame is outside this scene's image range")
         updated = update_scene(
             database_path,
             scene_id=scene_id,
@@ -1476,10 +1749,92 @@ def create_app(
             title=update.title.strip() if isinstance(update.title, str) else None,
             description=update.description if update.description is not None else None,
             presentation_mode=update.presentation_mode,
+            background_frame_index=update.background_frame_index,
         )
         if updated is None:
             raise HTTPException(status_code=404, detail="Scene not found")
         return updated
+
+    @app.post("/api/scenes/{scene_id}/images", response_model=Scene)
+    async def post_scene_images(
+        scene_id: int,
+        files: list[UploadFile] = File(...),
+        user: dict[str, Any] = Depends(current_user),
+    ) -> dict[str, Any]:
+        if not files:
+            raise HTTPException(status_code=400, detail="At least one file is required")
+        _require_scene(
+            database_path,
+            scene_id=scene_id,
+            organization_id=user["organization_id"],
+        )
+        batch = create_upload_batch(
+            database_path,
+            organization_id=user["organization_id"],
+            created_by_user_id=user["id"],
+        )
+        batch_root = _batch_storage_root(
+            app_settings.storage_root,
+            user["organization_id"],
+            batch["id"],
+        )
+        batch_root.mkdir(parents=True, exist_ok=True)
+
+        for upload in files:
+            original_filename = _safe_filename(upload.filename or "upload.bin")
+            stored_filename = f"{uuid4().hex}-{original_filename}"
+            stored_path = batch_root / stored_filename
+            file_size = await _write_upload(upload, stored_path)
+            uploaded_file = add_uploaded_file(
+                database_path,
+                batch_id=batch["id"],
+                organization_id=user["organization_id"],
+                uploaded_by_user_id=user["id"],
+                original_filename=original_filename,
+                stored_filename=stored_filename,
+                relative_path=str(
+                    Path(user["organization_id"]) / str(batch["id"]) / stored_filename
+                ),
+                content_type=upload.content_type,
+                file_size=file_size,
+            )
+            try:
+                fingerprint = fingerprint_image(stored_path)
+            except OSError as exc:
+                raise HTTPException(status_code=400, detail=f"{original_filename} is not a supported image") from exc
+            assign_uploaded_file_to_scene(
+                database_path,
+                scene_id=scene_id,
+                uploaded_file_id=int(uploaded_file["id"]),
+                perceptual_hash=fingerprint.perceptual_hash,
+                width=fingerprint.width,
+                height=fingerprint.height,
+            )
+
+        updated_scene = get_scene_with_images(database_path, scene_id)
+        if updated_scene is None:
+            raise RuntimeError("Updated scene could not be loaded")
+        return updated_scene
+
+    @app.post("/api/scenes/{scene_id}/images/reorder", response_model=list[SceneImage])
+    def post_reorder_scene_images(
+        scene_id: int,
+        request: SceneImageReorderRequest,
+        user: dict[str, Any] = Depends(current_user),
+    ) -> list[dict[str, Any]]:
+        _require_scene(
+            database_path,
+            scene_id=scene_id,
+            organization_id=user["organization_id"],
+        )
+        try:
+            return reorder_scene_images(
+                database_path,
+                scene_id=scene_id,
+                ordered_scene_image_ids=[int(value) for value in request.ordered_scene_image_ids],
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     @app.post("/api/scenes/{scene_id}/merge-into", response_model=Scene)
     def post_merge_scene_into(
@@ -1976,6 +2331,35 @@ def create_app(
             filename=uploaded_file["original_filename"],
         )
 
+    @app.get("/api/uploads/files/{uploaded_file_id}/thumbnail")
+    def get_uploaded_file_thumbnail(
+        uploaded_file_id: int,
+        size: int = 320,
+        user: dict[str, Any] = Depends(current_user),
+    ) -> Response:
+        uploaded_file = get_uploaded_file_by_id(
+            database_path,
+            uploaded_file_id=uploaded_file_id,
+            organization_id=user["organization_id"],
+        )
+        if uploaded_file is None:
+            raise HTTPException(status_code=404, detail="Uploaded file not found")
+
+        file_path = app_settings.storage_root / uploaded_file["relative_path"]
+        if not file_path.exists():
+            raise HTTPException(status_code=404, detail="Uploaded file content not found")
+
+        try:
+            with Image.open(file_path) as image:
+                rendered = image.convert("RGB")
+                rendered.thumbnail((max(32, min(size, 1024)), max(32, min(size, 1024))), Image.Resampling.LANCZOS)
+                buffer = BytesIO()
+                rendered.save(buffer, format="JPEG", quality=82, optimize=True)
+        except OSError as exc:
+            raise HTTPException(status_code=400, detail="Uploaded file is not a supported image") from exc
+
+        return Response(content=buffer.getvalue(), media_type="image/jpeg")
+
     @app.get("/api/mask-candidates/{candidate_id}/{variant}")
     def get_mask_candidate_content(
         candidate_id: int,
@@ -2076,6 +2460,23 @@ def create_app(
         )
         if object_mask is None:
             raise HTTPException(status_code=404, detail="Object mask not found")
+        if request.operation == "combine":
+            target_masks = list_object_masks_for_object(
+                database_path,
+                scene_object_id=object_mask["scene_object_id"],
+                organization_id=user["organization_id"],
+            )
+            combined_image = _combine_object_mask_images(
+                app_settings.storage_root,
+                target_masks,
+            )
+            updated_masks = []
+            for target_mask in target_masks:
+                _write_object_mask_image(app_settings.storage_root, target_mask, combined_image)
+                updated_mask = touch_object_mask(database_path, target_mask["id"])
+                if updated_mask is not None:
+                    updated_masks.append(updated_mask)
+            return updated_masks
         target_masks = (
             list_object_masks_for_object(
                 database_path,
@@ -2741,7 +3142,7 @@ def _create_generated_motion_animation(
             {
                 "start_frame": start_frame,
                 "end_frame": end_frame,
-                "frame_duration_seconds": 0.18,
+                "frame_duration_seconds": DEFAULT_ANIMATION_FRAME_DURATION_SECONDS,
             }
         ],
     )
@@ -2855,6 +3256,26 @@ def _normalize_interaction_trigger(
             raise HTTPException(status_code=400, detail="Trigger object is not in this scene")
         normalized["object_id"] = object_id
         return normalized
+    if trigger_type == "object_verb":
+        object_id = _required_int(trigger.get("object_id"), "Trigger object is required")
+        verb_id = _required_int(trigger.get("verb_id"), "Verb is required")
+        if not scene_object_belongs_to_scene(db_path, scene_id, object_id, organization_id):
+            raise HTTPException(status_code=400, detail="Trigger object is not in this scene")
+        if get_verb_by_id(db_path, organization_id, verb_id) is None:
+            raise HTTPException(status_code=400, detail="Trigger verb does not exist")
+        normalized["object_id"] = object_id
+        normalized["verb_id"] = verb_id
+        return normalized
+    if trigger_type == "inventory_use":
+        object_id = _required_int(trigger.get("object_id"), "Trigger object is required")
+        inventory_object_id = _required_int(trigger.get("inventory_object_id"), "Inventory object is required")
+        if not scene_object_belongs_to_scene(db_path, scene_id, object_id, organization_id):
+            raise HTTPException(status_code=400, detail="Trigger object is not in this scene")
+        if get_scene_object_for_organization(db_path, inventory_object_id, organization_id) is None:
+            raise HTTPException(status_code=400, detail="Inventory object does not exist")
+        normalized["object_id"] = object_id
+        normalized["inventory_object_id"] = inventory_object_id
+        return normalized
     if trigger_type == "variable_changed":
         variable_id = _required_int(trigger.get("variable_id"), "Trigger variable is required")
         if get_game_variable_by_id(db_path, organization_id, variable_id) is None:
@@ -2927,9 +3348,7 @@ def _normalize_action_step(
         )
         return normalized
     if step_type == "go_to_frame":
-        object_id = _required_int(step.get("target_object_id"), "Frame target object is required")
-        if not scene_object_belongs_to_scene(db_path, scene_id, object_id, organization_id):
-            raise HTTPException(status_code=400, detail="Frame target object is not in this scene")
+        target_scope = _choice(step.get("target_scope"), {"object", "background"}, "object")
         frame_index = _required_int(step.get("frame_index"), "Frame index is required")
         scene = get_scene_with_images(db_path, scene_id)
         image_count = len(scene.get("images", [])) if scene else 0
@@ -2937,11 +3356,16 @@ def _normalize_action_step(
             raise HTTPException(status_code=400, detail="Frame index is outside this scene's image range")
         normalized.update(
             {
-                "target_object_id": object_id,
+                "target_scope": target_scope,
                 "frame_index": frame_index,
                 "wait": _choice(step.get("wait"), {"wait", "continue"}, "continue"),
             }
         )
+        if target_scope == "object":
+            object_id = _required_int(step.get("target_object_id"), "Frame target object is required")
+            if not scene_object_belongs_to_scene(db_path, scene_id, object_id, organization_id):
+                raise HTTPException(status_code=400, detail="Frame target object is not in this scene")
+            normalized["target_object_id"] = object_id
         return normalized
     if step_type == "show_subtitle":
         line_ids = [
@@ -3103,6 +3527,20 @@ def _normalize_action_step(
                 "wait": _choice(step.get("wait"), {"wait", "continue"}, "continue"),
             }
         )
+        return normalized
+    if step_type in {"add_inventory_item", "remove_inventory_item"}:
+        scene_object_id = _required_int(step.get("scene_object_id"), "Inventory object is required")
+        if get_scene_object_for_organization(db_path, scene_object_id, organization_id) is None:
+            raise HTTPException(status_code=400, detail="Inventory object does not exist")
+        normalized.update(
+            {
+                "scene_object_id": scene_object_id,
+                "wait": _choice(step.get("wait"), {"wait", "continue"}, "continue"),
+            }
+        )
+        return normalized
+    if step_type == "clear_held_inventory_item":
+        normalized.update({"wait": _choice(step.get("wait"), {"wait", "continue"}, "continue")})
         return normalized
     if step_type == "change_scene":
         target_scene_id = _required_int(step.get("scene_id"), "Target scene is required")
@@ -3302,7 +3740,34 @@ def _process_object_mask_image(
         return ImageOps.invert(mask_image)
     if operation == "solid":
         return Image.new("L", mask_image.size, 255)
+    if operation == "clear":
+        return Image.new("L", mask_image.size, 0)
     raise HTTPException(status_code=400, detail="Unsupported mask operation")
+
+
+def _combine_object_mask_images(
+    storage_root: Path,
+    object_masks: list[dict[str, Any]],
+) -> Image.Image:
+    if not object_masks:
+        raise HTTPException(status_code=400, detail="No masks available to combine")
+    combined_image = None
+    expected_size = None
+    for object_mask in object_masks:
+        mask_path = storage_root / object_mask["relative_path"]
+        if not mask_path.exists():
+            raise HTTPException(status_code=404, detail="Mask file not found")
+        with Image.open(mask_path) as image:
+            mask_image = image.convert("L")
+            mask_image.load()
+        if expected_size is None:
+            expected_size = mask_image.size
+            combined_image = mask_image.copy()
+            continue
+        if mask_image.size != expected_size:
+            raise HTTPException(status_code=400, detail="Masks must have matching dimensions to combine")
+        combined_image = ImageChops.lighter(combined_image, mask_image)
+    return combined_image
 
 
 def _fill_mask_holes(mask_image: Image.Image) -> Image.Image:
@@ -3364,6 +3829,7 @@ def _build_scene_preview_payload(
     preview_objects = []
     preview_audio_assets = list_audio_assets(database_path, organization_id)
     preview_variables = list_game_variables(database_path, organization_id)
+    preview_verbs = list_verbs(database_path, organization_id)
     scene_summaries = list_scenes(database_path, organization_id)
     available_scenes = [
         {
@@ -3509,6 +3975,7 @@ def _build_scene_preview_payload(
         "title": scene["title"],
         "description": scene["description"],
         "presentation_mode": scene.get("presentation_mode", "base"),
+        "background_frame_index": int(scene.get("background_frame_index") or 0),
         "width": scene_width,
         "height": scene_height,
         "available_scenes": available_scenes,
@@ -3519,6 +3986,7 @@ def _build_scene_preview_payload(
         "objects": preview_objects,
         "audio_assets": preview_audio_assets,
         "variables": preview_variables,
+        "verbs": preview_verbs,
         "interactions": preview_interactions,
         "script_lines": preview_script_lines,
     }
@@ -3555,7 +4023,7 @@ def _collect_go_to_frame_refs_from_steps(
     refs: dict[int, set[int]],
 ) -> None:
     for step in steps:
-        if step.get("type") == "go_to_frame":
+        if step.get("type") == "go_to_frame" and step.get("target_scope", "object") == "object":
             try:
                 object_id = int(step.get("target_object_id"))
                 frame_index = int(step.get("frame_index"))
@@ -3803,6 +4271,35 @@ def _normalize_script_path_parts(path_text: str) -> list[str]:
     if not path_text.strip():
         return []
     return [part.strip() for part in path_text.split("/") if part.strip()]
+
+
+def _normalize_verb_key(value: str) -> str:
+    normalized = sub(r"[^a-z0-9_]+", "_", str(value or "").strip().lower()).strip("_")
+    if not normalized:
+        raise HTTPException(status_code=400, detail="Verb key is required")
+    return normalized[:64]
+
+
+def _normalize_verb_labels(labels: dict[str, str]) -> dict[str, str]:
+    normalized: dict[str, str] = {}
+    for language, text in (labels or {}).items():
+        normalized_language = str(language or "").strip().lower()
+        normalized_text = str(text or "").strip()
+        if not normalized_language or not normalized_text:
+            continue
+        normalized[normalized_language] = normalized_text
+    if not normalized:
+        raise HTTPException(status_code=400, detail="At least one verb label is required")
+    return normalized
+
+
+def _content_type_for_suffix(suffix: str) -> str:
+    normalized = str(suffix or "").strip().lower()
+    if normalized in {".jpg", ".jpeg"}:
+        return "image/jpeg"
+    if normalized == ".webp":
+        return "image/webp"
+    return "image/png"
 
 
 async def _write_upload(upload: UploadFile, stored_path: Path) -> int:

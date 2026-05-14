@@ -124,8 +124,10 @@ const MaskEditorCtrl = app => async params => {
       const operationLabels = {
         grow: 'Growing mask...',
         fill_holes: 'Filling holes...',
+        combine: 'Combining masks across frames...',
         invert: 'Inverting mask...',
-        solid: 'Creating solid mask...'
+        solid: 'Creating solid mask...',
+        clear: 'Clearing mask...'
       };
       const label = operationLabels[event.detail.operation] ?? 'Processing mask...';
       this.setStatus(event.detail.applyAll ? `${label} Applying to all frames...` : label);

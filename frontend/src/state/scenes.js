@@ -43,16 +43,16 @@ function prepareScene(scene) {
     const masks = (object.masks ?? []).map(mask => ({
       ...mask,
       originalUrl: uploadedFileUrl(mask.uploaded_file_id),
-      rawUrl: objectMaskUrl(mask.id, 'raw', maskCacheKey(mask)),
+      rawUrl: objectMaskUrl(mask.id, 'raw', shortCacheKey(maskCacheKey(mask))),
       softUrl: mask.soft_relative_path
-        ? objectMaskUrl(mask.id, 'soft', maskCacheKey(mask))
+        ? objectMaskUrl(mask.id, 'soft', shortCacheKey(maskCacheKey(mask)))
         : ''
     }));
-    const thumbnailCacheKey = [
+    const thumbnailCacheKey = shortCacheKey([
       masks.map(maskCacheKey).join('~'),
       object.inventory_image_relative_path ?? '',
       object.updated_at ?? ''
-    ].join('~');
+    ].join('~'));
     return {
       ...object,
       prompt: object.prompt ?? object.name,
@@ -71,13 +71,15 @@ function prepareScene(scene) {
   return {
     ...scene,
     presentation_mode: scene.presentation_mode ?? 'base',
+    background_frame_index: Number(scene.background_frame_index ?? 0),
     images: scene.images ?? [],
     objects,
     thumbnailUrl: scene.representative_uploaded_file_id
       ? uploadedFileUrl(scene.representative_uploaded_file_id)
       : '',
     hasObjects: Boolean(objects.length),
-    objectMaskCount
+    objectMaskCount,
+    backgroundFrameMax: Math.max(0, (scene.images ?? []).length - 1)
   };
 }
 
@@ -89,6 +91,15 @@ function maskCacheKey(mask) {
     mask.soft_relative_path ?? '',
     mask.prompt_text ?? ''
   ].join('|');
+}
+
+function shortCacheKey(value) {
+  let hash = 2166136261;
+  for (let index = 0; index < value.length; index += 1) {
+    hash ^= value.charCodeAt(index);
+    hash = Math.imul(hash, 16777619);
+  }
+  return `k${(hash >>> 0).toString(36)}`;
 }
 
 export {

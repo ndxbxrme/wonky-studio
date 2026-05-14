@@ -1,4 +1,4 @@
-import {apiFetch} from '../api.js';
+import {apiFetch, globalSettingsAssetUrl} from '../api.js';
 import {user} from '../state/user.js';
 
 const KEY_CODE_OPTIONS = [
@@ -13,11 +13,19 @@ const GlobalSettingsCtrl = app => async () => {
     appName: 'Wonky Studio',
     user: user.current,
     globalSettings: null,
+    verbs: [],
+    selectedVerbId: null,
     overlayBindings: [],
     overlaySceneOptions: [],
     baseSceneOptions: [],
     keyCodeOptions: KEY_CODE_OPTIONS,
     status: '',
+    isEditingVerb: false,
+    verbSubmitLabel: 'Add verb',
+    hasVerbTagBackground: false,
+    hasInventoryBackground: false,
+    verbTagBackgroundUrl: '',
+    inventoryBackgroundUrl: '',
     unloadHandlers: [],
 
     async postLoad() {
@@ -40,10 +48,11 @@ const GlobalSettingsCtrl = app => async () => {
     },
 
     async refreshData() {
-      const [globalSettings, overlayBindings, scenes] = await Promise.all([
+      const [globalSettings, overlayBindings, scenes, verbs] = await Promise.all([
         apiFetch('/api/global-settings'),
         apiFetch('/api/overlay-bindings'),
-        apiFetch('/api/scenes')
+        apiFetch('/api/scenes'),
+        apiFetch('/api/verbs')
       ]);
       this.globalSettings = globalSettings;
       this.overlayBindings = overlayBindings;
@@ -51,18 +60,69 @@ const GlobalSettingsCtrl = app => async () => {
       this.baseSceneOptions = scenes
         .filter(scene => scene.presentation_mode !== 'overlay')
         .sort((left, right) => Number(left.id) - Number(right.id));
+      this.verbs = verbs
+        .map(verb => ({
+          ...verb,
+          labelSummary: Object.entries(verb.labels ?? {})
+            .map(([language, text]) => `${language}: ${text}`)
+            .join(' · '),
+          isSelected: Number(verb.id) === Number(this.selectedVerbId)
+        }));
+      if (!this.verbs.some(verb => Number(verb.id) === Number(this.selectedVerbId))) {
+        this.selectedVerbId = null;
+      }
+      this.isEditingVerb = Boolean(this.selectedVerbId);
+      this.verbSubmitLabel = this.isEditingVerb ? 'Update verb' : 'Add verb';
+      this.hasVerbTagBackground = Boolean(this.globalSettings?.verb_tag_background_relative_path);
+      this.hasInventoryBackground = Boolean(this.globalSettings?.inventory_background_relative_path);
+      this.verbTagBackgroundUrl = this.hasVerbTagBackground
+        ? `${globalSettingsAssetUrl('verb_tag_background')}?v=${encodeURIComponent(this.globalSettings.updated_at || '')}`
+        : '';
+      this.inventoryBackgroundUrl = this.hasInventoryBackground
+        ? `${globalSettingsAssetUrl('inventory_background')}?v=${encodeURIComponent(this.globalSettings.updated_at || '')}`
+        : '';
     },
 
     setControlValues() {
       const form = this.root?.querySelector('[data-global-overlay-settings-form]');
-      if (!form || !this.globalSettings) return;
-      form.elements.overlay_open_duration_seconds.value = String(this.globalSettings.overlay_open_duration_seconds ?? 0.22);
-      form.elements.overlay_close_duration_seconds.value = String(this.globalSettings.overlay_close_duration_seconds ?? 0.18);
-      form.elements.overlay_affect_audio.checked = Boolean(this.globalSettings.overlay_affect_audio);
-      form.elements.start_scene_id.value = this.globalSettings.start_scene_id ? String(this.globalSettings.start_scene_id) : '';
+      if (form && this.globalSettings) {
+        form.elements.overlay_open_duration_seconds.value = String(this.globalSettings.overlay_open_duration_seconds ?? 0.22);
+        form.elements.overlay_close_duration_seconds.value = String(this.globalSettings.overlay_close_duration_seconds ?? 0.18);
+        form.elements.overlay_affect_audio.checked = Boolean(this.globalSettings.overlay_affect_audio);
+        form.elements.start_scene_id.value = this.globalSettings.start_scene_id ? String(this.globalSettings.start_scene_id) : '';
+        form.elements.inventory_key_code.value = this.globalSettings.inventory_key_code ?? 'KeyI';
+        form.elements.verb_menu_timeout_seconds.value = String(this.globalSettings.verb_menu_timeout_seconds ?? 4);
+      }
+      const inventoryForm = this.root?.querySelector('[data-inventory-layout-form]');
+      if (inventoryForm && this.globalSettings) {
+        inventoryForm.elements.inventory_slots_json.value = JSON.stringify(this.globalSettings.inventory_slots ?? [], null, 2);
+      }
+      const verbForm = this.root?.querySelector('[data-verb-form]');
+      if (verbForm) {
+        const selectedVerb = this.verbs.find(verb => Number(verb.id) === Number(this.selectedVerbId)) ?? null;
+        verbForm.elements.verb_id.value = selectedVerb?.id ?? '';
+        verbForm.elements.key.value = selectedVerb?.key ?? '';
+        verbForm.elements.labels_json.value = JSON.stringify(selectedVerb?.labels ?? {}, null, 2);
+        verbForm.elements.sort_order.value = String(selectedVerb?.sort_order ?? 0);
+        verbForm.elements.enabled.checked = selectedVerb ? Boolean(selectedVerb.enabled) : true;
+      }
     },
 
     async onClick(event) {
+      const selectVerbButton = event.target.closest('[data-action="select-verb"]');
+      if (selectVerbButton) {
+        this.selectedVerbId = Number(selectVerbButton.dataset.verbId);
+        await this.refreshData();
+        this.refreshView();
+        return;
+      }
+      const cancelVerbEditButton = event.target.closest('[data-action="cancel-verb-edit"]');
+      if (cancelVerbEditButton) {
+        this.selectedVerbId = null;
+        await this.refreshData();
+        this.refreshView();
+        return;
+      }
       const deleteButton = event.target.closest('[data-action="delete-overlay-binding"]');
       if (deleteButton) {
         await this.deleteOverlayBinding(deleteButton.dataset.bindingId);
@@ -76,10 +136,28 @@ const GlobalSettingsCtrl = app => async () => {
         await this.saveGlobalSettings(settingsForm);
         return;
       }
+      const inventoryForm = event.target.closest('[data-inventory-layout-form]');
+      if (inventoryForm) {
+        event.preventDefault();
+        await this.saveInventoryLayout(inventoryForm);
+        return;
+      }
       const bindingForm = event.target.closest('[data-overlay-binding-form]');
       if (bindingForm) {
         event.preventDefault();
         await this.saveOverlayBinding(bindingForm);
+        return;
+      }
+      const verbForm = event.target.closest('[data-verb-form]');
+      if (verbForm) {
+        event.preventDefault();
+        await this.saveVerb(verbForm);
+        return;
+      }
+      const assetForm = event.target.closest('[data-global-asset-form]');
+      if (assetForm) {
+        event.preventDefault();
+        await this.uploadGlobalAsset(assetForm);
       }
     },
 
@@ -102,15 +180,78 @@ const GlobalSettingsCtrl = app => async () => {
             overlay_open_duration_seconds: Number(formData.get('overlay_open_duration_seconds') || 0.22),
             overlay_close_duration_seconds: Number(formData.get('overlay_close_duration_seconds') || 0.18),
             overlay_affect_audio: formData.get('overlay_affect_audio') === 'on',
-            start_scene_id: formData.get('start_scene_id')
-              ? Number(formData.get('start_scene_id'))
-              : null
+            start_scene_id: formData.get('start_scene_id') ? Number(formData.get('start_scene_id')) : null,
+            inventory_key_code: String(formData.get('inventory_key_code') ?? 'KeyI'),
+            verb_menu_timeout_seconds: Number(formData.get('verb_menu_timeout_seconds') || 4)
           })
         });
-        this.setControlValues();
+        await this.refreshData();
+        this.refreshView();
         this.setStatus('Global settings saved.');
       } catch {
         this.setStatus('Could not save global settings.');
+      }
+    },
+
+    async saveInventoryLayout(form) {
+      this.setStatus('Saving inventory layout...');
+      try {
+        const inventorySlots = JSON.parse(String(form.elements.inventory_slots_json.value || '[]'));
+        this.globalSettings = await apiFetch('/api/global-settings', {
+          method: 'PATCH',
+          body: JSON.stringify({inventory_slots: inventorySlots})
+        });
+        await this.refreshData();
+        this.refreshView();
+        this.setStatus('Inventory layout saved.');
+      } catch {
+        this.setStatus('Could not save inventory layout.');
+      }
+    },
+
+    async saveVerb(form) {
+      const formData = new FormData(form);
+      const verbId = Number(formData.get('verb_id'));
+      const payload = {
+        key: String(formData.get('key') ?? '').trim(),
+        labels: JSON.parse(String(formData.get('labels_json') ?? '{}')),
+        enabled: formData.get('enabled') === 'on',
+        sort_order: Number(formData.get('sort_order') || 0)
+      };
+      if (!payload.key) return;
+      this.setStatus(verbId ? 'Saving verb...' : 'Creating verb...');
+      try {
+        await apiFetch(verbId ? `/api/verbs/${verbId}` : '/api/verbs', {
+          method: verbId ? 'PATCH' : 'POST',
+          body: JSON.stringify(payload)
+        });
+        this.selectedVerbId = null;
+        await this.refreshData();
+        this.refreshView();
+        this.setStatus(verbId ? 'Verb saved.' : 'Verb created.');
+      } catch {
+        this.setStatus(verbId ? 'Could not save verb.' : 'Could not create verb.');
+      }
+    },
+
+    async uploadGlobalAsset(form) {
+      const assetKind = form.dataset.globalAssetForm;
+      const input = form.querySelector('input[type="file"]');
+      const file = input?.files?.[0];
+      if (!assetKind || !file) return;
+      const formData = new FormData();
+      formData.append('file', file);
+      this.setStatus('Uploading asset...');
+      try {
+        this.globalSettings = await apiFetch(`/api/global-settings/assets/${assetKind}`, {
+          method: 'POST',
+          body: formData
+        });
+        await this.refreshData();
+        this.refreshView();
+        this.setStatus('Asset uploaded.');
+      } catch {
+        this.setStatus('Could not upload asset.');
       }
     },
 
@@ -127,7 +268,7 @@ const GlobalSettingsCtrl = app => async () => {
         });
         form.reset();
         await this.refreshData();
-        app.refresh();
+        this.refreshView();
         this.setStatus('Overlay binding saved.');
       } catch {
         this.setStatus('Could not save overlay binding.');
@@ -141,11 +282,16 @@ const GlobalSettingsCtrl = app => async () => {
       try {
         await apiFetch(`/api/overlay-bindings/${numericId}`, {method: 'DELETE'});
         await this.refreshData();
-        app.refresh();
+        this.refreshView();
         this.setStatus('Overlay binding removed.');
       } catch {
         this.setStatus('Could not remove overlay binding.');
       }
+    },
+
+    refreshView() {
+      app.refresh();
+      requestAnimationFrame(() => this.setControlValues());
     },
 
     setStatus(message) {

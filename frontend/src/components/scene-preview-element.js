@@ -15,6 +15,8 @@ class WonkyScenePreviewElement extends HTMLElement {
     this.objectPlaybackState = new Map();
     this.hoveredObjectId = null;
     this.focusedObjectId = null;
+    this.longPressTimer = null;
+    this.longPressTriggered = false;
     this.resizeObserver = new ResizeObserver(() => this.renderCanvas());
     this.shadowRoot.innerHTML = `
       <style>
@@ -147,6 +149,7 @@ class WonkyScenePreviewElement extends HTMLElement {
 
   disconnectedCallback() {
     this.resizeObserver.disconnect();
+    this.cancelLongPress();
     this.stop();
   }
 
@@ -175,11 +178,15 @@ class WonkyScenePreviewElement extends HTMLElement {
   }
 
   applyRuntimeState(runtimeObjectStates) {
-    this.runtimeObjectStates = runtimeObjectStates ?? {};
+    const runtimeState = runtimeObjectStates?.objects ? runtimeObjectStates : {objects: runtimeObjectStates ?? {}};
+    this.runtimeObjectStates = runtimeState.objects ?? {};
     for (const [objectId, state] of Object.entries(this.runtimeObjectStates)) {
       const numericId = Number(objectId);
       if (state?.render) this.currentObjectRenders.set(numericId, state.render);
       else this.currentObjectRenders.delete(numericId);
+    }
+    if (runtimeState.background_frame_index !== undefined) {
+      this.setBackgroundFrameIndex(runtimeState.background_frame_index);
     }
     this.syncHoveredObjectState();
     this.renderCanvas();
@@ -218,6 +225,10 @@ class WonkyScenePreviewElement extends HTMLElement {
     this.canvas = this.shadowRoot.querySelector('[data-preview-canvas]');
     this.context = this.canvas?.getContext('2d');
     this.canvas?.addEventListener('click', event => this.onCanvasClick(event));
+    this.canvas?.addEventListener('contextmenu', event => this.onCanvasContextMenu(event));
+    this.canvas?.addEventListener('pointerdown', event => this.onCanvasPointerDown(event));
+    this.canvas?.addEventListener('pointerup', () => this.cancelLongPress());
+    this.canvas?.addEventListener('pointercancel', () => this.cancelLongPress());
     this.canvas?.addEventListener('pointermove', event => this.onCanvasPointerMove(event));
     this.canvas?.addEventListener('pointerleave', () => this.onCanvasPointerLeave());
     this.renderSubtitleOverlay();
@@ -228,8 +239,7 @@ class WonkyScenePreviewElement extends HTMLElement {
   }
 
   setDefaultState() {
-    const firstBackground = this.preview?.images?.[0];
-    this.currentBackgroundUrl = firstBackground ? uploadedFileUrl(firstBackground.uploaded_file_id) : '';
+    this.setBackgroundFrameIndex(this.preview?.background_frame_index ?? 0);
     this.currentObjectRenders.clear();
     for (const object of this.preview?.objects ?? []) {
       if (object.default_render) this.currentObjectRenders.set(Number(object.id), object.default_render);
@@ -245,6 +255,14 @@ class WonkyScenePreviewElement extends HTMLElement {
         }
       ])
     );
+  }
+
+  setBackgroundFrameIndex(frameIndex) {
+    const numericFrameIndex = Number(frameIndex);
+    const backgroundFrame = (this.preview?.images ?? []).find(
+      frame => Number(frame.frame_index) === numericFrameIndex
+    ) ?? this.preview?.images?.[0] ?? null;
+    this.currentBackgroundUrl = backgroundFrame ? uploadedFileUrl(backgroundFrame.uploaded_file_id) : '';
   }
 
   async playAnimation(objectId, animationId, {mode = 'queued'} = {}) {
@@ -398,6 +416,10 @@ class WonkyScenePreviewElement extends HTMLElement {
   }
 
   onCanvasClick(event) {
+    if (this.longPressTriggered) {
+      this.longPressTriggered = false;
+      return;
+    }
     const object = this.findObjectAtCanvasEvent(event);
     if (!object) return;
     this.dispatchEvent(new CustomEvent('preview-object-click', {
@@ -406,13 +428,38 @@ class WonkyScenePreviewElement extends HTMLElement {
     }));
   }
 
+  onCanvasContextMenu(event) {
+    event.preventDefault();
+    const object = this.findObjectAtCanvasEvent(event);
+    if (!object) return;
+    this.dispatchObjectMenu(object, event);
+  }
+
+  onCanvasPointerDown(event) {
+    if (event.button !== 0) return;
+    this.cancelLongPress();
+    this.longPressTriggered = false;
+    this.longPressTimer = window.setTimeout(() => {
+      const object = this.findObjectAtCanvasEvent(event);
+      if (!object) return;
+      this.longPressTriggered = true;
+      this.dispatchObjectMenu(object, event);
+    }, 420);
+  }
+
   onCanvasPointerMove(event) {
     const object = this.findObjectAtCanvasEvent(event);
     this.updateHoveredObject(object ? Number(object.id) : null);
   }
 
   onCanvasPointerLeave() {
+    this.cancelLongPress();
     this.updateHoveredObject(null);
+  }
+
+  cancelLongPress() {
+    if (this.longPressTimer) window.clearTimeout(this.longPressTimer);
+    this.longPressTimer = null;
   }
 
   setCanvasCursor(active) {
@@ -501,6 +548,35 @@ class WonkyScenePreviewElement extends HTMLElement {
     const subtitleRoot = this.shadowRoot.querySelector('[data-preview-subtitles]');
     if (!subtitleRoot) return;
     subtitleRoot.innerHTML = renderSubtitleMarkup(this.currentSubtitle);
+  }
+
+  dispatchObjectMenu(object, event) {
+    this.dispatchEvent(new CustomEvent('preview-object-menu', {
+      bubbles: true,
+      detail: {
+        objectId: object.id,
+        clientX: event.clientX,
+        clientY: event.clientY
+      }
+    }));
+  }
+
+  getStageClientRect() {
+    return this.shadowRoot.querySelector('.stage')?.getBoundingClientRect() ?? null;
+  }
+
+  getObjectClientBounds(objectId) {
+    if (!this.canvas || !this.preview) return null;
+    const render = this.currentObjectRenders.get(Number(objectId));
+    if (!render) return null;
+    const rect = this.canvas.getBoundingClientRect();
+    const bounds = previewBounds(render, this.preview.width, this.preview.height, rect.width, rect.height);
+    return {
+      left: rect.left + bounds.left,
+      top: rect.top + bounds.top,
+      width: bounds.width,
+      height: bounds.height
+    };
   }
 }
 

@@ -3,6 +3,7 @@
     <a class="app-topbar__brand" href="/">Wonky Studio</a>
     <div class="app-topbar__links">
       <a class="app-topbar__link" href="/">Scenes</a>
+      <a class="app-topbar__link" href="/images">Images</a>
       <a class="app-topbar__link" href="/script-review">Transcript library</a>
       <a class="app-topbar__link" href="/audio-library">Audio library</a>
       <a class="app-topbar__link" href="/global-settings">Global settings</a>
@@ -61,6 +62,8 @@
                 <option value="object_mouseout">Object mouseout</option>
                 <option value="object_click">Object click</option>
                 <option value="object_use">Object use</option>
+                <option value="object_verb">On verb</option>
+                <option value="inventory_use">Inventory use</option>
                 <option value="variable_changed">Variable changed</option>
               </select>
             </label>
@@ -70,6 +73,24 @@
                 <option value="">None</option>
                 {{#each objectOptions as object}}
                   <option value="{{object.id}}">{{object.name}}</option>
+                {{/each}}
+              </select>
+            </label>
+            <label>
+              Verb
+              <select name="trigger_verb_id">
+                <option value="">None</option>
+                {{#each verbs as verb}}
+                  <option value="{{verb.id}}">{{verb.label}}</option>
+                {{/each}}
+              </select>
+            </label>
+            <label>
+              Inventory item
+              <select name="trigger_inventory_object_id">
+                <option value="">None</option>
+                {{#each inventoryObjectOptions as object}}
+                  <option value="{{object.id}}">#{{object.scene_id}} {{object.name}}</option>
                 {{/each}}
               </select>
             </label>
@@ -199,6 +220,8 @@
                   <option value="object_mouseout">Object mouseout</option>
                   <option value="object_click">Object click</option>
                   <option value="object_use">Object use</option>
+                  <option value="object_verb">On verb</option>
+                  <option value="inventory_use">Inventory use</option>
                   <option value="variable_changed">Variable changed</option>
                 </select>
               </label>
@@ -208,6 +231,24 @@
                   <option value="">None</option>
                   {{#each objectOptions as object}}
                     <option value="{{object.id}}">{{object.name}}</option>
+                  {{/each}}
+                </select>
+              </label>
+              <label>
+                Verb
+                <select name="trigger_verb_id">
+                  <option value="">None</option>
+                  {{#each verbs as verb}}
+                    <option value="{{verb.id}}">{{verb.label}}</option>
+                  {{/each}}
+                </select>
+              </label>
+              <label>
+                Inventory item
+                <select name="trigger_inventory_object_id">
+                  <option value="">None</option>
+                  {{#each inventoryObjectOptions as object}}
+                    <option value="{{object.id}}">#{{object.scene_id}} {{object.name}}</option>
                   {{/each}}
                 </select>
               </label>
@@ -254,11 +295,18 @@
                   {{/each}}
                 </select>
               </label>
-              <label data-form-field="wait" data-visible-for="play_animation go_to_frame set_object_property show_subtitle play_audio set_variable increment_variable toggle_variable fade_out fade_in crossfade_bgm play_sfx">
+              <label data-form-field="wait" data-visible-for="play_animation go_to_frame set_object_property show_subtitle play_audio set_variable increment_variable toggle_variable add_inventory_item remove_inventory_item clear_held_inventory_item fade_out fade_in crossfade_bgm play_sfx">
                 Wait
                 <select name="wait">
                   <option value="wait">Wait for completion</option>
                   <option value="continue">Continue immediately</option>
+                </select>
+              </label>
+              <label data-form-field="target-scope" data-visible-for="go_to_frame">
+                Target
+                <select name="target_scope">
+                  <option value="object">Object</option>
+                  <option value="background">Background</option>
                 </select>
               </label>
               <label data-form-field="target-object" data-visible-for="go_to_frame set_object_property">
@@ -334,6 +382,15 @@
               <label data-form-field="variable-delta" data-visible-for="increment_variable">
                 Increment amount
                 <input name="variable_delta" type="number" step="0.001" value="1" />
+              </label>
+              <label data-form-field="inventory-object" data-visible-for="add_inventory_item remove_inventory_item">
+                Inventory object
+                <select name="inventory_scene_object_id">
+                  <option value="">Choose object</option>
+                  {{#each inventoryObjectOptions as object}}
+                    <option value="{{object.id}}">#{{object.scene_id}} {{object.name}}</option>
+                  {{/each}}
+                </select>
               </label>
               <label data-form-field="operator" data-visible-for="if_variable">
                 Operator

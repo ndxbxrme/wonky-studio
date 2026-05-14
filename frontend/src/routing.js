@@ -16,6 +16,8 @@ import {PreviewCtrl} from './components/preview.ctrl.js';
 import previewTemplate from './components/preview.html?raw';
 import {AudioLibraryCtrl} from './components/audio-library.ctrl.js';
 import audioLibraryTemplate from './components/audio-library.html?raw';
+import {ImagesCtrl} from './components/images.ctrl.js';
+import imagesTemplate from './components/images.html?raw';
 import {GlobalSettingsCtrl} from './components/global-settings.ctrl.js';
 import globalSettingsTemplate from './components/global-settings.html?raw';
 import {PreviewGameCtrl} from './components/preview-game.ctrl.js';
@@ -45,6 +47,8 @@ const initRoutes = async (app) => {
   app.controller('preview', PreviewCtrl(app));
   app.template('audio-library', audioLibraryTemplate);
   app.controller('audio-library', AudioLibraryCtrl(app));
+  app.template('images', imagesTemplate);
+  app.controller('images', ImagesCtrl(app));
   app.template('global-settings', globalSettingsTemplate);
   app.controller('global-settings', GlobalSettingsCtrl(app));
   app.template('preview-game', previewGameTemplate);

@@ -3,6 +3,7 @@
     <a class="app-topbar__brand" href="/">Wonky Studio</a>
     <div class="app-topbar__links">
       <a class="app-topbar__link" href="/">Scenes</a>
+      <a class="app-topbar__link" href="/images">Images</a>
       <a class="app-topbar__link" href="/script-review">Transcript library</a>
       <a class="app-topbar__link" href="/audio-library">Audio library</a>
       <a class="app-topbar__link" href="/global-settings">Global settings</a>
@@ -15,7 +16,7 @@
       <a class="back-link" href="/">Home</a>
       <p class="eyebrow">Runtime</p>
       <h1>Global settings</h1>
-      <p>Configure overlay behavior, global overlay keys, and the first layer of keyboard accessibility.</p>
+      <p>Configure overlays, verbs, and inventory presentation.</p>
     </div>
     <p class="form-status" data-global-settings-status aria-live="polite">{{status}}</p>
   </header>
@@ -45,6 +46,18 @@
               {{/each}}
             </select>
           </label>
+          <label>
+            Inventory key
+            <select name="inventory_key_code">
+              {{#each keyCodeOptions as keyOption}}
+                <option value="{{keyOption.value}}">{{keyOption.label}}</option>
+              {{/each}}
+            </select>
+          </label>
+          <label>
+            Verb menu timeout
+            <input name="verb_menu_timeout_seconds" type="number" min="0.25" max="30" step="0.25" />
+          </label>
           <label class="checkbox-label">
             <input name="overlay_affect_audio" type="checkbox" />
             Duck audio while overlay is open
@@ -52,9 +65,105 @@
           <button class="button primary compact" type="submit">Save global settings</button>
         </form>
       </section>
+
+      <section class="actions-panel">
+        <div>
+          <p class="eyebrow">Inventory</p>
+          <h2>Layout</h2>
+        </div>
+        <form class="stack-form" data-inventory-layout-form>
+          <label>
+            Slot layout JSON
+            <textarea name="inventory_slots_json" rows="14" spellcheck="false" placeholder='[{"x":512,"y":128,"size":96,"origin":"center"}]'></textarea>
+          </label>
+          <button class="button secondary compact" type="submit">Save layout</button>
+        </form>
+      </section>
     </aside>
 
     <section class="actions-workbench">
+      <section class="actions-panel">
+        <div>
+          <p class="eyebrow">Verb tags</p>
+          <h2>Verbs</h2>
+        </div>
+        <form class="stack-form" data-verb-form>
+          <input name="verb_id" type="hidden" value="{{selectedVerbId}}" />
+          <label>
+            Key
+            <input name="key" type="text" placeholder="look" required />
+          </label>
+          <label>
+            Labels JSON
+            <textarea name="labels_json" rows="5" spellcheck="false" placeholder='{"en":"look","fr":"regarder"}'></textarea>
+          </label>
+          <label>
+            Sort order
+            <input name="sort_order" type="number" min="0" step="1" value="0" />
+          </label>
+          <label class="checkbox-label">
+            <input name="enabled" type="checkbox" />
+            Enabled
+          </label>
+          <div class="form-actions">
+            <button class="button secondary compact" type="submit">{{verbSubmitLabel}}</button>
+            {{#if isEditingVerb}}
+              <button class="button secondary compact form-actions__cancel" type="button" data-action="cancel-verb-edit">X</button>
+            {{/if}}
+          </div>
+        </form>
+        <div class="interaction-list">
+          {{#each verbs as verb}}
+            <button
+              class="interaction-list__item {{#if verb.isSelected}}is-selected{{/if}}"
+              type="button"
+              data-action="select-verb"
+              data-verb-id="{{verb.id}}"
+            >
+              <strong>{{verb.key}}</strong>
+              <span>{{verb.labelSummary}}</span>
+              <span>{{#if verb.enabled}}enabled{{/if}}{{#if not verb.enabled}}disabled{{/if}}</span>
+            </button>
+          {{/each}}
+        </div>
+      </section>
+
+      <section class="actions-panel">
+        <div>
+          <p class="eyebrow">Visuals</p>
+          <h2>Runtime assets</h2>
+        </div>
+        <div class="script-line-search-results global-asset-grid">
+          <article class="script-line-search-row global-asset-row">
+            <div>
+              <strong>Verb tag background</strong>
+              <p>Optional shared paper-tag texture used behind rendered text.</p>
+            </div>
+            {{#if hasVerbTagBackground}}
+              <img class="global-settings-asset-preview" src="{{verbTagBackgroundUrl}}" alt="Verb tag background preview" />
+            {{/if}}
+            <form data-global-asset-form="verb_tag_background">
+              <input name="file" type="file" accept="image/png,image/jpeg,image/webp" required />
+              <button class="button secondary compact" type="submit">Upload</button>
+            </form>
+          </article>
+
+          <article class="script-line-search-row global-asset-row">
+            <div>
+              <strong>Inventory background</strong>
+              <p>Background image for the system inventory overlay.</p>
+            </div>
+            {{#if hasInventoryBackground}}
+              <img class="global-settings-asset-preview global-settings-asset-preview--wide" src="{{inventoryBackgroundUrl}}" alt="Inventory background preview" />
+            {{/if}}
+            <form data-global-asset-form="inventory_background">
+              <input name="file" type="file" accept="image/png,image/jpeg,image/webp" required />
+              <button class="button secondary compact" type="submit">Upload</button>
+            </form>
+          </article>
+        </div>
+      </section>
+
       <section class="actions-panel">
         <div>
           <p class="eyebrow">Overlay keys</p>
@@ -80,7 +189,7 @@
           </label>
           <button class="button secondary compact" type="submit">Save binding</button>
         </form>
-        <p class="muted" data-escape-note>Escape closes any open overlay first. If no overlay is open, it opens the overlay bound to Escape.</p>
+        <p class="muted" data-escape-note>Escape closes verb menus, held inventory, and overlays before opening the bound settings overlay.</p>
         <div class="interaction-list">
           {{#each overlayBindings as binding}}
             <article class="action-step-row">

@@ -35,6 +35,11 @@ const SceneCtrl = app => async params => {
       this.root = document.querySelector('[data-scene-page]');
       this.bind(this.root, 'click', event => this.onClick(event));
       this.bind(this.root, 'submit', event => this.onSubmit(event));
+      this.bind(this.root, 'change', event => this.onChange(event));
+      this.bind(this.root, 'dragenter', event => this.onDrag(event));
+      this.bind(this.root, 'dragover', event => this.onDrag(event));
+      this.bind(this.root, 'dragleave', event => this.onDrag(event));
+      this.bind(this.root, 'drop', event => this.onDrop(event));
     },
 
     unload() {
@@ -82,6 +87,12 @@ const SceneCtrl = app => async params => {
         return;
       }
 
+      const uploadImagesButton = event.target.closest('[data-action="browse-scene-images"]');
+      if (uploadImagesButton) {
+        this.root?.querySelector('[data-scene-image-input]')?.click();
+        return;
+      }
+
       const moveObjectButton = event.target.closest('[data-action="move-object"]');
       if (moveObjectButton) {
         await this.moveObject(moveObjectButton);
@@ -92,6 +103,29 @@ const SceneCtrl = app => async params => {
       if (deleteObjectButton) {
         await this.deleteObject(deleteObjectButton);
       }
+    },
+
+    async onChange(event) {
+      if (!event.target.matches('[data-scene-image-input]')) return;
+      await this.uploadSceneImages(event.target.files);
+      event.target.value = '';
+    },
+
+    onDrag(event) {
+      if (!event.dataTransfer?.types?.includes('Files')) return;
+      event.preventDefault();
+      if (event.type === 'dragenter' || event.type === 'dragover') {
+        this.root?.classList.add('is-dragging-files');
+      } else {
+        this.root?.classList.remove('is-dragging-files');
+      }
+    },
+
+    async onDrop(event) {
+      if (!event.dataTransfer?.files?.length) return;
+      event.preventDefault();
+      this.root?.classList.remove('is-dragging-files');
+      await this.uploadSceneImages(event.dataTransfer.files);
     },
 
     async onSubmit(event) {
@@ -175,6 +209,36 @@ const SceneCtrl = app => async params => {
     setStatus(selector, message) {
       const status = document.querySelector(selector);
       if (status) status.textContent = message;
+    },
+
+    async uploadSceneImages(files) {
+      const imageFiles = Array.from(files ?? []).filter(file => String(file.type || '').startsWith('image/'));
+      if (!imageFiles.length) {
+        this.setStatus('[data-scene-image-status]', 'No image files selected.');
+        return;
+      }
+      this.setStatus(
+        '[data-scene-image-status]',
+        `Uploading ${imageFiles.length} image${imageFiles.length === 1 ? '' : 's'} to this scene...`
+      );
+      const formData = new FormData();
+      imageFiles.forEach(file => formData.append('files', file));
+      try {
+        const updatedScene = await apiFetch(`/api/scenes/${this.sceneId}/images`, {
+          method: 'POST',
+          body: formData
+        });
+        this.scene = replaceScene(updatedScene);
+        await loadScenes();
+        notifyScenePreview(this.sceneId, 'scene-updated');
+        this.setStatus(
+          '[data-scene-image-status]',
+          `Added ${imageFiles.length} image${imageFiles.length === 1 ? '' : 's'} to this scene.`
+        );
+        app.refresh();
+      } catch {
+        this.setStatus('[data-scene-image-status]', 'Could not add images to this scene.');
+      }
     },
 
     async analyzeWithVlm(button) {
@@ -263,7 +327,13 @@ const SceneCtrl = app => async params => {
     },
 
     setExtractionJob(job) {
-      this.extractionJob = job;
+      this.extractionJob = job
+        ? {
+            ...job,
+            etaLabel: estimateJobEta(job),
+            progressLabel: formatJobProgress(job)
+          }
+        : null;
       this.hasExtractionJob = Boolean(job);
       this.extractionJobRunning = job?.status === 'queued' || job?.status === 'running';
     },
@@ -401,7 +471,8 @@ const SceneCtrl = app => async params => {
           body: JSON.stringify({
             title: String(formData.get('title') ?? '').trim() || undefined,
             description: String(formData.get('description') ?? ''),
-            presentation_mode: String(formData.get('presentation_mode') ?? 'base')
+            presentation_mode: String(formData.get('presentation_mode') ?? 'base'),
+            background_frame_index: Number(formData.get('background_frame_index') ?? 0)
           })
         });
         this.scene = replaceScene(updatedScene);
@@ -572,6 +643,43 @@ function flattenActionTypes(steps) {
 
 function labelFromType(type) {
   return String(type).replace(/_/g, ' ');
+}
+
+function formatJobProgress(job) {
+  const current = Number(job?.progress_current ?? 0);
+  const total = Number(job?.progress_total ?? 0);
+  if (!total) return '';
+  const percent = Math.max(0, Math.min(100, Math.round((current / total) * 100)));
+  return `${current} / ${total} (${percent}%)`;
+}
+
+function estimateJobEta(job) {
+  const status = String(job?.status ?? '');
+  if (!['queued', 'running'].includes(status)) return '';
+  const current = Number(job?.progress_current ?? 0);
+  const total = Number(job?.progress_total ?? 0);
+  if (!total || current <= 0 || current >= total) return '';
+  const createdAt = Date.parse(job?.created_at ?? '');
+  if (!Number.isFinite(createdAt)) return '';
+  const elapsedSeconds = Math.max(0, (Date.now() - createdAt) / 1000);
+  if (elapsedSeconds < 2) return '';
+  const secondsPerUnit = elapsedSeconds / current;
+  const remainingSeconds = Math.round(secondsPerUnit * (total - current));
+  if (!Number.isFinite(remainingSeconds) || remainingSeconds <= 0) return '';
+  return formatDuration(remainingSeconds);
+}
+
+function formatDuration(totalSeconds) {
+  const seconds = Math.max(0, Math.round(totalSeconds));
+  if (seconds < 60) return `about ${seconds}s remaining`;
+  const minutes = Math.floor(seconds / 60);
+  const remainderSeconds = seconds % 60;
+  if (minutes < 60) {
+    return remainderSeconds ? `about ${minutes}m ${remainderSeconds}s remaining` : `about ${minutes}m remaining`;
+  }
+  const hours = Math.floor(minutes / 60);
+  const remainderMinutes = minutes % 60;
+  return remainderMinutes ? `about ${hours}h ${remainderMinutes}m remaining` : `about ${hours}h remaining`;
 }
 
 export {SceneCtrl};

@@ -412,6 +412,126 @@ def test_authenticated_user_can_upload_file_batch(tmp_path):
     assert list_response.json()[0]["file_count"] == 2
 
 
+def test_scene_can_be_created_empty_and_accept_uploaded_images(tmp_path):
+    with api_client(tmp_path) as (client, db_path, settings):
+        authenticate(client, db_path, settings, role="user")
+        create_response = client.post(
+            "/api/scenes",
+            json={"title": "Bathroom", "description": "Manual scene"},
+        )
+        scene_id = create_response.json()["id"]
+
+        upload_response = client.post(
+            f"/api/scenes/{scene_id}/images",
+            files=[
+                ("files", ("bathroom_0001.png", png_bytes(draw_flower=False), "image/png")),
+                ("files", ("bathroom_0002.png", png_bytes(draw_flower=True), "image/png")),
+            ],
+        )
+        scene_response = client.get(f"/api/scenes/{scene_id}")
+
+    assert create_response.status_code == 201
+    assert create_response.json()["images"] == []
+
+    assert upload_response.status_code == 200
+    uploaded_scene = upload_response.json()
+    assert [image["original_filename"] for image in uploaded_scene["images"]] == [
+        "bathroom_0001.png",
+        "bathroom_0002.png",
+    ]
+    assert uploaded_scene["representative_uploaded_file_id"] == uploaded_scene["images"][0]["uploaded_file_id"]
+
+    assert scene_response.status_code == 200
+    assert len(scene_response.json()["images"]) == 2
+
+
+def test_scene_background_frame_can_be_updated_and_drives_representative_image(tmp_path):
+    with api_client(tmp_path) as (client, db_path, settings):
+        authenticate(client, db_path, settings, role="user")
+        upload_response = client.post(
+            "/api/uploads/batches",
+            files=[
+                ("files", ("frame_0000.png", png_bytes(draw_flower=False), "image/png")),
+                ("files", ("frame_0001.png", png_bytes(draw_flower=True), "image/png")),
+            ],
+        )
+        scene = client.post(f"/api/uploads/batches/{upload_response.json()['id']}/process-scene").json()["scene"]
+        patch_response = client.patch(
+            f"/api/scenes/{scene['id']}",
+            json={"background_frame_index": 1},
+        )
+        preview_response = client.get(f"/api/scenes/{scene['id']}/preview-data")
+
+    assert patch_response.status_code == 200
+    updated_scene = patch_response.json()
+    assert updated_scene["background_frame_index"] == 1
+    assert updated_scene["representative_uploaded_file_id"] == updated_scene["images"][1]["uploaded_file_id"]
+    assert preview_response.status_code == 200
+    assert preview_response.json()["background_frame_index"] == 1
+
+
+def test_images_can_be_listed_moved_and_reordered_manually(tmp_path):
+    with api_client(tmp_path) as (client, db_path, settings):
+        authenticate(client, db_path, settings, role="user")
+        first_scene = client.post("/api/scenes", json={"title": "Bathroom"}).json()
+        second_scene = client.post("/api/scenes", json={"title": "Bedroom"}).json()
+        batch = client.post(
+            "/api/uploads/batches",
+            files=[
+                ("files", ("bathroom_0002.png", png_bytes(draw_flower=False), "image/png")),
+                ("files", ("bathroom_0001.png", png_bytes(draw_flower=True), "image/png")),
+            ],
+        ).json()
+
+        list_response = client.get("/api/images")
+        uploaded_file_ids = [item["id"] for item in batch["files"]]
+        move_response = client.post(
+            "/api/images/move",
+            json={
+                "uploaded_file_ids": uploaded_file_ids,
+                "target_scene_id": first_scene["id"],
+            },
+        )
+        after_move = client.get(f"/api/scenes/{first_scene['id']}").json()
+        reordered_ids = [image["id"] for image in reversed(after_move["images"])]
+        reorder_response = client.post(
+            f"/api/scenes/{first_scene['id']}/images/reorder",
+            json={"ordered_scene_image_ids": reordered_ids},
+        )
+        move_again_response = client.post(
+            "/api/images/move",
+            json={
+                "uploaded_file_ids": [after_move["images"][0]["uploaded_file_id"]],
+                "target_scene_id": second_scene["id"],
+            },
+        )
+        first_scene_after_second_move = client.get(f"/api/scenes/{first_scene['id']}")
+        second_scene_after_second_move = client.get(f"/api/scenes/{second_scene['id']}")
+
+    assert list_response.status_code == 200
+    assert all(item["scene_id"] is None for item in list_response.json())
+
+    assert move_response.status_code == 200
+    assert [image["original_filename"] for image in after_move["images"]] == [
+        "bathroom_0002.png",
+        "bathroom_0001.png",
+    ]
+
+    assert reorder_response.status_code == 200
+    assert [image["original_filename"] for image in reorder_response.json()] == [
+        "bathroom_0001.png",
+        "bathroom_0002.png",
+    ]
+
+    assert move_again_response.status_code == 200
+    assert [image["original_filename"] for image in first_scene_after_second_move.json()["images"]] == [
+        "bathroom_0001.png",
+    ]
+    assert [image["original_filename"] for image in second_scene_after_second_move.json()["images"]] == [
+        "bathroom_0002.png",
+    ]
+
+
 def test_upload_batch_can_be_processed_into_draft_scene(tmp_path):
     with api_client(tmp_path) as (client, db_path, settings):
         user = authenticate(client, db_path, settings, role="user")
@@ -709,6 +829,12 @@ def test_scene_interactions_validate_actions_and_export_json(tmp_path):
                     },
                     {
                         "type": "go_to_frame",
+                        "target_scope": "background",
+                        "frame_index": 0,
+                        "wait": "continue",
+                    },
+                    {
+                        "type": "go_to_frame",
                         "target_object_id": clock["id"],
                         "frame_index": 0,
                         "wait": "continue",
@@ -904,21 +1030,25 @@ def test_scene_interactions_validate_actions_and_export_json(tmp_path):
     assert interaction["action_tree"][0]["script_line_ids"] == [1, 2]
     assert interaction["action_tree"][0]["id"]
     assert interaction["action_tree"][2]["type"] == "go_to_frame"
+    assert interaction["action_tree"][2]["target_scope"] == "background"
     assert interaction["action_tree"][2]["frame_index"] == 0
-    assert interaction["action_tree"][4]["then_steps"][0]["type"] == "set_variable"
-    assert interaction["action_tree"][5]["type"] == "increment_variable"
-    assert interaction["action_tree"][5]["amount"] == 1
-    assert interaction["action_tree"][6]["type"] == "toggle_variable"
-    assert interaction["action_tree"][7]["type"] == "fade_out"
-    assert interaction["action_tree"][7]["affect_audio"] is True
-    assert interaction["action_tree"][8]["type"] == "fade_in"
-    assert interaction["action_tree"][8]["wait"] == "continue"
-    assert interaction["action_tree"][9]["type"] == "crossfade_bgm"
-    assert interaction["action_tree"][9]["audio_asset_id"] == bgm_asset["id"]
-    assert interaction["action_tree"][10]["type"] == "play_sfx"
-    assert interaction["action_tree"][10]["audio_asset_id"] == sfx_asset["id"]
-    assert interaction["action_tree"][11]["type"] == "change_scene"
-    assert interaction["action_tree"][11]["scene_id"] == next_scene["id"]
+    assert interaction["action_tree"][3]["type"] == "go_to_frame"
+    assert interaction["action_tree"][3]["target_scope"] == "object"
+    assert interaction["action_tree"][3]["target_object_id"] == clock["id"]
+    assert interaction["action_tree"][5]["then_steps"][0]["type"] == "set_variable"
+    assert interaction["action_tree"][6]["type"] == "increment_variable"
+    assert interaction["action_tree"][6]["amount"] == 1
+    assert interaction["action_tree"][7]["type"] == "toggle_variable"
+    assert interaction["action_tree"][8]["type"] == "fade_out"
+    assert interaction["action_tree"][8]["affect_audio"] is True
+    assert interaction["action_tree"][9]["type"] == "fade_in"
+    assert interaction["action_tree"][9]["wait"] == "continue"
+    assert interaction["action_tree"][10]["type"] == "crossfade_bgm"
+    assert interaction["action_tree"][10]["audio_asset_id"] == bgm_asset["id"]
+    assert interaction["action_tree"][11]["type"] == "play_sfx"
+    assert interaction["action_tree"][11]["audio_asset_id"] == sfx_asset["id"]
+    assert interaction["action_tree"][12]["type"] == "change_scene"
+    assert interaction["action_tree"][12]["scene_id"] == next_scene["id"]
 
     assert list_response.status_code == 200
     assert list_response.json()[0]["id"] == interaction["id"]
@@ -1463,6 +1593,8 @@ def test_scene_preview_data_renders_default_and_animation_frames_only(tmp_path):
             "object_id": scene_object["id"],
             "variable_id": None,
             "key_code": None,
+            "verb_id": None,
+            "inventory_object_id": None,
         }
         assert [line["line_id"] for line in preview["script_lines"]] == [1, 2]
 
@@ -1894,6 +2026,68 @@ def test_object_mask_content_can_be_saved_and_processed(tmp_path):
     with Image.open(raw_path) as filled:
         assert filled.convert("L").getpixel((7, 4)) == 255
     assert updated_thumbnail_response.status_code == 200
+
+
+def test_object_masks_can_be_combined_and_cleared(tmp_path):
+    fake_segmentation = FakeSegmentationProvider()
+    with api_client(
+        tmp_path,
+        segmentation_provider=fake_segmentation,
+    ) as (client, db_path, settings):
+        authenticate(client, db_path, settings, role="user")
+        upload_response = client.post(
+            "/api/uploads/batches",
+            files=[
+                ("files", ("frame_0000.png", png_bytes(draw_flower=True), "image/png")),
+                ("files", ("frame_0001.png", png_bytes(draw_flower=True), "image/png")),
+            ],
+        )
+        batch_id = upload_response.json()["id"]
+        scene = client.post(f"/api/uploads/batches/{batch_id}/process-scene").json()["scene"]
+        client.post(
+            f"/api/scenes/{scene['id']}/objects",
+            json={"name": "bed", "prompt": "bed"},
+        )
+        extract_response = client.post(f"/api/scenes/{scene['id']}/extract-masks")
+        wait_for_job(client, extract_response.json()["id"])
+        detail = client.get(f"/api/scenes/{scene['id']}").json()
+        masks = detail["objects"][0]["masks"]
+        left_mask = masks[0]
+        right_mask = masks[1]
+
+        left_image = Image.new("L", (16, 9), 0)
+        ImageDraw.Draw(left_image).rectangle((1, 2, 5, 6), fill=180)
+        right_image = Image.new("L", (16, 9), 0)
+        ImageDraw.Draw(right_image).rectangle((10, 2, 14, 6), fill=255)
+        client.put(
+            f"/api/object-masks/{left_mask['id']}/content",
+            content=image_bytes(left_image),
+            headers={"Content-Type": "image/png"},
+        )
+        client.put(
+            f"/api/object-masks/{right_mask['id']}/content",
+            content=image_bytes(right_image),
+            headers={"Content-Type": "image/png"},
+        )
+
+        combine_response = client.post(
+            f"/api/object-masks/{left_mask['id']}/process",
+            json={"operation": "combine"},
+        )
+        left_raw_path = settings.storage_root / left_mask["relative_path"]
+        right_raw_path = settings.storage_root / right_mask["relative_path"]
+        clear_response = client.post(
+            f"/api/object-masks/{left_mask['id']}/process",
+            json={"operation": "clear"},
+        )
+
+    assert combine_response.status_code == 200
+    with Image.open(right_raw_path) as combined_right:
+        assert combined_right.convert("L").getpixel((3, 4)) == 180
+        assert combined_right.convert("L").getpixel((12, 4)) == 255
+    assert clear_response.status_code == 200
+    with Image.open(left_raw_path) as cleared:
+        assert cleared.convert("L").getbbox() is None
 
 
 def test_mask_extraction_generates_default_animation_for_new_motion_masks(tmp_path):

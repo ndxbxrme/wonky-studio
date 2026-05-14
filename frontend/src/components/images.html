@@ -1,0 +1,112 @@
+<main class="scene-layout" data-images-page>
+  <nav class="app-topbar" aria-label="Primary">
+    <a class="app-topbar__brand" href="/">Wonky Studio</a>
+    <div class="app-topbar__links">
+      <a class="app-topbar__link" href="/">Scenes</a>
+      <a class="app-topbar__link" href="/images">Images</a>
+      <a class="app-topbar__link" href="/script-review">Transcript library</a>
+      <a class="app-topbar__link" href="/audio-library">Audio library</a>
+      <a class="app-topbar__link" href="/global-settings">Global settings</a>
+      <button class="app-topbar__link app-topbar__link--primary" type="button" data-action="open-game-preview">Preview game</button>
+    </div>
+  </nav>
+
+  <header class="scene-header">
+    <div>
+      <a class="back-link" href="/">Scenes</a>
+      <p class="eyebrow">Manual intake</p>
+      <h1>Images</h1>
+      <p>Filter uploaded images, move them into scenes, and reorder scene frames when needed.</p>
+    </div>
+    <p class="form-status" data-images-status aria-live="polite">{{status}}</p>
+  </header>
+
+  <section class="actions-grid">
+    <aside class="actions-sidebar">
+      <section class="actions-panel">
+        <div>
+          <p class="eyebrow">Filter</p>
+          <h2>Browse images</h2>
+        </div>
+        <label>
+          Scene
+          <select data-images-scene-filter>
+            {{#each sceneFilterOptions as option}}
+              <option value="{{option.value}}" {{#if option.selected}}selected{{/if}}>{{option.label}}</option>
+            {{/each}}
+          </select>
+        </label>
+        <label>
+          Search filename
+          <input data-images-search type="search" value="{{searchQuery}}" placeholder="bedroom_0001" />
+        </label>
+        <p class="muted">{{visibleImages.length}} shown · {{selectedCount}} selected</p>
+        <div class="form-actions">
+          <button class="button secondary compact" type="button" data-action="select-all-images">Select shown</button>
+          <button class="button secondary compact form-actions__cancel" type="button" data-action="clear-image-selection">Clear</button>
+        </div>
+      </section>
+
+      <section class="actions-panel">
+        <div>
+          <p class="eyebrow">Bulk move</p>
+          <h2>Assign to scene</h2>
+        </div>
+        <form class="stack-form" data-image-move-form>
+          <label>
+            Target scene
+            <select name="target_scene_id" required>
+              <option value="">Choose target scene</option>
+              {{#each moveSceneOptions as option}}
+                <option value="{{option.id}}" {{#if option.selected}}selected{{/if}}>{{option.label}}</option>
+              {{/each}}
+            </select>
+          </label>
+          <button class="button primary compact" type="submit">Move selected images</button>
+          <p class="muted">Moved or newly assigned images are always appended to the end of the target scene.</p>
+        </form>
+      </section>
+    </aside>
+
+    <section class="actions-workbench">
+      <section class="actions-panel">
+        <div>
+          <p class="eyebrow">Gallery</p>
+          <h2>Image thumbnails</h2>
+        </div>
+        {{#if reorderSceneId}}
+          <p class="notice">Reordering frames can break animations and any authored frame references.</p>
+        {{/if}}
+        {{#if hasVisibleImages}}
+          <div class="image-library-grid">
+            {{#each visibleImages as image}}
+              <article class="image-library-card {{#if image.isSelected}}is-selected{{/if}}" data-image-card data-uploaded-file-id="{{image.uploaded_file_id}}">
+                <button class="image-library-card__toggle" type="button" data-action="toggle-image-selection" data-uploaded-file-id="{{image.uploaded_file_id}}">
+                  {{#if image.isSelected}}Selected{{/if}}
+                  {{#if not image.isSelected}}Select{{/if}}
+                </button>
+                <img class="image-library-card__thumb" src="{{image.thumbUrl}}" alt="{{image.original_filename}}" loading="lazy" />
+                <div class="image-library-card__meta">
+                  <strong>{{image.original_filename}}</strong>
+                  <p>{{image.sceneLabel}}</p>
+                  {{#if image.width}}
+                    <p>{{image.width}} × {{image.height}}</p>
+                  {{/if}}
+                </div>
+                {{#if ../reorderSceneId}}
+                  <div class="image-library-card__reorder">
+                    <button class="button secondary compact" type="button" data-action="move-image-up" data-scene-image-id="{{image.scene_image_id}}">↑</button>
+                    <button class="button secondary compact" type="button" data-action="move-image-down" data-scene-image-id="{{image.scene_image_id}}">↓</button>
+                  </div>
+                {{/if}}
+              </article>
+            {{/each}}
+          </div>
+        {{/if}}
+        {{#if not hasVisibleImages}}
+          <p class="muted">No images match the current filter.</p>
+        {{/if}}
+      </section>
+    </section>
+  </section>
+</main>

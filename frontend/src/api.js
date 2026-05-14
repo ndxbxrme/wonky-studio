@@ -22,6 +22,13 @@ function uploadedFileUrl(uploadedFileId) {
   return resolveApiPath(`/api/uploads/files/${uploadedFileId}/content`);
 }
 
+function uploadedFileThumbnailUrl(uploadedFileId, size = 320, cacheKey = '') {
+  const url = new URL(resolveApiPath(`/api/uploads/files/${uploadedFileId}/thumbnail`), window.location.origin);
+  url.searchParams.set('size', String(size));
+  if (cacheKey) url.searchParams.set('v', cacheKey);
+  return url.toString();
+}
+
 function apiUrl(path) {
   return new URL(resolveApiPath(path), window.location.origin).toString();
 }
@@ -46,6 +53,10 @@ function audioAssetUrl(audioAssetId) {
   return resolveApiPath(`/api/audio-assets/${audioAssetId}/content`);
 }
 
+function globalSettingsAssetUrl(assetKind) {
+  return resolveApiPath(`/api/global-settings/assets/${assetKind}/content`);
+}
+
 function resolveApiPath(path) {
   if (!path.startsWith('/')) path = `/${path}`;
   return API_BASE_URL ? `${API_BASE_URL}${path}` : path;
@@ -58,6 +69,8 @@ export {
   objectMaskUrl,
   objectThumbnailUrl,
   audioAssetUrl,
+  globalSettingsAssetUrl,
   scriptAudioCandidateUrl,
+  uploadedFileThumbnailUrl,
   uploadedFileUrl
 };
