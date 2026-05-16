@@ -94,8 +94,7 @@ Objects and masks:
 - Segmentation provider abstraction in `backend/app/segmentation.py`.
 - Current practical path is SAM3 via a conda subprocess using `tools/sam3_smoke.py`.
 - Extraction stores one top-scoring mask per object/frame/prompt.
-- Changing an object prompt causes new masks to render while previous mask rows remain untouched.
-- For objects that just received new masks and do not already have animations, extraction now tries to generate one default motion animation automatically.
+- Changing an object prompt causes that object's per-frame masks to regenerate and replace the previous versions.
 
 Manual mask editor:
 

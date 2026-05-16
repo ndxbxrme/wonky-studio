@@ -62,6 +62,7 @@ class WonkyMaskEditor extends HTMLElement {
     const root = this.shadowRoot;
     root.querySelector('[data-action="previous"]')?.addEventListener('click', () => this.navigate(-1));
     root.querySelector('[data-action="next"]')?.addEventListener('click', () => this.navigate(1));
+    root.querySelector('[data-action="go-to-frame"]')?.addEventListener('click', () => this.goToFrameNumber());
     root.querySelector('[data-action="save"]')?.addEventListener('click', () => this.dispatchSave());
     root.querySelector('[data-action="undo"]')?.addEventListener('click', () => this.undo());
     root.querySelector('[data-action="redo"]')?.addEventListener('click', () => this.redo());
@@ -92,6 +93,12 @@ class WonkyMaskEditor extends HTMLElement {
     root.querySelector('[name="applyAll"]')?.addEventListener('change', event => {
       this.applyAll = event.target.checked;
     });
+    root.querySelector('[name="frameNumber"]')?.addEventListener('keydown', event => {
+      if (event.key === 'Enter') {
+        event.preventDefault();
+        this.goToFrameNumber();
+      }
+    });
     this.canvas?.addEventListener('pointerdown', event => this.onPointerDown(event));
     this.canvas?.addEventListener('pointermove', event => this.onPointerMove(event));
     this.canvas?.addEventListener('pointerup', event => this.onPointerUp(event));
@@ -101,8 +108,12 @@ class WonkyMaskEditor extends HTMLElement {
   }
 
   render() {
+    const currentFrameNumber = this.currentFrameNumber();
+    const maxFrameNumber = Array.isArray(this.scene?.images) && this.scene.images.length
+      ? this.scene.images.length
+      : Math.max(1, this.masks.length);
     const frameLabel = this.currentMask
-      ? `${this.currentIndex + 1} / ${this.masks.length} · ${this.currentMask.original_filename}`
+      ? `Mask ${this.currentIndex + 1} / ${this.masks.length} · Scene frame ${currentFrameNumber} / ${maxFrameNumber} · ${this.currentMask.original_filename}`
       : 'No mask selected';
     this.shadowRoot.innerHTML = `
       <style>
@@ -203,6 +214,13 @@ class WonkyMaskEditor extends HTMLElement {
           <button type="button" data-action="previous" ${this.currentIndex <= 0 ? 'disabled' : ''}>Previous</button>
           <button type="button" data-action="next" ${this.currentIndex >= this.masks.length - 1 ? 'disabled' : ''}>Next</button>
         </div>
+        <label>
+          Go to frame
+          <div class="toolbar-group">
+            <input name="frameNumber" type="number" min="1" max="${maxFrameNumber}" value="${currentFrameNumber}" />
+            <button type="button" data-action="go-to-frame">Go</button>
+          </div>
+        </label>
         <div class="frame-label">${escapeHtml(frameLabel)}</div>
         <label>
           Brush <span data-brush-size>${this.brushSize}</span>
@@ -488,6 +506,41 @@ class WonkyMaskEditor extends HTMLElement {
     }));
   }
 
+  currentFrameNumber() {
+    if (!this.currentMask || !Array.isArray(this.scene?.images)) return Math.max(1, this.currentIndex + 1);
+    const sceneFrameIndex = this.scene.images.findIndex(
+      sceneImage => Number(sceneImage.uploaded_file_id) === Number(this.currentMask.uploaded_file_id)
+    );
+    return sceneFrameIndex >= 0 ? sceneFrameIndex + 1 : Math.max(1, this.currentIndex + 1);
+  }
+
+  goToFrameNumber() {
+    const input = this.shadowRoot.querySelector('[name="frameNumber"]');
+    const sceneImages = this.scene?.images ?? [];
+    const frameNumber = Number(input?.value ?? 0);
+    if (!sceneImages.length) {
+      this.dispatchMessage('This scene has no numbered frames.');
+      return;
+    }
+    if (!Number.isFinite(frameNumber) || frameNumber < 1 || frameNumber > sceneImages.length) {
+      this.dispatchMessage(`Frame must be between 1 and ${sceneImages.length}.`);
+      return;
+    }
+    const targetSceneImage = sceneImages[frameNumber - 1];
+    const targetMask = this.masks.find(
+      mask => Number(mask.uploaded_file_id) === Number(targetSceneImage.uploaded_file_id)
+    );
+    if (!targetMask) {
+      this.dispatchMessage(`No ${this.object?.name ?? 'object'} mask exists for frame ${frameNumber}.`);
+      return;
+    }
+    this.dispatchMessage('');
+    this.dispatchEvent(new CustomEvent('navigate-mask', {
+      bubbles: true,
+      detail: {maskId: targetMask.id}
+    }));
+  }
+
   dispatchSave() {
     this.dispatchEvent(new CustomEvent('save-mask', {
       bubbles: true,
@@ -499,6 +552,13 @@ class WonkyMaskEditor extends HTMLElement {
     this.dispatchEvent(new CustomEvent('process-mask', {
       bubbles: true,
       detail: {operation, applyAll: this.applyAll}
+    }));
+  }
+
+  dispatchMessage(message) {
+    this.dispatchEvent(new CustomEvent('editor-message', {
+      bubbles: true,
+      detail: {message}
     }));
   }
 

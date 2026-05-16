@@ -32,6 +32,7 @@ const MaskEditorCtrl = app => async params => {
       this.root = document.querySelector('[data-mask-editor-page]');
       this.editor = this.root?.querySelector('wonky-mask-editor');
       this.bind(this.editor, 'navigate-mask', event => this.navigateMask(event));
+      this.bind(this.editor, 'editor-message', event => this.setStatus(event.detail.message ?? ''));
       this.bind(this.editor, 'save-mask', event => this.saveMask(event));
       this.bind(this.editor, 'process-mask', event => this.processMask(event));
       this.bind(window, 'keydown', event => this.onKeyDown(event));

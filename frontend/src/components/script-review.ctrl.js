@@ -28,6 +28,7 @@ const ScriptReviewCtrl = app => async () => {
     hasSelectedLine: false,
     hasPreviousPage: false,
     hasNextPage: false,
+    lineLocalizationPollTimer: null,
     unloadHandlers: [],
 
     async postLoad() {
@@ -43,6 +44,10 @@ const ScriptReviewCtrl = app => async () => {
     },
 
     unload() {
+      if (this.lineLocalizationPollTimer) {
+        window.clearTimeout(this.lineLocalizationPollTimer);
+        this.lineLocalizationPollTimer = null;
+      }
       this.unloadHandlers.forEach(unload => unload());
       this.unloadHandlers = [];
     },
@@ -83,6 +88,12 @@ const ScriptReviewCtrl = app => async () => {
       const uploadAudioButton = event.target.closest('[data-action="browse-review-audio"]');
       if (uploadAudioButton) {
         this.root?.querySelector('[data-script-audio-upload-input]')?.click();
+        return;
+      }
+
+      const generateTtsButton = event.target.closest('[data-action="generate-tts"]');
+      if (generateTtsButton) {
+        await this.generateTts(generateTtsButton);
         return;
       }
 
@@ -318,10 +329,48 @@ const ScriptReviewCtrl = app => async () => {
         this.pathOptions = await loadPathOptions();
         await this.loadLines();
         await this.selectLine(created.line_id);
-        this.setStatus(`Created line #${created.line_id}.`);
+        const job = await apiFetch(`/api/script-lines/${created.line_id}/jobs/active`);
+        if (job?.id) {
+          this.setStatus(`Created line #${created.line_id}. ${formatJobProgress(job)}`);
+          this.pollLineLocalizationJob(job.id, created.line_id);
+        } else {
+          this.setStatus(`Created line #${created.line_id}.`);
+        }
       } catch (error) {
         this.setStatus(await readErrorDetail(error, 'Could not create script line.'));
       }
+    },
+
+    pollLineLocalizationJob(jobId, lineId) {
+      if (this.lineLocalizationPollTimer) {
+        window.clearTimeout(this.lineLocalizationPollTimer);
+      }
+      const poll = async () => {
+        try {
+          const job = await apiFetch(`/api/jobs/${jobId}`);
+          if (job.status === 'succeeded') {
+            await this.selectLine(lineId);
+            await this.loadLines();
+            this.setStatus(`Created line #${lineId}. ${formatLocalizationSuccess(job)}`);
+            this.lineLocalizationPollTimer = null;
+            return;
+          }
+          if (job.status === 'failed') {
+            this.setStatus(
+              `Created line #${lineId}. ${job.error?.trim() || 'Auto translation/audio generation failed.'}`
+            );
+            this.lineLocalizationPollTimer = null;
+            return;
+          }
+          this.setStatus(`Created line #${lineId}. ${formatJobProgress(job)}`);
+        } catch {
+          this.setStatus(`Created line #${lineId}. Could not check translation/TTS job status.`);
+          this.lineLocalizationPollTimer = null;
+          return;
+        }
+        this.lineLocalizationPollTimer = window.setTimeout(poll, 1500);
+      };
+      this.lineLocalizationPollTimer = window.setTimeout(poll, 1500);
     },
 
     async deleteSelectedLine() {
@@ -371,6 +420,25 @@ const ScriptReviewCtrl = app => async () => {
         );
       } catch (error) {
         this.setStatus(await readErrorDetail(error, 'Could not upload review audio.'));
+      }
+    },
+
+    async generateTts(button) {
+      if (!this.selectedLineId) return;
+      button.disabled = true;
+      this.setStatus(`Generating ${this.language.toUpperCase()} TTS for line #${this.selectedLineId}...`);
+      try {
+        await apiFetch(`/api/script-lines/${this.selectedLineId}/generate-tts`, {
+          method: 'POST',
+          body: JSON.stringify({language: this.language})
+        });
+        await this.selectLine(this.selectedLineId);
+        await this.loadLines();
+        this.setStatus(`Generated ${this.language.toUpperCase()} TTS for line #${this.selectedLineId}.`);
+      } catch (error) {
+        this.setStatus(await readErrorDetail(error, 'Could not generate TTS.'));
+      } finally {
+        button.disabled = false;
       }
     },
 
@@ -472,6 +540,31 @@ function sourceLabel(value) {
   if (value === 'tts') return 'TTS';
   if (value === 'uploaded_review') return 'Uploaded';
   return value;
+}
+
+function formatJobProgress(job) {
+  const current = Number(job.progress_current ?? 0);
+  const total = Number(job.progress_total ?? 0);
+  if (total > 0) {
+    return `${job.message || 'Working...'} (${current}/${total})`;
+  }
+  return job.message || 'Working...';
+}
+
+function formatLocalizationSuccess(job) {
+  try {
+    const result = job.result_json ? JSON.parse(job.result_json) : {};
+    const translations = Number(result.created_translations ?? 0);
+    const audio = Number(result.created_audio_candidates ?? 0);
+    const errors = Number(result.audio_errors ?? 0);
+    let summary = `Auto-generated ${translations} translations and ${audio} audio clip${audio === 1 ? '' : 's'}.`;
+    if (errors > 0) {
+      summary += ` ${errors} audio generation error${errors === 1 ? '' : 's'} recorded.`;
+    }
+    return summary;
+  } catch {
+    return job.message || 'Auto translation/audio generation complete.';
+  }
 }
 
 function statusLabel(value) {

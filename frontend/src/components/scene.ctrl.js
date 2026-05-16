@@ -28,6 +28,7 @@ const SceneCtrl = app => async params => {
     extractionJob: null,
     hasExtractionJob: false,
     extractionJobRunning: false,
+    extractionJobTracker: null,
     unloadHandlers: [],
     pollTimer: null,
 
@@ -78,6 +79,12 @@ const SceneCtrl = app => async params => {
       const inventoryButton = event.target.closest('[data-action="generate-inventory-images"]');
       if (inventoryButton) {
         await this.generateInventoryImages(inventoryButton);
+        return;
+      }
+
+      const removalButton = event.target.closest('[data-action="generate-removal-frames"]');
+      if (removalButton) {
+        await this.generateRemovalFrames(removalButton);
         return;
       }
 
@@ -278,6 +285,7 @@ const SceneCtrl = app => async params => {
           method: 'POST'
         });
         this.setExtractionJob(job);
+        this.setStatus('[data-mask-extraction-status]', '');
         button.disabled = false;
         button.textContent = 'Extract masks';
         this.pollExtractionJob(job.id);
@@ -300,9 +308,10 @@ const SceneCtrl = app => async params => {
         this.scene = replaceScene(result.scene);
         this.sceneFound = true;
         this.sceneMissing = false;
+        const failedCount = Number(result.failed_object_ids?.length ?? 0);
         this.setStatus(
           '[data-inventory-image-status]',
-          `Generated ${result.generated_count} inventory image${result.generated_count === 1 ? '' : 's'}${result.skipped_count ? `, skipped ${result.skipped_count}` : ''}.`
+          `Generated ${result.generated_count} inventory image${result.generated_count === 1 ? '' : 's'}${result.skipped_count ? `, skipped ${result.skipped_count}` : ''}${failedCount ? `, failed ${failedCount}` : ''}.`
         );
         button.disabled = false;
         button.textContent = 'Generate inventory art';
@@ -326,16 +335,63 @@ const SceneCtrl = app => async params => {
       }
     },
 
+    async generateRemovalFrames(button) {
+      button.disabled = true;
+      button.textContent = 'Generating...';
+      this.setStatus('[data-scene-removal-status]', 'Generating pickup frames for keyboard-target objects...');
+      try {
+        const result = await apiFetch(`/api/scenes/${this.sceneId}/generate-removal-frames`, {
+          method: 'POST'
+        });
+        this.scene = replaceScene(result.scene);
+        this.sceneFound = true;
+        this.sceneMissing = false;
+        const failedCount = Number(result.failed_object_ids?.length ?? 0);
+        this.setStatus(
+          '[data-scene-removal-status]',
+          `Generated ${result.generated_count} pickup frame${result.generated_count === 1 ? '' : 's'}${result.skipped_count ? `, skipped ${result.skipped_count}` : ''}${failedCount ? `, failed ${failedCount}` : ''}.`
+        );
+        button.disabled = false;
+        button.textContent = 'Generate pickup frames';
+        app.refresh();
+      } catch (error) {
+        button.disabled = false;
+        button.textContent = 'Generate pickup frames';
+        let detail = '';
+        try {
+          detail = error?.response ? (await error.response.clone().json()).detail ?? '' : '';
+        } catch {
+          detail = '';
+        }
+        if (error?.response?.status === 503) {
+          window.alert(detail || 'Inventory image generator is unavailable. Please contact the administrator to turn Comfy on.');
+        }
+        this.setStatus(
+          '[data-scene-removal-status]',
+          detail || 'Could not generate pickup frames.'
+        );
+      }
+    },
+
     setExtractionJob(job) {
+      const now = Date.now();
+      this.extractionJobTracker = updateExtractionJobTracker(this.extractionJobTracker, job, now);
       this.extractionJob = job
         ? {
             ...job,
-            etaLabel: estimateJobEta(job),
+            etaLabel: estimateJobEta(job, this.extractionJobTracker),
             progressLabel: formatJobProgress(job)
           }
         : null;
       this.hasExtractionJob = Boolean(job);
       this.extractionJobRunning = job?.status === 'queued' || job?.status === 'running';
+      if (job?.status === 'queued' || job?.status === 'running' || job?.status === 'succeeded') {
+        this.setStatus('[data-mask-extraction-status]', '');
+      }
+      if (job?.status === 'failed') {
+        const detail = String(job?.error ?? '').trim();
+        this.setStatus('[data-mask-extraction-status]', detail || 'Mask extraction failed.');
+      }
     },
 
     async pollExtractionJob(jobId) {
@@ -365,12 +421,18 @@ const SceneCtrl = app => async params => {
       const name = String(formData.get('name') ?? '').trim();
       const description = String(formData.get('description') ?? '').trim();
       const prompt = String(formData.get('prompt') ?? '').trim();
+      const inventoryImagePrompt = String(formData.get('inventory_image_prompt') ?? '').trim();
       if (!name) return;
       if (status) status.textContent = 'Adding object...';
       try {
         await apiFetch(`/api/scenes/${this.sceneId}/objects`, {
           method: 'POST',
-          body: JSON.stringify({name, description, prompt: prompt || null})
+          body: JSON.stringify({
+            name,
+            description,
+            prompt: prompt || null,
+            inventory_image_prompt: inventoryImagePrompt || null
+          })
         });
         form.reset();
         if (status) status.textContent = '';
@@ -384,9 +446,12 @@ const SceneCtrl = app => async params => {
     async updateObjectPrompt(form) {
       const objectId = form.dataset.objectId;
       if (!objectId) return;
+      const numericObjectId = Number(objectId);
       const status = form.querySelector('[data-object-prompt-status]');
       const formData = new FormData(form);
       const prompt = String(formData.get('prompt') ?? '').trim();
+      const inventoryImagePrompt = String(formData.get('inventory_image_prompt') ?? '').trim();
+      const previousInventoryImagePrompt = String(form.dataset.inventoryImagePrompt ?? '').trim();
       const keyboardTargetEnabled = formData.get('keyboard_target_enabled') === 'on';
       if (!prompt) return;
       if (status) status.textContent = 'Saving...';
@@ -395,13 +460,43 @@ const SceneCtrl = app => async params => {
           method: 'PATCH',
           body: JSON.stringify({
             prompt,
+            inventory_image_prompt: inventoryImagePrompt,
             keyboard_target_enabled: keyboardTargetEnabled
           })
         });
         form.elements.prompt.value = updatedObject.prompt ?? prompt;
+        form.elements.inventory_image_prompt.value = updatedObject.inventory_image_prompt ?? inventoryImagePrompt;
         form.elements.keyboard_target_enabled.checked = Boolean(updatedObject.keyboard_target_enabled);
-        if (status) status.textContent = 'Saved.';
-        await this.refreshScene();
+        form.dataset.inventoryImagePrompt = updatedObject.inventory_image_prompt ?? inventoryImagePrompt;
+        const objectIndex = (this.scene?.objects ?? []).findIndex(sceneObject => Number(sceneObject.id) === numericObjectId);
+        if (objectIndex >= 0) {
+          const currentObject = this.scene.objects[objectIndex];
+          this.scene.objects[objectIndex] = {
+            ...currentObject,
+            ...updatedObject,
+            prompt: updatedObject.prompt ?? prompt,
+            inventory_image_prompt: updatedObject.inventory_image_prompt ?? inventoryImagePrompt,
+            keyboard_target_enabled: Boolean(updatedObject.keyboard_target_enabled)
+          };
+        }
+        const inventoryPromptChanged = previousInventoryImagePrompt !== String(updatedObject.inventory_image_prompt ?? inventoryImagePrompt).trim();
+        if (inventoryPromptChanged) {
+          if (status) status.textContent = 'Saved. Regenerating inventory art...';
+          const generationResult = await apiFetch(
+            `/api/scenes/${this.sceneId}/objects/${objectId}/generate-inventory-image`,
+            {method: 'POST'}
+          );
+          if (generationResult.status === 'generated') {
+            if (status) status.textContent = 'Saved. Inventory art regenerated.';
+          } else if (generationResult.status === 'failed') {
+            if (status) status.textContent = 'Saved. Inventory art generation failed. Showing mask thumbnail instead.';
+          } else {
+            if (status) status.textContent = 'Saved. Inventory art skipped for this object.';
+          }
+          await this.refreshScene();
+        } else if (status) {
+          status.textContent = 'Saved.';
+        }
         notifyScenePreview(this.sceneId, 'object-updated');
       } catch {
         if (status) status.textContent = 'Could not save prompt.';
@@ -653,20 +748,61 @@ function formatJobProgress(job) {
   return `${current} / ${total} (${percent}%)`;
 }
 
-function estimateJobEta(job) {
+function estimateJobEta(job, tracker) {
   const status = String(job?.status ?? '');
   if (!['queued', 'running'].includes(status)) return '';
   const current = Number(job?.progress_current ?? 0);
   const total = Number(job?.progress_total ?? 0);
   if (!total || current <= 0 || current >= total) return '';
-  const createdAt = Date.parse(job?.created_at ?? '');
-  if (!Number.isFinite(createdAt)) return '';
-  const elapsedSeconds = Math.max(0, (Date.now() - createdAt) / 1000);
-  if (elapsedSeconds < 2) return '';
-  const secondsPerUnit = elapsedSeconds / current;
+  const secondsPerUnit = estimateSecondsPerUnit(current, tracker);
+  if (!Number.isFinite(secondsPerUnit) || secondsPerUnit <= 0) return '';
   const remainingSeconds = Math.round(secondsPerUnit * (total - current));
   if (!Number.isFinite(remainingSeconds) || remainingSeconds <= 0) return '';
   return formatDuration(remainingSeconds);
+}
+
+function updateExtractionJobTracker(tracker, job, observedAt) {
+  if (!job) return null;
+  const jobId = Number(job.id ?? 0);
+  const current = Number(job.progress_current ?? 0);
+  const nextTracker = tracker && Number(tracker.jobId) === jobId
+    ? {
+        ...tracker,
+        lastObservedAt: observedAt,
+        samples: [...tracker.samples]
+      }
+    : {
+        jobId,
+        firstSeenAt: observedAt,
+        lastObservedAt: observedAt,
+        samples: []
+      };
+  const lastSample = nextTracker.samples[nextTracker.samples.length - 1];
+  if (!lastSample || lastSample.current !== current) {
+    nextTracker.samples.push({current, observedAt});
+    if (nextTracker.samples.length > 12) nextTracker.samples.shift();
+  }
+  return nextTracker;
+}
+
+function estimateSecondsPerUnit(current, tracker) {
+  if (!tracker) return Number.NaN;
+  const progressSamples = tracker.samples.filter(sample => sample.current > 0);
+  if (progressSamples.length >= 2) {
+    const windowSamples = progressSamples.slice(-4);
+    const firstSample = windowSamples[0];
+    const lastSample = windowSamples[windowSamples.length - 1];
+    const deltaProgress = lastSample.current - firstSample.current;
+    const deltaSeconds = (lastSample.observedAt - firstSample.observedAt) / 1000;
+    if (deltaProgress > 0 && deltaSeconds > 0) {
+      return deltaSeconds / deltaProgress;
+    }
+  }
+  const firstNonZeroSample = progressSamples[0];
+  if (!firstNonZeroSample) return Number.NaN;
+  const elapsedSeconds = Math.max(0, (firstNonZeroSample.observedAt - tracker.firstSeenAt) / 1000);
+  if (elapsedSeconds <= 0 || current <= 0) return Number.NaN;
+  return elapsedSeconds / current;
 }
 
 function formatDuration(totalSeconds) {

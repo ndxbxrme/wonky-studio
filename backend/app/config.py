@@ -18,6 +18,18 @@ class Settings:
     google_redirect_uri: str
     storage_root: Path
     script_audio_root: Path = Path("/mnt/d/wonky-studio/audio")
+    script_localization_provider: str = "subprocess"
+    script_translate_script_path: Path = Path("/mnt/d/wonky-studio/audio/translate_script_ollama.py")
+    script_xtts_script_path: Path = Path("/mnt/d/wonky-studio/audio/batch_xtts_generate.py")
+    script_xtts_python_path: Path = Path("/mnt/d/wonky-studio/audio/xtts-env/Scripts/python.exe")
+    script_xtts_speaker_wav: Path = Path("/mnt/d/wonky-studio/audio/voice_refs/narrator_ref.wav")
+    script_translation_model: str = "qwen2.5:7b-instruct"
+    script_translation_source_language: str = "UK English / en-GB"
+    script_translation_target_languages: str = "en,de,es,fr,it,pt"
+    script_translation_ollama_url: str = "http://localhost:11434/api/generate"
+    script_translation_timeout_seconds: float = 180.0
+    script_xtts_device: str = "cuda"
+    script_xtts_timeout_seconds: float = 600.0
     vlm_provider: str = "ollama"
     vlm_base_url: str = "http://127.0.0.1:11434"
     vlm_model: str = "gemma3:4b"
@@ -37,6 +49,7 @@ class Settings:
     inventory_image_comfy_input_root: str = "D:/wonky-studio/temp"
     inventory_image_output_root: Path = Path("/mnt/d/AI/ComfyUI_windows_portable/ComfyUI/output")
     inventory_image_timeout_seconds: float = 300.0
+    scene_removal_workflow_path: Path = Path("temp/inventory-image-generator/remove_item_workflow.json")
 
 
 def get_settings() -> Settings:
@@ -65,6 +78,57 @@ def get_settings() -> Settings:
         ),
         script_audio_root=Path(
             os.environ.get("WONKY_STUDIO_SCRIPT_AUDIO_ROOT", "/mnt/d/wonky-studio/audio")
+        ),
+        script_localization_provider=os.environ.get(
+            "WONKY_STUDIO_SCRIPT_LOCALIZATION_PROVIDER",
+            "subprocess",
+        ),
+        script_translate_script_path=Path(
+            os.environ.get(
+                "WONKY_STUDIO_SCRIPT_TRANSLATE_SCRIPT_PATH",
+                "/mnt/d/wonky-studio/audio/translate_script_ollama.py",
+            )
+        ),
+        script_xtts_script_path=Path(
+            os.environ.get(
+                "WONKY_STUDIO_SCRIPT_XTTS_SCRIPT_PATH",
+                "/mnt/d/wonky-studio/audio/batch_xtts_generate.py",
+            )
+        ),
+        script_xtts_python_path=Path(
+            os.environ.get(
+                "WONKY_STUDIO_SCRIPT_XTTS_PYTHON_PATH",
+                "/mnt/d/wonky-studio/audio/xtts-env/Scripts/python.exe",
+            )
+        ),
+        script_xtts_speaker_wav=Path(
+            os.environ.get(
+                "WONKY_STUDIO_SCRIPT_XTTS_SPEAKER_WAV",
+                "/mnt/d/wonky-studio/audio/voice_refs/narrator_ref.wav",
+            )
+        ),
+        script_translation_model=os.environ.get(
+            "WONKY_STUDIO_SCRIPT_TRANSLATION_MODEL",
+            "qwen2.5:7b-instruct",
+        ),
+        script_translation_source_language=os.environ.get(
+            "WONKY_STUDIO_SCRIPT_TRANSLATION_SOURCE_LANGUAGE",
+            "UK English / en-GB",
+        ),
+        script_translation_target_languages=os.environ.get(
+            "WONKY_STUDIO_SCRIPT_TRANSLATION_TARGET_LANGUAGES",
+            "en,de,es,fr,it,pt",
+        ),
+        script_translation_ollama_url=os.environ.get(
+            "WONKY_STUDIO_SCRIPT_TRANSLATION_OLLAMA_URL",
+            "http://localhost:11434/api/generate",
+        ),
+        script_translation_timeout_seconds=float(
+            os.environ.get("WONKY_STUDIO_SCRIPT_TRANSLATION_TIMEOUT_SECONDS", "180")
+        ),
+        script_xtts_device=os.environ.get("WONKY_STUDIO_SCRIPT_XTTS_DEVICE", "cuda"),
+        script_xtts_timeout_seconds=float(
+            os.environ.get("WONKY_STUDIO_SCRIPT_XTTS_TIMEOUT_SECONDS", "600")
         ),
         vlm_provider=os.environ.get("WONKY_STUDIO_VLM_PROVIDER", "ollama"),
         vlm_base_url=os.environ.get("WONKY_STUDIO_VLM_BASE_URL", "http://127.0.0.1:11434"),
@@ -116,6 +180,12 @@ def get_settings() -> Settings:
         ),
         inventory_image_timeout_seconds=float(
             os.environ.get("WONKY_STUDIO_INVENTORY_IMAGE_TIMEOUT_SECONDS", "300")
+        ),
+        scene_removal_workflow_path=Path(
+            os.environ.get(
+                "WONKY_STUDIO_SCENE_REMOVAL_WORKFLOW_PATH",
+                str(Path(__file__).resolve().parents[2] / "temp" / "inventory-image-generator" / "remove_item_workflow.json"),
+            )
         ),
     )
 

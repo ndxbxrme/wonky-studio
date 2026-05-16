@@ -63,6 +63,7 @@ from .database import (
     get_scene_interaction,
     get_scene_object_for_organization,
     get_active_processing_job_for_scene,
+    get_active_processing_job_for_script_line,
     get_audio_asset_by_id,
     get_processing_job,
     get_session_by_token,
@@ -103,6 +104,7 @@ from .database import (
     scene_belongs_to_organization,
     scene_object_belongs_to_scene,
     set_scene_object_inventory_image,
+    set_scene_object_inventory_image_failed,
     script_line_ids_exist,
     touch_object_mask,
     update_game_variable,
@@ -118,6 +120,7 @@ from .database import (
     update_scene_description,
     update_processing_job_progress,
     update_verb,
+    upsert_script_translation,
     upsert_user,
     upsert_script_audio_candidate,
     create_verb,
@@ -128,18 +131,23 @@ from .inventory_images import (
     InventoryImageProvider,
     InventoryImageProviderUnavailable,
     build_inventory_image_provider,
+    build_scene_removal_provider,
 )
 from .scene_processing import fingerprint_image, process_upload_batch_into_scene
 from .security import sign_state, verify_state
 from .segmentation import SegmentationProvider, build_segmentation_provider
 from .script_import import import_script_audio_data
+from .script_localization import (
+    ScriptLocalizationProvider,
+    build_script_localization_provider,
+)
 from .vlm import SceneVlmProvider, build_scene_vlm_provider, scene_draft_to_dict
 
 
 GOOGLE_AUTHORIZATION_ENDPOINT = "https://accounts.google.com/o/oauth2/v2/auth"
 GOOGLE_TOKEN_ENDPOINT = "https://oauth2.googleapis.com/token"
 GOOGLE_USERINFO_ENDPOINT = "https://openidconnect.googleapis.com/v1/userinfo"
-DEFAULT_ANIMATION_FRAME_DURATION_SECONDS = 0.066
+SCENE_PREVIEW_MANIFEST_CACHE_VERSION = 1
 
 
 class AssetCreate(BaseModel):
@@ -258,11 +266,13 @@ class SceneObject(BaseModel):
     name: str
     description: str
     prompt: str
+    inventory_image_prompt: str = ""
     category: str
     source: str
     sort_order: int = 0
     keyboard_target_enabled: bool = False
     inventory_image_relative_path: str | None = None
+    inventory_image_failed: bool = False
     status: str
     created_at: str
     updated_at: str
@@ -385,12 +395,14 @@ class SceneObjectCreate(BaseModel):
     name: str = Field(min_length=1, max_length=120)
     description: str = Field(default="", max_length=500)
     prompt: str | None = Field(default=None, max_length=160)
+    inventory_image_prompt: str | None = Field(default=None, max_length=240)
 
 
 class SceneObjectUpdate(BaseModel):
     name: str | None = Field(default=None, min_length=1, max_length=120)
     description: str | None = Field(default=None, max_length=500)
     prompt: str | None = Field(default=None, min_length=1, max_length=160)
+    inventory_image_prompt: str | None = Field(default=None, max_length=240)
     sort_order: int | None = Field(default=None, ge=1, le=100000)
     keyboard_target_enabled: bool | None = None
 
@@ -496,6 +508,7 @@ class ProcessingJob(BaseModel):
     job_type: str
     status: str
     scene_id: int | None
+    script_line_id: int | None
     progress_current: int
     progress_total: int
     message: str
@@ -637,6 +650,10 @@ class ScriptAudioCandidateUpdate(BaseModel):
 
 class ScriptAudioCandidateUploadResult(BaseModel):
     candidate: ScriptAudioCandidate
+
+
+class ScriptTtsGenerateRequest(BaseModel):
+    language: str = Field(min_length=2, max_length=12)
 
 
 class GameVariableCreate(BaseModel):
@@ -833,6 +850,8 @@ def create_app(
     vlm_provider: SceneVlmProvider | None = None,
     segmentation_provider: SegmentationProvider | None = None,
     inventory_image_provider: InventoryImageProvider | None = None,
+    scene_removal_provider: InventoryImageProvider | None = None,
+    script_localization_provider: ScriptLocalizationProvider | None = None,
 ) -> FastAPI:
     database_path = db_path or get_database_path()
     app_settings = settings or get_settings()
@@ -857,6 +876,20 @@ def create_app(
             scene_inventory_image_provider = build_inventory_image_provider(app_settings)
         except ValueError as exc:
             inventory_image_provider_error = str(exc)
+    scene_removal_image_provider = scene_removal_provider
+    scene_removal_provider_error = None
+    if scene_removal_image_provider is None:
+        try:
+            scene_removal_image_provider = build_scene_removal_provider(app_settings)
+        except ValueError as exc:
+            scene_removal_provider_error = str(exc)
+    line_localization_provider = script_localization_provider
+    line_localization_provider_error = None
+    if line_localization_provider is None:
+        try:
+            line_localization_provider = build_script_localization_provider(app_settings)
+        except ValueError as exc:
+            line_localization_provider_error = str(exc)
 
     @asynccontextmanager
     async def lifespan(_: FastAPI):
@@ -872,6 +905,8 @@ def create_app(
                 settings=app_settings,
                 segmentation_provider=scene_segmentation_provider,
                 segmentation_provider_error=segmentation_provider_error,
+                script_localization_provider=line_localization_provider,
+                script_localization_provider_error=line_localization_provider_error,
             )
         )
         try:
@@ -1125,6 +1160,20 @@ def create_app(
         created = get_script_line_detail(database_path, user["organization_id"], line["line_id"])
         if created is None:
             raise RuntimeError("Created script line could not be loaded")
+        if line_localization_provider is not None:
+            target_languages = [
+                language.strip().lower()
+                for language in app_settings.script_translation_target_languages.split(",")
+                if language.strip()
+            ]
+            create_processing_job(
+                database_path,
+                organization_id=user["organization_id"],
+                job_type="script_line_localization",
+                script_line_id=line["line_id"],
+                progress_total=max(1, len(target_languages) + sum(1 for language in target_languages if language != "en")),
+                message="Queued translation and TTS generation",
+            )
         return created
 
     @app.delete("/api/script-lines/{line_id}", status_code=204)
@@ -1198,6 +1247,57 @@ def create_app(
             language=language,
             upload=file,
         )
+        return {"candidate": candidate}
+
+    @app.post(
+        "/api/script-lines/{line_id}/generate-tts",
+        response_model=ScriptAudioCandidateUploadResult,
+        status_code=201,
+    )
+    async def post_script_line_generate_tts(
+        line_id: int,
+        payload: ScriptTtsGenerateRequest,
+        user: dict[str, Any] = Depends(current_user),
+    ) -> dict[str, Any]:
+        if line_localization_provider_error:
+            raise HTTPException(status_code=503, detail=line_localization_provider_error)
+        if line_localization_provider is None:
+            raise HTTPException(status_code=503, detail="Script localization provider is not configured")
+        line = get_script_line_detail(database_path, user["organization_id"], line_id)
+        if line is None:
+            raise HTTPException(status_code=404, detail="Script line not found")
+        language = str(payload.language or "").strip().lower()
+        text = ""
+        if language == "en":
+            text = str(line.get("source_text") or "").strip()
+        else:
+            for translation in line.get("translations", []):
+                if str(translation.get("language") or "").strip().lower() == language:
+                    text = str(translation.get("text") or "").strip()
+                    break
+        if not text:
+            raise HTTPException(status_code=400, detail=f"No {language.upper()} text is available for this line")
+
+        generated = await line_localization_provider.generate_tts(
+            line_id=line_id,
+            language=language,
+            text=text,
+        )
+        try:
+            candidate = await _store_generated_tts_candidate(
+                db_path=database_path,
+                settings=app_settings,
+                organization_id=user["organization_id"],
+                line_id=line_id,
+                language=language,
+                wav_path=Path(generated["wav_path"]),
+            )
+        finally:
+            working_root = generated.get("working_root")
+            if isinstance(working_root, Path):
+                shutil.rmtree(working_root, ignore_errors=True)
+            elif working_root:
+                shutil.rmtree(Path(working_root), ignore_errors=True)
         return {"candidate": candidate}
 
     @app.patch("/api/script-audio-candidates/{candidate_id}", response_model=ScriptAudioCandidate)
@@ -1500,7 +1600,7 @@ def create_app(
             user["organization_id"],
             interaction.action_tree,
         )
-        return create_scene_interaction(
+        created_interaction = create_scene_interaction(
             database_path,
             scene_id=scene_id,
             organization_id=user["organization_id"],
@@ -1509,6 +1609,8 @@ def create_app(
             trigger=trigger,
             action_tree=action_tree,
         )
+        _invalidate_scene_preview_manifest_cache(app_settings.storage_root, user["organization_id"], scene_id)
+        return created_interaction
 
     @app.get(
         "/api/scenes/{scene_id}/interactions/validation-json",
@@ -1566,6 +1668,7 @@ def create_app(
         )
         if updated is None:
             raise HTTPException(status_code=404, detail="Interaction not found")
+        _invalidate_scene_preview_manifest_cache(app_settings.storage_root, user["organization_id"], scene_id)
         return updated
 
     @app.delete("/api/scenes/{scene_id}/interactions/{interaction_id}", status_code=204)
@@ -1581,6 +1684,7 @@ def create_app(
             interaction_id=interaction_id,
             organization_id=user["organization_id"],
         )
+        _invalidate_scene_preview_manifest_cache(app_settings.storage_root, user["organization_id"], scene_id)
         return Response(status_code=204)
 
     @app.get("/api/uploads/batches", response_model=list[UploadBatchSummary])
@@ -1668,12 +1772,20 @@ def create_app(
             scene_id=request.target_scene_id,
             organization_id=user["organization_id"],
         )
+        current_images_by_uploaded_file_id = {
+            int(item["uploaded_file_id"]): item
+            for item in list_uploaded_image_files(database_path, user["organization_id"])
+        }
+        affected_scene_ids: set[int] = {int(request.target_scene_id)}
         seen_uploaded_file_ids: set[int] = set()
         for uploaded_file_id in request.uploaded_file_ids:
             normalized_uploaded_file_id = int(uploaded_file_id)
             if normalized_uploaded_file_id in seen_uploaded_file_ids:
                 continue
             seen_uploaded_file_ids.add(normalized_uploaded_file_id)
+            current_image = current_images_by_uploaded_file_id.get(normalized_uploaded_file_id)
+            if current_image and current_image.get("scene_id") is not None:
+                affected_scene_ids.add(int(current_image["scene_id"]))
             uploaded_file = get_uploaded_file_by_id(
                 database_path,
                 uploaded_file_id=normalized_uploaded_file_id,
@@ -1692,6 +1804,12 @@ def create_app(
                 perceptual_hash=fingerprint.perceptual_hash,
                 width=fingerprint.width,
                 height=fingerprint.height,
+            )
+        for affected_scene_id in affected_scene_ids:
+            _invalidate_scene_preview_manifest_cache(
+                app_settings.storage_root,
+                user["organization_id"],
+                affected_scene_id,
             )
         return list_uploaded_image_files(database_path, user["organization_id"])
 
@@ -1725,7 +1843,7 @@ def create_app(
         scene = get_scene_with_images(database_path, scene_id)
         if scene is None or scene["organization_id"] != user["organization_id"]:
             raise HTTPException(status_code=404, detail="Scene not found")
-        return scene
+        return _annotate_scene_inventory_image_statuses(app_settings.storage_root, scene)
 
     @app.patch("/api/scenes/{scene_id}", response_model=Scene)
     def patch_scene(
@@ -1753,7 +1871,8 @@ def create_app(
         )
         if updated is None:
             raise HTTPException(status_code=404, detail="Scene not found")
-        return updated
+        _invalidate_scene_preview_manifest_cache(app_settings.storage_root, user["organization_id"], scene_id)
+        return _annotate_scene_inventory_image_statuses(app_settings.storage_root, updated)
 
     @app.post("/api/scenes/{scene_id}/images", response_model=Scene)
     async def post_scene_images(
@@ -1814,7 +1933,8 @@ def create_app(
         updated_scene = get_scene_with_images(database_path, scene_id)
         if updated_scene is None:
             raise RuntimeError("Updated scene could not be loaded")
-        return updated_scene
+        _invalidate_scene_preview_manifest_cache(app_settings.storage_root, user["organization_id"], scene_id)
+        return _annotate_scene_inventory_image_statuses(app_settings.storage_root, updated_scene)
 
     @app.post("/api/scenes/{scene_id}/images/reorder", response_model=list[SceneImage])
     def post_reorder_scene_images(
@@ -1828,11 +1948,13 @@ def create_app(
             organization_id=user["organization_id"],
         )
         try:
-            return reorder_scene_images(
+            reordered = reorder_scene_images(
                 database_path,
                 scene_id=scene_id,
                 ordered_scene_image_ids=[int(value) for value in request.ordered_scene_image_ids],
             )
+            _invalidate_scene_preview_manifest_cache(app_settings.storage_root, user["organization_id"], scene_id)
+            return reordered
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
 
@@ -1867,7 +1989,13 @@ def create_app(
             user["organization_id"],
             request.target_scene_id,
         )
-        return merged_scene
+        _invalidate_scene_preview_manifest_cache(app_settings.storage_root, user["organization_id"], scene_id)
+        _invalidate_scene_preview_manifest_cache(
+            app_settings.storage_root,
+            user["organization_id"],
+            request.target_scene_id,
+        )
+        return _annotate_scene_inventory_image_statuses(app_settings.storage_root, merged_scene)
 
     @app.post("/api/scenes/{scene_id}/objects", response_model=SceneObject, status_code=201)
     def post_scene_object(
@@ -1887,7 +2015,9 @@ def create_app(
             name=scene_object.name,
             description=scene_object.description,
             prompt=scene_object.prompt,
+            inventory_image_prompt=scene_object.inventory_image_prompt,
         )
+        _invalidate_scene_preview_manifest_cache(app_settings.storage_root, user["organization_id"], scene_id)
         return created_object
 
     @app.patch("/api/scenes/{scene_id}/objects/{object_id}", response_model=SceneObject)
@@ -1910,12 +2040,45 @@ def create_app(
             name=scene_object.name,
             description=scene_object.description,
             prompt=scene_object.prompt,
+            inventory_image_prompt=scene_object.inventory_image_prompt,
             sort_order=scene_object.sort_order,
             keyboard_target_enabled=scene_object.keyboard_target_enabled,
         )
         if updated_object is None:
             raise HTTPException(status_code=404, detail="Object not found")
+        _invalidate_scene_preview_manifest_cache(app_settings.storage_root, user["organization_id"], scene_id)
         return {**updated_object, "mask_image_count": 0, "masks": []}
+
+    @app.post("/api/scenes/{scene_id}/objects/{object_id}/generate-inventory-image")
+    async def post_generate_inventory_image_for_object(
+        scene_id: int,
+        object_id: int,
+        user: dict[str, Any] = Depends(current_user),
+    ) -> dict[str, Any]:
+        if inventory_image_provider_error:
+            raise HTTPException(status_code=503, detail=inventory_image_provider_error)
+        if scene_inventory_image_provider is None:
+            raise HTTPException(
+                status_code=503,
+                detail="Inventory image generator is unavailable. Please contact the administrator to turn Comfy on.",
+            )
+        scene = get_scene_with_images(database_path, scene_id)
+        if scene is None or scene["organization_id"] != user["organization_id"]:
+            raise HTTPException(status_code=404, detail="Scene not found")
+        scene_object = next((item for item in scene.get("objects", []) if int(item["id"]) == object_id), None)
+        if scene_object is None:
+            raise HTTPException(status_code=404, detail="Object not found")
+        result = await _generate_inventory_image_for_scene_object(
+            database_path=database_path,
+            storage_root=app_settings.storage_root,
+            inventory_input_root=app_settings.inventory_image_input_root,
+            organization_id=user["organization_id"],
+            scene_id=scene_id,
+            scene_object=scene_object,
+            inventory_image_provider=scene_inventory_image_provider,
+        )
+        _invalidate_scene_preview_manifest_cache(app_settings.storage_root, user["organization_id"], scene_id)
+        return result
 
     @app.delete("/api/scenes/{scene_id}/objects/{object_id}", status_code=204)
     def delete_scene_object_endpoint(
@@ -1930,6 +2093,7 @@ def create_app(
         ):
             raise HTTPException(status_code=404, detail="Scene not found")
         delete_scene_object(database_path, scene_id=scene_id, object_id=object_id)
+        _invalidate_scene_preview_manifest_cache(app_settings.storage_root, user["organization_id"], scene_id)
         return Response(status_code=204)
 
     @app.get("/api/scene-objects/{object_id}/animations", response_model=list[ObjectAnimation])
@@ -1967,12 +2131,18 @@ def create_app(
         )
         if scene_object is None:
             raise HTTPException(status_code=404, detail="Object not found")
-        return create_object_animation(
+        created_animation = create_object_animation(
             database_path,
             scene_object_id=object_id,
             name=animation.name,
             segments=_animation_segments_payload(animation.segments),
         )
+        _invalidate_scene_preview_manifest_cache(
+            app_settings.storage_root,
+            user["organization_id"],
+            int(scene_object["scene_id"]),
+        )
+        return created_animation
 
     @app.patch(
         "/api/scene-objects/{object_id}/animations/{animation_id}",
@@ -2000,6 +2170,11 @@ def create_app(
         )
         if updated_animation is None:
             raise HTTPException(status_code=404, detail="Animation not found")
+        _invalidate_scene_preview_manifest_cache(
+            app_settings.storage_root,
+            user["organization_id"],
+            int(scene_object["scene_id"]),
+        )
         return updated_animation
 
     @app.delete("/api/scene-objects/{object_id}/animations/{animation_id}", status_code=204)
@@ -2019,6 +2194,11 @@ def create_app(
             database_path,
             animation_id=animation_id,
             scene_object_id=object_id,
+        )
+        _invalidate_scene_preview_manifest_cache(
+            app_settings.storage_root,
+            user["organization_id"],
+            int(scene_object["scene_id"]),
         )
         return Response(status_code=204)
 
@@ -2092,9 +2272,10 @@ def create_app(
         updated_scene = get_scene_with_images(database_path, scene_id)
         if updated_scene is None:
             raise RuntimeError("Analyzed scene could not be loaded")
+        _invalidate_scene_preview_manifest_cache(app_settings.storage_root, user["organization_id"], scene_id)
 
         return {
-            "scene": updated_scene,
+            "scene": _annotate_scene_inventory_image_statuses(app_settings.storage_root, updated_scene),
             "draft": scene_draft_to_dict(draft),
             "created_object_count": created_object_count,
             "skipped_existing_object_count": skipped_existing_object_count,
@@ -2234,6 +2415,21 @@ def create_app(
             job_type="mask_extraction",
         )
 
+    @app.get("/api/script-lines/{line_id}/jobs/active", response_model=ProcessingJob | None)
+    def get_active_script_line_job(
+        line_id: int,
+        user: dict[str, Any] = Depends(current_user),
+    ) -> dict[str, Any] | None:
+        line = get_script_line_detail(database_path, user["organization_id"], line_id)
+        if line is None:
+            raise HTTPException(status_code=404, detail="Script line not found")
+        return get_active_processing_job_for_script_line(
+            database_path,
+            organization_id=user["organization_id"],
+            script_line_id=line_id,
+            job_type="script_line_localization",
+        )
+
     @app.post("/api/scenes/{scene_id}/generate-inventory-images")
     async def post_generate_inventory_images(
         scene_id: int,
@@ -2253,47 +2449,26 @@ def create_app(
         generated_count = 0
         skipped_count = 0
         updated_object_ids: list[int] = []
+        failed_object_ids: list[int] = []
         for scene_object in scene.get("objects", []):
             if not scene_object.get("keyboard_target_enabled"):
                 continue
-            rendered_input_path = _render_inventory_input_image(
+            result = await _generate_inventory_image_for_scene_object(
                 database_path=database_path,
                 storage_root=app_settings.storage_root,
                 inventory_input_root=app_settings.inventory_image_input_root,
                 organization_id=user["organization_id"],
+                scene_id=scene_id,
                 scene_object=scene_object,
+                inventory_image_provider=scene_inventory_image_provider,
             )
-            if rendered_input_path is None:
+            if result["status"] == "skipped":
                 skipped_count += 1
                 continue
-            generated_output_path = (
-                app_settings.storage_root
-                / _safe_path_segment(user["organization_id"])
-                / "derived"
-                / "scenes"
-                / str(scene_id)
-                / "objects"
-                / str(scene_object["id"])
-                / "inventory"
-                / "generated.png"
-            )
-            try:
-                await scene_inventory_image_provider.generate_inventory_image(
-                    rendered_input_path=rendered_input_path,
-                    object_name=scene_object["name"],
-                    object_description=scene_object.get("description") or scene_object["name"],
-                    output_path=generated_output_path,
-                )
-            except InventoryImageProviderUnavailable as exc:
-                raise HTTPException(status_code=503, detail=str(exc)) from exc
-            except RuntimeError as exc:
-                raise HTTPException(status_code=502, detail=str(exc)) from exc
-            updated_scene_object = set_scene_object_inventory_image(
-                database_path,
-                scene_id=scene_id,
-                object_id=scene_object["id"],
-                relative_path=str(generated_output_path.relative_to(app_settings.storage_root)),
-            )
+            if result["status"] == "failed":
+                failed_object_ids.append(int(scene_object["id"]))
+                continue
+            updated_scene_object = result.get("scene_object")
             if updated_scene_object is not None:
                 generated_count += 1
                 updated_object_ids.append(int(updated_scene_object["id"]))
@@ -2302,10 +2477,81 @@ def create_app(
         if updated_scene is None:
             raise RuntimeError("Updated scene could not be loaded")
         return {
-            "scene": updated_scene,
+            "scene": _annotate_scene_inventory_image_statuses(app_settings.storage_root, updated_scene),
             "generated_count": generated_count,
             "skipped_count": skipped_count,
             "updated_object_ids": updated_object_ids,
+            "failed_object_ids": failed_object_ids,
+        }
+
+    @app.post("/api/scenes/{scene_id}/generate-removal-frames")
+    async def post_generate_scene_removal_frames(
+        scene_id: int,
+        user: dict[str, Any] = Depends(current_user),
+    ) -> dict[str, Any]:
+        if scene_removal_provider_error:
+            raise HTTPException(status_code=503, detail=scene_removal_provider_error)
+        if scene_removal_image_provider is None:
+            raise HTTPException(
+                status_code=503,
+                detail="Inventory image generator is unavailable. Please contact the administrator to turn Comfy on.",
+            )
+        scene = get_scene_with_images(database_path, scene_id)
+        if scene is None or scene["organization_id"] != user["organization_id"]:
+            raise HTTPException(status_code=404, detail="Scene not found")
+
+        keyboard_target_objects = [
+            scene_object
+            for scene_object in scene.get("objects", [])
+            if scene_object.get("keyboard_target_enabled")
+        ]
+        if not keyboard_target_objects:
+            raise HTTPException(status_code=400, detail="Scene does not have any keyboard-target objects")
+
+        upload_batch = create_upload_batch(
+            database_path,
+            organization_id=user["organization_id"],
+            created_by_user_id=user["id"],
+        )
+        _batch_storage_root(app_settings.storage_root, user["organization_id"], upload_batch["id"]).mkdir(
+            parents=True,
+            exist_ok=True,
+        )
+
+        generated_count = 0
+        skipped_count = 0
+        failed_object_ids: list[int] = []
+        generated_uploaded_file_ids: list[int] = []
+        for scene_object in keyboard_target_objects:
+            result = await _generate_scene_removal_for_object(
+                database_path=database_path,
+                storage_root=app_settings.storage_root,
+                inventory_input_root=app_settings.inventory_image_input_root,
+                organization_id=user["organization_id"],
+                scene=scene,
+                scene_object=scene_object,
+                upload_batch=upload_batch,
+                uploaded_by_user_id=int(user["id"]),
+                removal_provider=scene_removal_image_provider,
+            )
+            if result["status"] == "generated":
+                generated_count += 1
+                generated_uploaded_file_ids.append(int(result["uploaded_file_id"]))
+            elif result["status"] == "failed":
+                failed_object_ids.append(int(scene_object["id"]))
+            else:
+                skipped_count += 1
+
+        updated_scene = get_scene_with_images(database_path, scene_id)
+        if updated_scene is None:
+            raise RuntimeError("Updated scene could not be loaded")
+        _invalidate_scene_preview_manifest_cache(app_settings.storage_root, user["organization_id"], scene_id)
+        return {
+            "scene": _annotate_scene_inventory_image_statuses(app_settings.storage_root, updated_scene),
+            "generated_count": generated_count,
+            "skipped_count": skipped_count,
+            "failed_object_ids": failed_object_ids,
+            "generated_uploaded_file_ids": generated_uploaded_file_ids,
         }
 
     @app.get("/api/uploads/files/{uploaded_file_id}/content")
@@ -2445,6 +2691,11 @@ def create_app(
         updated_mask = touch_object_mask(database_path, object_mask_id)
         if updated_mask is None:
             raise HTTPException(status_code=404, detail="Object mask not found")
+        _invalidate_scene_preview_manifest_cache(
+            app_settings.storage_root,
+            user["organization_id"],
+            int(object_mask["scene_id"]),
+        )
         return updated_mask
 
     @app.post("/api/object-masks/{object_mask_id}/process", response_model=list[ObjectMask])
@@ -2476,6 +2727,11 @@ def create_app(
                 updated_mask = touch_object_mask(database_path, target_mask["id"])
                 if updated_mask is not None:
                     updated_masks.append(updated_mask)
+            _invalidate_scene_preview_manifest_cache(
+                app_settings.storage_root,
+                user["organization_id"],
+                int(object_mask["scene_id"]),
+            )
             return updated_masks
         target_masks = (
             list_object_masks_for_object(
@@ -2498,6 +2754,11 @@ def create_app(
             updated_mask = touch_object_mask(database_path, target_mask["id"])
             if updated_mask is not None:
                 updated_masks.append(updated_mask)
+        _invalidate_scene_preview_manifest_cache(
+            app_settings.storage_root,
+            user["organization_id"],
+            int(object_mask["scene_id"]),
+        )
         return updated_masks
 
     @app.get("/api/scene-objects/{object_id}/thumbnail")
@@ -2515,7 +2776,7 @@ def create_app(
         inventory_image_relative_path = scene_object.get("inventory_image_relative_path")
         if inventory_image_relative_path:
             inventory_image_path = app_settings.storage_root / inventory_image_relative_path
-            if inventory_image_path.exists():
+            if _is_valid_inventory_image_file(inventory_image_path):
                 return FileResponse(
                     inventory_image_path,
                     media_type="image/png",
@@ -2894,6 +3155,8 @@ async def _processing_job_worker(
     settings: Settings,
     segmentation_provider: SegmentationProvider | None,
     segmentation_provider_error: str | None,
+    script_localization_provider: ScriptLocalizationProvider | None,
+    script_localization_provider_error: str | None,
 ) -> None:
     while True:
         job = claim_next_processing_job(database_path)
@@ -2918,6 +3181,23 @@ async def _processing_job_worker(
                     job_id=job["id"],
                     result=result,
                     message="Mask extraction complete",
+                )
+            elif job["job_type"] == "script_line_localization":
+                if script_localization_provider_error:
+                    raise RuntimeError(script_localization_provider_error)
+                if script_localization_provider is None:
+                    raise RuntimeError("Script localization provider is not configured")
+                result = await _run_script_line_localization_job(
+                    database_path=database_path,
+                    settings=settings,
+                    localization_provider=script_localization_provider,
+                    job=job,
+                )
+                complete_processing_job(
+                    database_path,
+                    job_id=job["id"],
+                    result=result,
+                    message="Translation and TTS generation complete",
                 )
             else:
                 raise RuntimeError(f"Unsupported job type: {job['job_type']}")
@@ -2947,19 +3227,6 @@ async def _run_mask_extraction_job(
     skipped_existing_count = 0
     processed_image_count = 0
     progress_current = 0
-    objects_without_animations = {
-        scene_object["id"]
-        for scene_object in scene_objects
-        if not list_object_animations_for_object(
-            database_path,
-            scene_object_id=scene_object["id"],
-            organization_id=job["organization_id"],
-        )
-    }
-    new_mask_file_ids_by_object: dict[int, set[int]] = {
-        scene_object_id: set()
-        for scene_object_id in objects_without_animations
-    }
     progress_total = _count_mask_extraction_work(database_path, scene_objects, images)
     update_processing_job_progress(
         database_path,
@@ -2969,6 +3236,7 @@ async def _run_mask_extraction_job(
         message="Preparing mask extraction",
     )
 
+    work_items = []
     for scene_image in images:
         objects_to_extract = [
             scene_object
@@ -2983,92 +3251,148 @@ async def _run_mask_extraction_job(
         skipped_existing_count += len(scene_objects) - len(objects_to_extract)
         if not objects_to_extract:
             continue
-
         image_path = settings.storage_root / scene_image["relative_path"]
         if not image_path.exists():
             raise RuntimeError(f"Scene image content not found: {scene_image['original_filename']}")
-
-        update_processing_job_progress(
-            database_path,
-            job_id=job["id"],
-            progress_current=progress_current,
-            message=f"Extracting masks for {scene_image['original_filename']}",
-        )
-        output_dir = (
-            settings.storage_root
-            / _safe_path_segment(job["organization_id"])
-            / "derived"
-            / "scenes"
-            / str(scene_id)
-            / "images"
-            / str(scene_image["uploaded_file_id"])
-        )
-        prompt_results = await segmentation_provider.extract_masks(
-            image_path=image_path,
-            prompts=[scene_object["prompt"] for scene_object in objects_to_extract],
-            output_dir=output_dir,
+        work_items.append(
+            {
+                "scene_image": scene_image,
+                "image_path": image_path,
+                "objects_to_extract": objects_to_extract,
+            }
         )
 
-        processed_image_count += 1
-        object_by_prompt_text = {
-            scene_object["prompt"].lower(): scene_object for scene_object in objects_to_extract
-        }
-        for prompt_result in prompt_results:
-            scene_object = object_by_prompt_text.get(prompt_result.prompt.lower())
-            if scene_object is None:
-                continue
-            candidate = _top_segmentation_candidate(prompt_result.candidates)
-            if candidate is None:
-                continue
-            create_object_mask(
+    if hasattr(segmentation_provider, "open_worker_session") and work_items:
+        worker_session = await segmentation_provider.open_worker_session()  # type: ignore[attr-defined]
+        try:
+            for item in work_items:
+                scene_image = item["scene_image"]
+                objects_to_extract = item["objects_to_extract"]
+                image_path = item["image_path"]
+                update_processing_job_progress(
+                    database_path,
+                    job_id=job["id"],
+                    progress_current=progress_current,
+                    progress_total=progress_total,
+                    message=f"Extracting masks for {scene_image['original_filename']}",
+                )
+                output_dir = (
+                    settings.storage_root
+                    / _safe_path_segment(job["organization_id"])
+                    / "derived"
+                    / "scenes"
+                    / str(scene_id)
+                    / "images"
+                    / str(scene_image["uploaded_file_id"])
+                )
+                prompt_results = await worker_session.extract_masks(
+                    image_path=image_path,
+                    prompts=[scene_object["prompt"] for scene_object in objects_to_extract],
+                    output_dir=output_dir,
+                    max_edge=settings.segmentation_max_edge,
+                    threshold=settings.segmentation_threshold,
+                    dilate=settings.segmentation_dilate_pixels,
+                    blur=settings.segmentation_blur_radius,
+                )
+                processed_image_count += 1
+                object_by_prompt_text = {
+                    scene_object["prompt"].lower(): scene_object for scene_object in objects_to_extract
+                }
+                for prompt_result in prompt_results:
+                    scene_object = object_by_prompt_text.get(prompt_result.prompt.lower())
+                    if scene_object is None:
+                        continue
+                    candidate = _top_segmentation_candidate(prompt_result.candidates)
+                    if candidate is None:
+                        continue
+                    create_object_mask(
+                        database_path,
+                        scene_object_id=scene_object["id"],
+                        uploaded_file_id=scene_image["uploaded_file_id"],
+                        relative_path=_relative_storage_path(settings.storage_root, candidate.raw_path),
+                        soft_relative_path=(
+                            _relative_storage_path(settings.storage_root, candidate.soft_path)
+                            if candidate.soft_path
+                            else None
+                        ),
+                        prompt_text=scene_object["prompt"],
+                        bbox_json=json.dumps(candidate.bbox) if candidate.bbox else None,
+                        score=candidate.score,
+                    )
+                    created_candidate_count += 1
+                progress_current += len(objects_to_extract)
+                update_processing_job_progress(
+                    database_path,
+                    job_id=job["id"],
+                    progress_current=progress_current,
+                    progress_total=progress_total,
+                    message=f"Processed {processed_image_count} image{'' if processed_image_count == 1 else 's'}",
+                )
+        finally:
+            await worker_session.close()
+    else:
+        for item in work_items:
+            scene_image = item["scene_image"]
+            objects_to_extract = item["objects_to_extract"]
+            image_path = item["image_path"]
+            update_processing_job_progress(
                 database_path,
-                scene_object_id=scene_object["id"],
-                uploaded_file_id=scene_image["uploaded_file_id"],
-                relative_path=_relative_storage_path(settings.storage_root, candidate.raw_path),
-                soft_relative_path=(
-                    _relative_storage_path(settings.storage_root, candidate.soft_path)
-                    if candidate.soft_path
-                    else None
-                ),
-                prompt_text=scene_object["prompt"],
-                bbox_json=json.dumps(candidate.bbox) if candidate.bbox else None,
-                score=candidate.score,
+                job_id=job["id"],
+                progress_current=progress_current,
+                message=f"Extracting masks for {scene_image['original_filename']}",
             )
-            created_candidate_count += 1
-            if scene_object["id"] in new_mask_file_ids_by_object:
-                new_mask_file_ids_by_object[scene_object["id"]].add(scene_image["uploaded_file_id"])
+            output_dir = (
+                settings.storage_root
+                / _safe_path_segment(job["organization_id"])
+                / "derived"
+                / "scenes"
+                / str(scene_id)
+                / "images"
+                / str(scene_image["uploaded_file_id"])
+            )
+            prompt_results = await segmentation_provider.extract_masks(
+                image_path=image_path,
+                prompts=[scene_object["prompt"] for scene_object in objects_to_extract],
+                output_dir=output_dir,
+            )
 
-        progress_current += len(objects_to_extract)
-        update_processing_job_progress(
-            database_path,
-            job_id=job["id"],
-            progress_current=progress_current,
-            progress_total=progress_total,
-            message=f"Processed {processed_image_count} image{'' if processed_image_count == 1 else 's'}",
-        )
+            processed_image_count += 1
+            object_by_prompt_text = {
+                scene_object["prompt"].lower(): scene_object for scene_object in objects_to_extract
+            }
+            for prompt_result in prompt_results:
+                scene_object = object_by_prompt_text.get(prompt_result.prompt.lower())
+                if scene_object is None:
+                    continue
+                candidate = _top_segmentation_candidate(prompt_result.candidates)
+                if candidate is None:
+                    continue
+                create_object_mask(
+                    database_path,
+                    scene_object_id=scene_object["id"],
+                    uploaded_file_id=scene_image["uploaded_file_id"],
+                    relative_path=_relative_storage_path(settings.storage_root, candidate.raw_path),
+                    soft_relative_path=(
+                        _relative_storage_path(settings.storage_root, candidate.soft_path)
+                        if candidate.soft_path
+                        else None
+                    ),
+                    prompt_text=scene_object["prompt"],
+                    bbox_json=json.dumps(candidate.bbox) if candidate.bbox else None,
+                    score=candidate.score,
+                )
+                created_candidate_count += 1
 
-    generated_animation_count = 0
-    frame_index_by_uploaded_file_id = {
-        image["uploaded_file_id"]: index
-        for index, image in enumerate(images)
-    }
-    for scene_object in scene_objects:
-        scene_object_id = scene_object["id"]
-        if scene_object_id not in objects_without_animations:
-            continue
-        new_mask_file_ids = new_mask_file_ids_by_object.get(scene_object_id) or set()
-        if len(new_mask_file_ids) < 2:
-            continue
-        generated = _create_generated_motion_animation(
-            database_path=database_path,
-            storage_root=settings.storage_root,
-            organization_id=job["organization_id"],
-            scene_object=scene_object,
-            frame_index_by_uploaded_file_id=frame_index_by_uploaded_file_id,
-            new_mask_file_ids=new_mask_file_ids,
-        )
-        if generated:
-            generated_animation_count += 1
+            progress_current += len(objects_to_extract)
+            update_processing_job_progress(
+                database_path,
+                job_id=job["id"],
+                progress_current=progress_current,
+                progress_total=progress_total,
+                message=f"Processed {processed_image_count} image{'' if processed_image_count == 1 else 's'}",
+            )
+
+    _invalidate_scene_preview_manifest_cache(settings.storage_root, job["organization_id"], scene_id)
 
     return {
         "scene_id": scene_id,
@@ -3076,136 +3400,152 @@ async def _run_mask_extraction_job(
         "prompt_count": len(scene_objects),
         "created_candidate_count": created_candidate_count,
         "skipped_existing_count": skipped_existing_count,
-        "generated_animation_count": generated_animation_count,
+        "generated_animation_count": 0,
     }
+
+
+async def _run_script_line_localization_job(
+    database_path: Path,
+    settings: Settings,
+    localization_provider: ScriptLocalizationProvider,
+    job: dict[str, Any],
+) -> dict[str, Any]:
+    line_id = int(job.get("script_line_id") or 0)
+    if line_id <= 0:
+        raise RuntimeError("Script localization job is missing script_line_id")
+    line = get_script_line_detail(database_path, job["organization_id"], line_id)
+    if line is None:
+        raise RuntimeError(f"Script line #{line_id} no longer exists")
+
+    async def report_progress(current: int, total: int, message: str) -> None:
+        update_processing_job_progress(
+            database_path,
+            job_id=job["id"],
+            progress_current=current,
+            progress_total=total,
+            message=message,
+        )
+
+    existing_translations = {
+        str(translation.get("language") or "").strip().lower(): str(translation.get("text") or "")
+        for translation in line.get("translations", [])
+        if str(translation.get("language") or "").strip()
+    }
+    result = await localization_provider.localize_line(
+        line_id=line_id,
+        source_text=str(line.get("source_text") or ""),
+        path_parts=list(line.get("path_parts") or []),
+        existing_translations=existing_translations,
+        progress_callback=report_progress,
+    )
+
+    created_translations = 0
+    created_audio_candidates = 0
+    audio_errors = 0
+
+    try:
+        for translation in result.get("translations", []):
+            language = str(translation.get("language") or "").strip().lower()
+            text = str(translation.get("text") or "")
+            if not language or not text.strip():
+                continue
+            created = upsert_script_translation(
+                database_path,
+                organization_id=job["organization_id"],
+                line_id=line_id,
+                language=language,
+                text=text,
+                source=str(translation.get("source") or "auto"),
+                meta=translation.get("meta") if isinstance(translation.get("meta"), dict) else {},
+                review_status="approved" if language == "en" else "needs_review",
+            )
+            if created is not None:
+                created_translations += 1
+
+        for audio_output in result.get("audio_outputs", []):
+            language = str(audio_output.get("language") or "").strip().lower()
+            if not language:
+                continue
+            candidate = await _store_generated_tts_candidate(
+                db_path=database_path,
+                settings=settings,
+                organization_id=job["organization_id"],
+                line_id=line_id,
+                language=language,
+                wav_path=Path(audio_output["wav_path"]),
+            )
+            if candidate is not None:
+                created_audio_candidates += 1
+
+        for error in result.get("errors", []):
+            language = str(error.get("language") or "").strip().lower()
+            if not language:
+                continue
+            upsert_script_audio_candidate(
+                database_path,
+                organization_id=job["organization_id"],
+                line_id=line_id,
+                language=language,
+                source_type="tts",
+                manifest_status="error",
+                relative_path="",
+                original_path=f"generated_tts/line-{line_id}/{language}/{line_id:04d}_{language}.ogg",
+                rank=0,
+                error=str(error.get("error") or "TTS generation failed"),
+                source_file="",
+                review_status="missing",
+            )
+            audio_errors += 1
+    finally:
+        working_root = result.get("working_root")
+        if isinstance(working_root, Path):
+            shutil.rmtree(working_root, ignore_errors=True)
+        elif working_root:
+            shutil.rmtree(Path(working_root), ignore_errors=True)
+
+    return {
+        "line_id": line_id,
+        "created_translations": created_translations,
+        "created_audio_candidates": created_audio_candidates,
+        "audio_errors": audio_errors,
+    }
+
+
+async def _store_generated_tts_candidate(
+    *,
+    db_path: Path,
+    settings: Settings,
+    organization_id: str,
+    line_id: int,
+    language: str,
+    wav_path: Path,
+) -> dict[str, Any] | None:
+    generated_root = settings.script_audio_root / "generated_tts" / f"line-{line_id}"
+    final_dir = generated_root / language
+    final_dir.mkdir(parents=True, exist_ok=True)
+    final_path = final_dir / f"{line_id:04d}_{language}.ogg"
+    await _process_review_audio_file(wav_path, final_path)
+    relative_path = str(final_path.relative_to(settings.script_audio_root))
+    return upsert_script_audio_candidate(
+        db_path,
+        organization_id=organization_id,
+        line_id=line_id,
+        language=language,
+        source_type="tts",
+        manifest_status="generated",
+        relative_path=relative_path,
+        original_path=relative_path,
+        rank=0,
+        duration_seconds=_probe_audio_duration_seconds(final_path),
+        source_file=wav_path.name,
+        review_status="candidate",
+    )
 
 
 def _top_segmentation_candidate(candidates):
     if not candidates:
         return None
     return max(candidates, key=lambda candidate: candidate.score if candidate.score is not None else -1)
-
-
-def _create_generated_motion_animation(
-    database_path: Path,
-    storage_root: Path,
-    organization_id: str,
-    scene_object: dict[str, Any],
-    frame_index_by_uploaded_file_id: dict[int, int],
-    new_mask_file_ids: set[int],
-) -> bool:
-    if list_object_animations_for_object(
-        database_path,
-        scene_object_id=scene_object["id"],
-        organization_id=organization_id,
-    ):
-        return False
-    masks = [
-        mask
-        for mask in list_object_masks_for_object(
-            database_path,
-            scene_object_id=scene_object["id"],
-            organization_id=organization_id,
-        )
-        if mask["uploaded_file_id"] in new_mask_file_ids
-        and mask["uploaded_file_id"] in frame_index_by_uploaded_file_id
-    ]
-    if len(masks) < 2:
-        return False
-    frame_entries = sorted(
-        [
-            {
-                "frame_index": frame_index_by_uploaded_file_id[mask["uploaded_file_id"]],
-                "bbox": _load_bbox(mask.get("bbox_json")),
-                "mask_path": storage_root / mask["relative_path"],
-            }
-            for mask in masks
-        ],
-        key=lambda item: item["frame_index"],
-    )
-    moving_frames: set[int] = set()
-    for left, right in zip(frame_entries, frame_entries[1:]):
-        if _mask_pair_looks_like_motion(left, right):
-            moving_frames.add(left["frame_index"])
-            moving_frames.add(right["frame_index"])
-    if len(moving_frames) < 2:
-        return False
-    start_frame = min(moving_frames)
-    end_frame = max(moving_frames)
-    if end_frame <= start_frame:
-        return False
-    create_object_animation(
-        database_path,
-        scene_object_id=scene_object["id"],
-        name="Generated motion",
-        segments=[
-            {
-                "start_frame": start_frame,
-                "end_frame": end_frame,
-                "frame_duration_seconds": DEFAULT_ANIMATION_FRAME_DURATION_SECONDS,
-            }
-        ],
-    )
-    return True
-
-
-def _mask_pair_looks_like_motion(left: dict[str, Any], right: dict[str, Any]) -> bool:
-    left_bbox = left.get("bbox")
-    right_bbox = right.get("bbox")
-    bbox_delta = 0.0
-    if isinstance(left_bbox, list) and isinstance(right_bbox, list) and len(left_bbox) == 4 and len(right_bbox) == 4:
-        left_width = max(1.0, float(left_bbox[2]) - float(left_bbox[0]))
-        left_height = max(1.0, float(left_bbox[3]) - float(left_bbox[1]))
-        right_width = max(1.0, float(right_bbox[2]) - float(right_bbox[0]))
-        right_height = max(1.0, float(right_bbox[3]) - float(right_bbox[1]))
-        left_center_x = (float(left_bbox[0]) + float(left_bbox[2])) / 2.0
-        left_center_y = (float(left_bbox[1]) + float(left_bbox[3])) / 2.0
-        right_center_x = (float(right_bbox[0]) + float(right_bbox[2])) / 2.0
-        right_center_y = (float(right_bbox[1]) + float(right_bbox[3])) / 2.0
-        center_delta = (
-            abs(right_center_x - left_center_x) / max(left_width, right_width)
-            + abs(right_center_y - left_center_y) / max(left_height, right_height)
-        ) / 2.0
-        size_delta = (
-            abs(right_width - left_width) / max(left_width, right_width)
-            + abs(right_height - left_height) / max(left_height, right_height)
-        ) / 2.0
-        bbox_delta = max(center_delta, size_delta)
-    pixel_delta = _mask_pixel_delta(left.get("mask_path"), right.get("mask_path"))
-    return max(bbox_delta, pixel_delta) >= 0.08
-
-
-def _mask_pixel_delta(left_path: Path | None, right_path: Path | None) -> float:
-    if left_path is None or right_path is None or not left_path.exists() or not right_path.exists():
-        return 0.0
-    with Image.open(left_path) as left_image, Image.open(right_path) as right_image:
-        left_mask = ImageOps.fit(left_image.convert("L"), (64, 64), Image.Resampling.NEAREST)
-        right_mask = ImageOps.fit(right_image.convert("L"), (64, 64), Image.Resampling.NEAREST)
-        diff = ImageChops.difference(left_mask, right_mask)
-        pixels = list(diff.getdata())
-    if not pixels:
-        return 0.0
-    return sum(int(pixel) for pixel in pixels) / (255.0 * len(pixels))
-
-
-def _load_bbox(raw_bbox: Any) -> list[float] | None:
-    if isinstance(raw_bbox, list) and len(raw_bbox) == 4:
-        try:
-            return [float(item) for item in raw_bbox]
-        except (TypeError, ValueError):
-            return None
-    if not raw_bbox:
-        return None
-    try:
-        value = json.loads(raw_bbox)
-    except (TypeError, ValueError):
-        return None
-    if not isinstance(value, list) or len(value) != 4:
-        return None
-    try:
-        return [float(item) for item in value]
-    except (TypeError, ValueError):
-        return None
 
 
 def _require_scene(db_path: Path, scene_id: int, organization_id: str) -> None:
@@ -3703,6 +4043,39 @@ def _relative_storage_path(storage_root: Path, path: Path) -> str:
         raise RuntimeError(f"Generated mask was written outside storage root: {path}") from exc
 
 
+def _is_valid_inventory_image_file(path: Path | None) -> bool:
+    if path is None or not path.exists():
+        return False
+    try:
+        if path.stat().st_size <= 0:
+            return False
+        with Image.open(path) as image:
+            image.verify()
+    except (OSError, ValueError):
+        return False
+    return True
+
+
+def _annotate_scene_inventory_image_statuses(
+    storage_root: Path,
+    scene: dict[str, Any],
+) -> dict[str, Any]:
+    scene_copy = {**scene}
+    annotated_objects = []
+    for scene_object in scene.get("objects", []):
+        inventory_relative_path = scene_object.get("inventory_image_relative_path")
+        inventory_path = storage_root / inventory_relative_path if inventory_relative_path else None
+        annotated_objects.append(
+            {
+                **scene_object,
+                "inventory_image_failed": bool(scene_object.get("inventory_image_failed"))
+                or (bool(inventory_relative_path) and not _is_valid_inventory_image_file(inventory_path)),
+            }
+        )
+    scene_copy["objects"] = annotated_objects
+    return scene_copy
+
+
 def _write_object_mask_image(
     storage_root: Path,
     object_mask: dict[str, Any],
@@ -3813,20 +4186,12 @@ def _build_scene_preview_payload(
     organization_id: str,
     scene: dict[str, Any],
 ) -> dict[str, Any]:
-    scene_images = scene.get("images", [])
-    preview_images = [
-        {
-            "frame_index": index,
-            "uploaded_file_id": image["uploaded_file_id"],
-            "original_filename": image["original_filename"],
-            "width": image["width"],
-            "height": image["height"],
-        }
-        for index, image in enumerate(scene_images)
-    ]
-    scene_width = int(scene_images[0]["width"]) if scene_images else 0
-    scene_height = int(scene_images[0]["height"]) if scene_images else 0
-    preview_objects = []
+    scene_manifest = _get_cached_scene_preview_manifest(
+        database_path=database_path,
+        storage_root=storage_root,
+        organization_id=organization_id,
+        scene=scene,
+    )
     preview_audio_assets = list_audio_assets(database_path, organization_id)
     preview_variables = list_game_variables(database_path, organization_id)
     preview_verbs = list_verbs(database_path, organization_id)
@@ -3851,6 +4216,64 @@ def _build_scene_preview_payload(
     ]
     overlay_bindings = list_overlay_scene_bindings(database_path, organization_id)
     global_settings = get_global_settings(database_path, organization_id)
+    preview_interactions = scene_manifest["interactions"]
+    preview_script_lines = [
+        line
+        for line_id in sorted(_collect_script_line_ids(preview_interactions))
+        if (line := get_script_line_detail(database_path, organization_id, line_id)) is not None
+    ]
+    return {
+        **scene_manifest,
+        "available_scenes": available_scenes,
+        "overlay_scenes": overlay_scenes,
+        "overlay_bindings": overlay_bindings,
+        "global_settings": global_settings,
+        "audio_assets": preview_audio_assets,
+        "variables": preview_variables,
+        "verbs": preview_verbs,
+        "script_lines": preview_script_lines,
+    }
+
+
+def _get_cached_scene_preview_manifest(
+    database_path: Path,
+    storage_root: Path,
+    organization_id: str,
+    scene: dict[str, Any],
+) -> dict[str, Any]:
+    cache_path = _scene_preview_manifest_cache_path(storage_root, organization_id, int(scene["id"]))
+    cached = _read_scene_preview_manifest_cache(cache_path)
+    if cached is not None:
+        return cached
+    manifest = _build_scene_preview_manifest(
+        database_path=database_path,
+        storage_root=storage_root,
+        organization_id=organization_id,
+        scene=scene,
+    )
+    _write_scene_preview_manifest_cache(cache_path, manifest)
+    return manifest
+
+
+def _build_scene_preview_manifest(
+    database_path: Path,
+    storage_root: Path,
+    organization_id: str,
+    scene: dict[str, Any],
+) -> dict[str, Any]:
+    scene_images = scene.get("images", [])
+    preview_images = [
+        {
+            "frame_index": index,
+            "uploaded_file_id": image["uploaded_file_id"],
+            "original_filename": image["original_filename"],
+            "width": image["width"],
+            "height": image["height"],
+        }
+        for index, image in enumerate(scene_images)
+    ]
+    scene_width = int(scene_images[0]["width"]) if scene_images else 0
+    scene_height = int(scene_images[0]["height"]) if scene_images else 0
     preview_interactions = [
         interaction
         for interaction in list_scene_interactions(
@@ -3860,16 +4283,11 @@ def _build_scene_preview_payload(
         )
         if interaction.get("enabled")
     ]
-    preview_script_lines = [
-        line
-        for line_id in sorted(_collect_script_line_ids(preview_interactions))
-        if (line := get_script_line_detail(database_path, organization_id, line_id)) is not None
-    ]
+    preview_objects = []
     go_to_frame_refs = _collect_go_to_frame_refs(preview_interactions)
     frame_index_by_uploaded_file_id = {
         int(image["uploaded_file_id"]): index for index, image in enumerate(scene_images)
     }
-
     sorted_scene_objects = sorted(
         scene.get("objects", []),
         key=lambda item: (int(item.get("sort_order", 0) or 0), int(item.get("id", 0) or 0)),
@@ -3978,17 +4396,9 @@ def _build_scene_preview_payload(
         "background_frame_index": int(scene.get("background_frame_index") or 0),
         "width": scene_width,
         "height": scene_height,
-        "available_scenes": available_scenes,
-        "overlay_scenes": overlay_scenes,
-        "overlay_bindings": overlay_bindings,
-        "global_settings": global_settings,
         "images": preview_images,
         "objects": preview_objects,
-        "audio_assets": preview_audio_assets,
-        "variables": preview_variables,
-        "verbs": preview_verbs,
         "interactions": preview_interactions,
-        "script_lines": preview_script_lines,
     }
 
 
@@ -4191,6 +4601,65 @@ def _preview_render_url(object_id: int, uploaded_file_id: int, cache_key: str) -
     return f"/api/scene-objects/{object_id}/preview-renders/{uploaded_file_id}{query}"
 
 
+def _scene_preview_manifest_cache_path(
+    storage_root: Path,
+    organization_id: str,
+    scene_id: int,
+) -> Path:
+    return (
+        storage_root
+        / _safe_path_segment(organization_id)
+        / "derived"
+        / "scenes"
+        / str(scene_id)
+        / "preview"
+        / "manifest.json"
+    )
+
+
+def _read_scene_preview_manifest_cache(cache_path: Path) -> dict[str, Any] | None:
+    if not cache_path.exists():
+        return None
+    try:
+        payload = json.loads(cache_path.read_text(encoding="utf-8"))
+    except (OSError, TypeError, ValueError):
+        return None
+    if not isinstance(payload, dict):
+        return None
+    if int(payload.get("version") or 0) != SCENE_PREVIEW_MANIFEST_CACHE_VERSION:
+        return None
+    manifest = payload.get("manifest")
+    return manifest if isinstance(manifest, dict) else None
+
+
+def _write_scene_preview_manifest_cache(cache_path: Path, manifest: dict[str, Any]) -> None:
+    cache_path.parent.mkdir(parents=True, exist_ok=True)
+    cache_path.write_text(
+        json.dumps(
+            {
+                "version": SCENE_PREVIEW_MANIFEST_CACHE_VERSION,
+                "manifest": manifest,
+            },
+            separators=(",", ":"),
+        ),
+        encoding="utf-8",
+    )
+
+
+def _invalidate_scene_preview_manifest_cache(
+    storage_root: Path,
+    organization_id: str,
+    scene_id: int,
+) -> None:
+    cache_path = _scene_preview_manifest_cache_path(storage_root, organization_id, scene_id)
+    try:
+        cache_path.unlink()
+    except FileNotFoundError:
+        return
+    except OSError:
+        return
+
+
 def _read_preview_render_metadata(metadata_path: Path) -> dict[str, Any]:
     if not metadata_path.exists():
         return {}
@@ -4230,6 +4699,268 @@ def _render_inventory_input_image(
             continue
         return input_path
     return None
+
+
+async def _generate_inventory_image_for_scene_object(
+    database_path: Path,
+    storage_root: Path,
+    inventory_input_root: Path,
+    organization_id: str,
+    scene_id: int,
+    scene_object: dict[str, Any],
+    inventory_image_provider: InventoryImageProvider,
+) -> dict[str, Any]:
+    rendered_input_path = _render_inventory_input_image(
+        database_path,
+        storage_root=storage_root,
+        inventory_input_root=inventory_input_root,
+        organization_id=organization_id,
+        scene_object=scene_object,
+    )
+    if rendered_input_path is None:
+        return {"status": "skipped", "scene_object": None}
+
+    output_relative_path = (
+        f"{_safe_path_segment(organization_id)}/derived/scenes/{scene_id}/objects/"
+        f"{scene_object['id']}/inventory/generated.png"
+    )
+    output_path = storage_root / output_relative_path
+    object_description = (
+        (scene_object.get("inventory_image_prompt") or "").strip()
+        or (scene_object.get("description") or "").strip()
+        or str(scene_object.get("name") or "").strip()
+    )
+
+    try:
+        await inventory_image_provider.generate_inventory_image(
+            rendered_input_path=rendered_input_path,
+            object_name=scene_object["name"],
+            object_description=object_description,
+            output_path=output_path,
+        )
+    except InventoryImageProviderUnavailable as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    except RuntimeError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+    if not _is_valid_inventory_image_file(output_path):
+        set_scene_object_inventory_image_failed(
+            database_path,
+            scene_id=scene_id,
+            object_id=int(scene_object["id"]),
+            failed=True,
+        )
+        return {"status": "failed", "scene_object": None}
+
+    updated_scene_object = set_scene_object_inventory_image(
+        database_path,
+        scene_id=scene_id,
+        object_id=int(scene_object["id"]),
+        relative_path=output_relative_path,
+    )
+    return {"status": "generated", "scene_object": updated_scene_object}
+
+
+def _first_visible_scene_image_for_object(
+    scene: dict[str, Any],
+    scene_object: dict[str, Any],
+) -> tuple[dict[str, Any], dict[str, Any]] | tuple[None, None]:
+    masks_by_uploaded_file_id = {
+        int(object_mask["uploaded_file_id"]): object_mask
+        for object_mask in (scene_object.get("masks") or [])
+    }
+    for scene_image in scene.get("images", []):
+        object_mask = masks_by_uploaded_file_id.get(int(scene_image["uploaded_file_id"]))
+        if object_mask is not None:
+            return scene_image, object_mask
+    return None, None
+
+
+def _render_scene_removal_input_image(
+    storage_root: Path,
+    inventory_input_root: Path,
+    scene: dict[str, Any],
+    scene_object: dict[str, Any],
+) -> dict[str, Any] | None:
+    scene_image, object_mask = _first_visible_scene_image_for_object(scene, scene_object)
+    if scene_image is None or object_mask is None:
+        return None
+    original_path = storage_root / scene_image["relative_path"]
+    if not original_path.exists():
+        return None
+    mask_path = storage_root / (object_mask.get("soft_relative_path") or object_mask["relative_path"])
+    if not mask_path.exists():
+        return None
+    with Image.open(original_path) as image:
+        original = image.convert("RGBA")
+        original.load()
+    with Image.open(mask_path) as image:
+        mask = image.convert("L")
+        mask.load()
+    if mask.size != original.size:
+        mask = mask.resize(original.size, Image.Resampling.LANCZOS)
+    binary_mask = mask.point(lambda value: 255 if value >= 1 else 0)
+    bbox = binary_mask.getbbox()
+    if bbox is None:
+        return None
+    left, top, right, bottom = bbox
+    width, height = original.size
+    center_x = (left + right) / 2
+    center_y = (top + bottom) / 2
+    crop_size = 1024
+    crop_left = int(round(center_x - crop_size / 2))
+    crop_top = int(round(center_y - crop_size / 2))
+    crop_left = max(0, min(crop_left, max(0, width - crop_size)))
+    crop_top = max(0, min(crop_top, max(0, height - crop_size)))
+    crop_right = min(width, crop_left + crop_size)
+    crop_bottom = min(height, crop_top + crop_size)
+    crop_box = (crop_left, crop_top, crop_right, crop_bottom)
+    crop = original.crop(crop_box)
+    if crop.size != (crop_size, crop_size):
+        padded = Image.new("RGBA", (crop_size, crop_size), (255, 255, 255, 255))
+        padded.paste(crop, (0, 0))
+        crop = padded
+    input_path = inventory_input_root / f"scene_{scene['id']}_object_{scene_object['id']}_remove.png"
+    input_path.parent.mkdir(parents=True, exist_ok=True)
+    crop.save(input_path, format="PNG")
+    return {
+        "input_path": input_path,
+        "scene_image": scene_image,
+        "object_mask": object_mask,
+        "crop_box": crop_box,
+        "scene_size": original.size,
+    }
+
+
+def _composite_scene_removal_crop(
+    original_path: Path,
+    generated_crop_path: Path,
+    crop_box: tuple[int, int, int, int],
+    output_path: Path,
+) -> None:
+    with Image.open(original_path) as image:
+        original = image.convert("RGBA")
+        original.load()
+    with Image.open(generated_crop_path) as image:
+        generated = image.convert("RGBA")
+        generated.load()
+    crop_width = max(1, crop_box[2] - crop_box[0])
+    crop_height = max(1, crop_box[3] - crop_box[1])
+    if generated.size != (crop_width, crop_height):
+        generated = generated.resize((crop_width, crop_height), Image.Resampling.LANCZOS)
+    original.paste(generated, crop_box[:2], generated)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    original.save(output_path, format="PNG")
+
+
+async def _generate_scene_removal_for_object(
+    database_path: Path,
+    storage_root: Path,
+    inventory_input_root: Path,
+    organization_id: str,
+    scene: dict[str, Any],
+    scene_object: dict[str, Any],
+    upload_batch: dict[str, Any],
+    uploaded_by_user_id: int,
+    removal_provider: InventoryImageProvider,
+) -> dict[str, Any]:
+    rendered_input = _render_scene_removal_input_image(
+        storage_root=storage_root,
+        inventory_input_root=inventory_input_root,
+        scene=scene,
+        scene_object=scene_object,
+    )
+    if rendered_input is None:
+        return {"status": "skipped"}
+
+    removal_output_relative_path = (
+        f"{_safe_path_segment(organization_id)}/derived/scenes/{scene['id']}/objects/"
+        f"{scene_object['id']}/scene-removal/generated.png"
+    )
+    removal_output_path = storage_root / removal_output_relative_path
+    prompt_subject = (
+        (scene_object.get("inventory_image_prompt") or "").strip()
+        or (scene_object.get("name") or "").strip()
+    )
+    try:
+        await removal_provider.generate_inventory_image(
+            rendered_input_path=rendered_input["input_path"],
+            object_name=scene_object["name"],
+            object_description=prompt_subject,
+            output_path=removal_output_path,
+        )
+    except InventoryImageProviderUnavailable as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    except RuntimeError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+    if not _is_valid_inventory_image_file(removal_output_path):
+        return {"status": "failed"}
+
+    batch_root = _batch_storage_root(storage_root, organization_id, upload_batch["id"])
+    original_filename = f"removed-{_safe_filename(scene_object['name'])}.png"
+    stored_filename = f"{uuid4().hex}-{original_filename}"
+    composited_output_path = batch_root / stored_filename
+    original_scene_image_path = storage_root / rendered_input["scene_image"]["relative_path"]
+    _composite_scene_removal_crop(
+        original_path=original_scene_image_path,
+        generated_crop_path=removal_output_path,
+        crop_box=rendered_input["crop_box"],
+        output_path=composited_output_path,
+    )
+    file_size = composited_output_path.stat().st_size
+    uploaded_file = add_uploaded_file(
+        database_path,
+        batch_id=upload_batch["id"],
+        organization_id=organization_id,
+        uploaded_by_user_id=uploaded_by_user_id,
+        original_filename=original_filename,
+        stored_filename=stored_filename,
+        relative_path=str(Path(organization_id) / str(upload_batch["id"]) / stored_filename),
+        content_type="image/png",
+        file_size=file_size,
+    )
+    fingerprint = fingerprint_image(composited_output_path)
+    assigned_scene_image = assign_uploaded_file_to_scene(
+        database_path,
+        scene_id=int(scene["id"]),
+        uploaded_file_id=int(uploaded_file["id"]),
+        perceptual_hash=fingerprint.perceptual_hash,
+        width=fingerprint.width,
+        height=fingerprint.height,
+    )
+    combined_mask_image = _combine_object_mask_images(storage_root, scene_object.get("masks") or [])
+    combined_mask_output_root = (
+        storage_root
+        / _safe_path_segment(organization_id)
+        / "derived"
+        / "scenes"
+        / str(scene["id"])
+        / "images"
+        / str(uploaded_file["id"])
+    )
+    safe_object_stem = _safe_path_segment(str(scene_object["name"]))
+    raw_mask_path = combined_mask_output_root / f"{safe_object_stem}_00.png"
+    soft_mask_path = combined_mask_output_root / f"{safe_object_stem}_00_soft.png"
+    raw_mask_path.parent.mkdir(parents=True, exist_ok=True)
+    combined_mask_image.save(raw_mask_path, format="PNG")
+    combined_mask_image.save(soft_mask_path, format="PNG")
+    bbox = combined_mask_image.point(lambda value: 255 if value >= 1 else 0).getbbox()
+    created_mask = create_object_mask(
+        database_path,
+        scene_object_id=int(scene_object["id"]),
+        uploaded_file_id=int(uploaded_file["id"]),
+        relative_path=_relative_storage_path(storage_root, raw_mask_path),
+        soft_relative_path=_relative_storage_path(storage_root, soft_mask_path),
+        prompt_text=scene_object["prompt"],
+        bbox_json=json.dumps(list(bbox)) if bbox else None,
+        score=None,
+    )
+    return {
+        "status": "generated",
+        "uploaded_file_id": int(uploaded_file["id"]),
+        "scene_image_id": int(assigned_scene_image["id"]) if assigned_scene_image else None,
+        "object_mask_id": int(created_mask["id"]),
+    }
 
 
 def _batch_storage_root(storage_root: Path, organization_id: str, batch_id: int) -> Path:

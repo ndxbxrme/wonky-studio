@@ -241,11 +241,13 @@ def init_database(
                 name TEXT NOT NULL,
                 description TEXT NOT NULL DEFAULT '',
                 prompt TEXT NOT NULL DEFAULT '',
+                inventory_image_prompt TEXT NOT NULL DEFAULT '',
                 category TEXT NOT NULL DEFAULT 'other',
                 source TEXT NOT NULL DEFAULT 'manual',
                 sort_order INTEGER NOT NULL DEFAULT 0,
                 keyboard_target_enabled INTEGER NOT NULL DEFAULT 0,
                 inventory_image_relative_path TEXT,
+                inventory_image_failed INTEGER NOT NULL DEFAULT 0,
                 status TEXT NOT NULL DEFAULT 'draft',
                 created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
                 updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -254,11 +256,13 @@ def init_database(
             """
         )
         _ensure_column(connection, "scene_objects", "prompt", "TEXT NOT NULL DEFAULT ''")
+        _ensure_column(connection, "scene_objects", "inventory_image_prompt", "TEXT NOT NULL DEFAULT ''")
         _ensure_column(connection, "scene_objects", "category", "TEXT NOT NULL DEFAULT 'other'")
         _ensure_column(connection, "scene_objects", "source", "TEXT NOT NULL DEFAULT 'manual'")
         _ensure_column(connection, "scene_objects", "sort_order", "INTEGER NOT NULL DEFAULT 0")
         _ensure_column(connection, "scene_objects", "keyboard_target_enabled", "INTEGER NOT NULL DEFAULT 0")
         _ensure_column(connection, "scene_objects", "inventory_image_relative_path", "TEXT")
+        _ensure_column(connection, "scene_objects", "inventory_image_failed", "INTEGER NOT NULL DEFAULT 0")
         connection.execute(
             """
             UPDATE scene_objects
@@ -421,6 +425,7 @@ def init_database(
                 job_type TEXT NOT NULL,
                 status TEXT NOT NULL DEFAULT 'queued',
                 scene_id INTEGER,
+                script_line_id INTEGER,
                 progress_current INTEGER NOT NULL DEFAULT 0,
                 progress_total INTEGER NOT NULL DEFAULT 0,
                 message TEXT NOT NULL DEFAULT '',
@@ -435,6 +440,7 @@ def init_database(
             )
             """
         )
+        _ensure_column(connection, "processing_jobs", "script_line_id", "INTEGER")
         connection.execute(
             """
             CREATE TABLE IF NOT EXISTS script_lines (
@@ -641,6 +647,7 @@ def create_processing_job(
     organization_id: str,
     job_type: str,
     scene_id: int | None = None,
+    script_line_id: int | None = None,
     progress_total: int = 0,
     message: str = "",
 ) -> dict[str, Any]:
@@ -651,12 +658,13 @@ def create_processing_job(
                 organization_id,
                 job_type,
                 scene_id,
+                script_line_id,
                 progress_total,
                 message
             )
-            VALUES (?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?)
             """,
-            (organization_id, job_type, scene_id, progress_total, message),
+            (organization_id, job_type, scene_id, script_line_id, progress_total, message),
         )
         row = connection.execute(
             """
@@ -665,6 +673,7 @@ def create_processing_job(
                    job_type,
                    status,
                    scene_id,
+                   script_line_id,
                    progress_current,
                    progress_total,
                    message,
@@ -696,6 +705,7 @@ def get_processing_job(
                    job_type,
                    status,
                    scene_id,
+                   script_line_id,
                    progress_current,
                    progress_total,
                    message,
@@ -729,6 +739,7 @@ def get_active_processing_job_for_scene(
                    job_type,
                    status,
                    scene_id,
+                   script_line_id,
                    progress_current,
                    progress_total,
                    message,
@@ -752,6 +763,44 @@ def get_active_processing_job_for_scene(
     return dict(row) if row else None
 
 
+def get_active_processing_job_for_script_line(
+    db_path: Path,
+    organization_id: str,
+    script_line_id: int,
+    job_type: str,
+) -> dict[str, Any] | None:
+    with connect(db_path) as connection:
+        row = connection.execute(
+            """
+            SELECT id,
+                   organization_id,
+                   job_type,
+                   status,
+                   scene_id,
+                   script_line_id,
+                   progress_current,
+                   progress_total,
+                   message,
+                   result_json,
+                   error,
+                   created_at,
+                   updated_at,
+                   started_at,
+                   completed_at
+            FROM processing_jobs
+            WHERE organization_id = ?
+              AND script_line_id = ?
+              AND job_type = ?
+              AND status IN ('queued', 'running')
+            ORDER BY id DESC
+            LIMIT 1
+            """,
+            (organization_id, script_line_id, job_type),
+        ).fetchone()
+
+    return dict(row) if row else None
+
+
 def claim_next_processing_job(db_path: Path) -> dict[str, Any] | None:
     with connect(db_path) as connection:
         row = connection.execute(
@@ -761,6 +810,7 @@ def claim_next_processing_job(db_path: Path) -> dict[str, Any] | None:
                    job_type,
                    status,
                    scene_id,
+                   script_line_id,
                    progress_current,
                    progress_total,
                    message,
@@ -796,6 +846,7 @@ def claim_next_processing_job(db_path: Path) -> dict[str, Any] | None:
                    job_type,
                    status,
                    scene_id,
+                   script_line_id,
                    progress_current,
                    progress_total,
                    message,
@@ -3047,11 +3098,13 @@ def get_scene_with_images(db_path: Path, scene_id: int) -> dict[str, Any] | None
                    scene_objects.name,
                    scene_objects.description,
                    scene_objects.prompt,
+                   scene_objects.inventory_image_prompt,
                    scene_objects.category,
                    scene_objects.source,
                    scene_objects.sort_order,
                    scene_objects.keyboard_target_enabled,
                    scene_objects.inventory_image_relative_path,
+                   scene_objects.inventory_image_failed,
                    scene_objects.status,
                    scene_objects.created_at,
                    scene_objects.updated_at,
@@ -3110,6 +3163,7 @@ def get_scene_with_images(db_path: Path, scene_id: int) -> dict[str, Any] | None
             {
                 **dict(row),
                 "keyboard_target_enabled": bool(row["keyboard_target_enabled"]),
+                "inventory_image_failed": bool(row["inventory_image_failed"]),
                 "masks": masks_by_object_id[row["id"]],
             }
             for row in objects
@@ -3155,11 +3209,13 @@ def create_scene_object(
     name: str,
     description: str = "",
     prompt: str | None = None,
+    inventory_image_prompt: str | None = None,
     category: str = "other",
     source: str = "manual",
 ) -> dict[str, Any]:
     normalized_name = name.strip()
     normalized_prompt = (prompt or normalized_name).strip()
+    normalized_inventory_prompt = (inventory_image_prompt or "").strip()
     with connect(db_path) as connection:
         next_sort_order = connection.execute(
             """
@@ -3171,14 +3227,17 @@ def create_scene_object(
         ).fetchone()["next_sort_order"]
         cursor = connection.execute(
             """
-            INSERT INTO scene_objects (scene_id, name, description, prompt, category, source, sort_order)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO scene_objects (
+                scene_id, name, description, prompt, inventory_image_prompt, category, source, sort_order
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 scene_id,
                 normalized_name,
                 description.strip(),
                 normalized_prompt,
+                normalized_inventory_prompt,
                 category.strip(),
                 source.strip(),
                 int(next_sort_order),
@@ -3186,7 +3245,7 @@ def create_scene_object(
         )
         row = connection.execute(
             """
-            SELECT id, scene_id, name, description, prompt, category, source, sort_order, keyboard_target_enabled, inventory_image_relative_path, status, created_at, updated_at
+            SELECT id, scene_id, name, description, prompt, inventory_image_prompt, category, source, sort_order, keyboard_target_enabled, inventory_image_relative_path, inventory_image_failed, status, created_at, updated_at
             FROM scene_objects
             WHERE id = ?
             """,
@@ -3194,6 +3253,7 @@ def create_scene_object(
         ).fetchone()
     result = dict(row)
     result["keyboard_target_enabled"] = bool(result["keyboard_target_enabled"])
+    result["inventory_image_failed"] = bool(result["inventory_image_failed"])
     return result
 
 
@@ -3455,6 +3515,7 @@ def create_scene_object_if_missing(
     name: str,
     description: str = "",
     prompt: str | None = None,
+    inventory_image_prompt: str | None = None,
     category: str = "other",
     source: str = "vlm",
 ) -> tuple[dict[str, Any], bool]:
@@ -3462,7 +3523,7 @@ def create_scene_object_if_missing(
     with connect(db_path) as connection:
         existing = connection.execute(
             """
-            SELECT id, scene_id, name, description, prompt, category, source, sort_order, keyboard_target_enabled, inventory_image_relative_path, status, created_at, updated_at
+            SELECT id, scene_id, name, description, prompt, inventory_image_prompt, category, source, sort_order, keyboard_target_enabled, inventory_image_relative_path, inventory_image_failed, status, created_at, updated_at
             FROM scene_objects
             WHERE scene_id = ?
               AND lower(name) = ?
@@ -3472,6 +3533,7 @@ def create_scene_object_if_missing(
         if existing:
             result = dict(existing)
             result["keyboard_target_enabled"] = bool(result["keyboard_target_enabled"])
+            result["inventory_image_failed"] = bool(result["inventory_image_failed"])
             return result, False
 
         next_sort_order = connection.execute(
@@ -3485,14 +3547,17 @@ def create_scene_object_if_missing(
 
         cursor = connection.execute(
             """
-            INSERT INTO scene_objects (scene_id, name, description, prompt, category, source, sort_order)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO scene_objects (
+                scene_id, name, description, prompt, inventory_image_prompt, category, source, sort_order
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 scene_id,
                 normalized_name,
                 description.strip(),
                 (prompt or normalized_name).strip(),
+                (inventory_image_prompt or "").strip(),
                 category.strip() or "other",
                 source.strip() or "vlm",
                 int(next_sort_order),
@@ -3500,7 +3565,7 @@ def create_scene_object_if_missing(
         )
         row = connection.execute(
             """
-            SELECT id, scene_id, name, description, prompt, category, source, sort_order, keyboard_target_enabled, inventory_image_relative_path, status, created_at, updated_at
+            SELECT id, scene_id, name, description, prompt, inventory_image_prompt, category, source, sort_order, keyboard_target_enabled, inventory_image_relative_path, inventory_image_failed, status, created_at, updated_at
             FROM scene_objects
             WHERE id = ?
             """,
@@ -3508,6 +3573,7 @@ def create_scene_object_if_missing(
         ).fetchone()
     result = dict(row)
     result["keyboard_target_enabled"] = bool(result["keyboard_target_enabled"])
+    result["inventory_image_failed"] = bool(result["inventory_image_failed"])
     return result, True
 
 
@@ -3518,6 +3584,7 @@ def update_scene_object(
     name: str | None = None,
     description: str | None = None,
     prompt: str | None = None,
+    inventory_image_prompt: str | None = None,
     sort_order: int | None = None,
     keyboard_target_enabled: bool | None = None,
 ) -> dict[str, Any] | None:
@@ -3532,6 +3599,9 @@ def update_scene_object(
     if prompt is not None:
         assignments.append("prompt = ?")
         values.append(prompt.strip())
+    if inventory_image_prompt is not None:
+        assignments.append("inventory_image_prompt = ?")
+        values.append(inventory_image_prompt.strip())
     if sort_order is not None:
         assignments.append("sort_order = ?")
         values.append(int(sort_order))
@@ -3623,7 +3693,7 @@ def get_scene_object(
     with connect(db_path) as connection:
         row = connection.execute(
             """
-            SELECT id, scene_id, name, description, prompt, category, source, sort_order, keyboard_target_enabled, inventory_image_relative_path, status, created_at, updated_at
+            SELECT id, scene_id, name, description, prompt, inventory_image_prompt, category, source, sort_order, keyboard_target_enabled, inventory_image_relative_path, inventory_image_failed, status, created_at, updated_at
             FROM scene_objects
             WHERE id = ?
               AND scene_id = ?
@@ -3634,6 +3704,7 @@ def get_scene_object(
         return None
     result = dict(row)
     result["keyboard_target_enabled"] = bool(result["keyboard_target_enabled"])
+    result["inventory_image_failed"] = bool(result["inventory_image_failed"])
     return result
 
 
@@ -3648,11 +3719,32 @@ def set_scene_object_inventory_image(
             """
             UPDATE scene_objects
             SET inventory_image_relative_path = ?,
+                inventory_image_failed = 0,
                 updated_at = CURRENT_TIMESTAMP
             WHERE id = ?
               AND scene_id = ?
             """,
             (relative_path, object_id, scene_id),
+        )
+    return get_scene_object(db_path, scene_id, object_id)
+
+
+def set_scene_object_inventory_image_failed(
+    db_path: Path,
+    scene_id: int,
+    object_id: int,
+    failed: bool,
+) -> dict[str, Any] | None:
+    with connect(db_path) as connection:
+        connection.execute(
+            """
+            UPDATE scene_objects
+            SET inventory_image_failed = ?,
+                updated_at = CURRENT_TIMESTAMP
+            WHERE id = ?
+              AND scene_id = ?
+            """,
+            (int(bool(failed)), object_id, scene_id),
         )
     return get_scene_object(db_path, scene_id, object_id)
 
@@ -3670,6 +3762,7 @@ def get_scene_object_for_organization(
                    scene_objects.name,
                    scene_objects.description,
                    scene_objects.prompt,
+                   scene_objects.inventory_image_prompt,
                    scene_objects.category,
                    scene_objects.source,
                    scene_objects.sort_order,
@@ -3717,6 +3810,7 @@ def list_scene_objects_for_organization(
     for row in rows:
         result = dict(row)
         result["keyboard_target_enabled"] = bool(result["keyboard_target_enabled"])
+        result["inventory_image_failed"] = bool(result["inventory_image_failed"])
         results.append(result)
     return results
 
@@ -3927,7 +4021,7 @@ def list_scene_objects_for_scene(db_path: Path, scene_id: int) -> list[dict[str,
     with connect(db_path) as connection:
         rows = connection.execute(
             """
-            SELECT id, scene_id, name, description, prompt, category, source, sort_order, keyboard_target_enabled, inventory_image_relative_path, status, created_at, updated_at
+            SELECT id, scene_id, name, description, prompt, inventory_image_prompt, category, source, sort_order, keyboard_target_enabled, inventory_image_relative_path, inventory_image_failed, status, created_at, updated_at
             FROM scene_objects
             WHERE scene_id = ?
               AND trim(prompt) != ''
@@ -3950,18 +4044,18 @@ def object_mask_exists_for_prompt(
     prompt_text: str,
 ) -> bool:
     with connect(db_path) as connection:
-        row = connection.execute(
+        rows = connection.execute(
             """
-            SELECT 1
+            SELECT prompt_text
             FROM object_masks
             WHERE scene_object_id = ?
               AND uploaded_file_id = ?
-              AND prompt_text = ?
             """,
-            (scene_object_id, uploaded_file_id, prompt_text.strip()),
-        ).fetchone()
-
-    return row is not None
+            (scene_object_id, uploaded_file_id),
+        ).fetchall()
+    if len(rows) != 1:
+        return False
+    return str(rows[0]["prompt_text"] or "").strip() == prompt_text.strip()
 
 
 def create_object_mask(
@@ -3975,6 +4069,14 @@ def create_object_mask(
     score: float | None,
 ) -> dict[str, Any]:
     with connect(db_path) as connection:
+        connection.execute(
+            """
+            DELETE FROM object_masks
+            WHERE scene_object_id = ?
+              AND uploaded_file_id = ?
+            """,
+            (scene_object_id, uploaded_file_id),
+        )
         cursor = connection.execute(
             """
             INSERT INTO object_masks (

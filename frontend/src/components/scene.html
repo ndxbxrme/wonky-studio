@@ -36,6 +36,7 @@
         <button class="button primary compact" type="button" data-action="extract-masks">Extract masks</button>
         <button class="button secondary compact" type="button" data-action="browse-scene-images">Upload images</button>
         <button class="button secondary compact" type="button" data-action="generate-inventory-images">Generate inventory art</button>
+        <button class="button secondary compact" type="button" data-action="generate-removal-frames">Generate pickup frames</button>
         <a class="button secondary compact" href="/actions/{{scene.id}}">Edit actions</a>
         <button class="button secondary compact" type="button" data-action="open-preview">Open preview</button>
         <button class="button secondary compact" type="button" data-action="logout">Sign out</button>
@@ -77,6 +78,7 @@
         <p class="form-status scene-form-status" data-mask-extraction-status aria-live="polite"></p>
         <p class="form-status scene-form-status" data-scene-image-status aria-live="polite"></p>
         <p class="form-status scene-form-status" data-inventory-image-status aria-live="polite"></p>
+        <p class="form-status scene-form-status" data-scene-removal-status aria-live="polite"></p>
       </article>
 
       <aside class="objects-panel">
@@ -146,10 +148,16 @@
               Description
               <input name="description" type="text" placeholder="Optional note" />
             </label>
-            <label>
-              Segmentation prompt
-              <input name="prompt" type="text" placeholder="bed with covers and pillow" />
-            </label>
+            <div class="object-prompt-fields">
+              <label>
+                Segmentation prompt
+                <input name="prompt" type="text" placeholder="bed with covers and pillow" />
+              </label>
+              <label>
+                Inventory image prompt
+                <input name="inventory_image_prompt" type="text" placeholder="storybook bedside table icon" />
+              </label>
+            </div>
             <button class="button secondary compact" type="submit">Add object</button>
             <p class="form-status scene-form-status" data-object-form-status aria-live="polite"></p>
           </form>
@@ -191,6 +199,9 @@
                     {{#if object.description}}
                       <p>{{object.description}}</p>
                     {{/if}}
+                    {{#if object.inventory_image_failed}}
+                      <p class="object-warning">Inventory art generation failed. Showing mask thumbnail instead.</p>
+                    {{/if}}
                     {{#if object.hasActionSummaries}}
                       <div class="object-action-summary" aria-label="{{object.name}} actions">
                         {{#each object.actionSummaries as action}}
@@ -207,11 +218,22 @@
                     data-object-name="{{object.name}}"
                   >Remove</button>
                 </div>
-                <form class="object-prompt-form" data-object-prompt-form data-object-id="{{object.id}}">
-                  <label>
-                    Segmentation prompt
-                    <input name="prompt" type="text" value="{{object.prompt}}" required />
-                  </label>
+                <form
+                  class="object-prompt-form"
+                  data-object-prompt-form
+                  data-object-id="{{object.id}}"
+                  data-inventory-image-prompt="{{object.inventory_image_prompt}}"
+                >
+                  <div class="object-prompt-fields">
+                    <label>
+                      Segmentation prompt
+                      <input name="prompt" type="text" value="{{object.prompt}}" required />
+                    </label>
+                    <label>
+                      Inventory image prompt
+                      <input name="inventory_image_prompt" type="text" value="{{object.inventory_image_prompt}}" placeholder="storybook bedside table icon" />
+                    </label>
+                  </div>
                   <div class="object-order-controls">
                     <span class="object-order-controls__label">Object order</span>
                     <div class="object-order-controls__buttons">

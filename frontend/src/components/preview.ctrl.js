@@ -77,6 +77,13 @@ const PreviewCtrl = app => async params => {
     inventoryOverlayFrame: null,
     inventoryStage: null,
     heldInventoryItemRoot: null,
+    loadingScreen: null,
+    loadingOverlay: null,
+    loadingVisible: true,
+    loadingTitle: 'Loading preview',
+    loadingDetail: 'Fetching scene data…',
+    loadingPercent: 4,
+    loadingMeta: 'Preparing scene runtime',
 
     async postLoad() {
       this.captureDom();
@@ -95,8 +102,16 @@ const PreviewCtrl = app => async params => {
         await this.reloadRuntime({rerunSceneEnter: true});
         this.setStatus('');
       });
+      this.setLoadingState({
+        visible: true,
+        title: 'Loading preview',
+        detail: 'Fetching scene data…',
+        percent: 4,
+        meta: 'Preparing scene runtime'
+      });
       await this.configurePreview();
       await this.runSceneEnterActions();
+      this.setLoadingState({visible: false});
     },
 
     unload() {
@@ -124,6 +139,8 @@ const PreviewCtrl = app => async params => {
       this.inventoryStage = this.root?.querySelector('[data-inventory-stage]') ?? null;
       this.heldInventoryItemRoot = this.root?.querySelector('[data-held-inventory-item]') ?? null;
       this.verbMenuRoot = this.root?.querySelector('[data-verb-menu-root]') ?? null;
+      this.loadingScreen = this.root?.querySelector('[data-preview-loading-screen]') ?? null;
+      this.loadingOverlay = this.root?.querySelector('[data-preview-loading-overlay]') ?? null;
     },
 
     bind(target, type, handler) {
@@ -147,8 +164,22 @@ const PreviewCtrl = app => async params => {
 
     async refreshData() {
       try {
+        this.setLoadingState({
+          visible: true,
+          title: 'Loading preview',
+          detail: 'Fetching scene data…',
+          percent: 8,
+          meta: `Scene ${this.sceneId}`
+        });
         this.scene = findScene(this.sceneId) ?? {id: this.sceneId};
         this.previewData = await fetchPreviewData(this.sceneId);
+        this.setLoadingState({
+          visible: true,
+          title: 'Preparing runtime',
+          detail: 'Building object and variable state…',
+          percent: 22,
+          meta: formatLoadingMeta(this.previewData)
+        });
         this.prepareSceneNavigation();
         this.prepareState();
         this.applyCarriedVariables();
@@ -160,6 +191,13 @@ const PreviewCtrl = app => async params => {
         previewSceneCarryover = null;
         this.editorReady = false;
         this.editorMissing = true;
+        this.setLoadingState({
+          visible: false,
+          title: 'Preview unavailable',
+          detail: 'Could not load scene preview.',
+          percent: 0,
+          meta: ''
+        });
       }
     },
 
@@ -374,14 +412,55 @@ const PreviewCtrl = app => async params => {
 
     async configurePreview() {
       if (!this.basePreview || !this.previewData) return;
-      await this.basePreview.configure({
-        ...this.previewData,
-        showBackground: this.showBackground
+      this.setLoadingState({
+        visible: true,
+        title: 'Loading artwork',
+        detail: 'Warming preview images…',
+        percent: 30,
+        meta: formatLoadingMeta(this.previewData)
+      });
+      await this.basePreview.configure(
+        {
+          ...this.previewData,
+          showBackground: this.showBackground
+        },
+        {
+          mode: 'initial',
+          onProgress: progress => {
+            const total = Math.max(0, Number(progress?.total) || 0);
+            const loaded = Math.max(0, Number(progress?.loaded) || 0);
+            const ratio = total > 0 ? Math.min(1, loaded / total) : 1;
+            this.setLoadingState({
+              visible: true,
+              title: 'Loading artwork',
+              detail: total > 0
+                ? `Warming preview images… ${Math.min(loaded, total)} / ${total}`
+                : 'Warming preview images…',
+              percent: 30 + Math.round(ratio * 60),
+              meta: formatLoadingMeta(this.previewData)
+            });
+          }
+        }
+      );
+      this.setLoadingState({
+        visible: true,
+        title: 'Finishing preview',
+        detail: 'Syncing runtime state…',
+        percent: 94,
+        meta: formatLoadingMeta(this.previewData)
       });
       this.pushRuntimeToPreview('base');
       this.syncSubtitleOverlay('base');
       this.syncFadeOverlay('base');
       await this.configureOverlayPreview();
+      void preloadPreviewAssets(this.previewData, {mode: 'all'}).catch(() => {});
+      this.setLoadingState({
+        visible: true,
+        title: 'Preview ready',
+        detail: 'Finalising controls…',
+        percent: 100,
+        meta: formatLoadingMeta(this.previewData)
+      });
     },
 
     async configureOverlayPreview() {
@@ -399,11 +478,12 @@ const PreviewCtrl = app => async params => {
         ...this.overlayPreviewData,
         showBackground: true,
         transparentStage: true
-      });
+      }, {mode: 'initial'});
       this.pushRuntimeToPreview('overlay');
       this.syncOverlayPresentation();
       this.syncSubtitleOverlay('overlay');
       this.syncFadeOverlay('overlay');
+      void preloadPreviewAssets(this.overlayPreviewData, {mode: 'all'}).catch(() => {});
     },
 
     pushRuntimeToPreview(layer) {
@@ -418,6 +498,7 @@ const PreviewCtrl = app => async params => {
       app.refresh();
       await Promise.resolve();
       this.captureDom();
+      this.syncLoadingUi();
       this.bind(this.root, 'click', event => this.onClick(event));
       this.bind(this.root, 'submit', event => this.onSubmit(event));
       this.bindPreviewEvents();
@@ -535,6 +616,32 @@ const PreviewCtrl = app => async params => {
       if (status) status.textContent = message;
     },
 
+    setLoadingState({visible, title, detail, percent, meta} = {}) {
+      if (typeof visible === 'boolean') this.loadingVisible = visible;
+      if (typeof title === 'string') this.loadingTitle = title;
+      if (typeof detail === 'string') this.loadingDetail = detail;
+      if (typeof percent === 'number' && Number.isFinite(percent)) {
+        this.loadingPercent = Math.max(0, Math.min(100, Math.round(percent)));
+      }
+      if (typeof meta === 'string') this.loadingMeta = meta;
+      this.syncLoadingUi();
+    },
+
+    syncLoadingUi() {
+      const roots = [this.loadingScreen, this.loadingOverlay].filter(Boolean);
+      for (const root of roots) {
+        root.classList.toggle('is-hidden', !this.loadingVisible);
+        const title = root.querySelector('[data-preview-loading-title]');
+        const detail = root.querySelector('[data-preview-loading-detail]');
+        const bar = root.querySelector('[data-preview-loading-bar]');
+        const meta = root.querySelector('[data-preview-loading-meta]');
+        if (title) title.textContent = this.loadingTitle;
+        if (detail) detail.textContent = this.loadingDetail;
+        if (bar) bar.style.width = `${this.loadingPercent}%`;
+        if (meta) meta.textContent = this.loadingMeta;
+      }
+    },
+
     async reloadRuntime({rerunSceneEnter}) {
       this.executionVersion += 1;
       this.stopMediaPlayback();
@@ -550,6 +657,7 @@ const PreviewCtrl = app => async params => {
       if (rerunSceneEnter) {
         await this.runSceneEnterActions();
       }
+      this.setLoadingState({visible: false});
     },
 
     async resetRuntime() {
@@ -1926,6 +2034,13 @@ function computeVerbMenuPosition(stageRect, objectRect, count) {
 
 export {PreviewCtrl};
 
+function formatLoadingMeta(previewData) {
+  if (!previewData) return '';
+  const frameCount = Number(previewData.images?.length ?? 0);
+  const objectCount = Number(previewData.objects?.length ?? 0);
+  return `${frameCount} frame${frameCount === 1 ? '' : 's'} · ${objectCount} object${objectCount === 1 ? '' : 's'}`;
+}
+
 async function fetchPreviewData(sceneId) {
   const numericSceneId = Number(sceneId);
   const cached = previewDataCache.get(numericSceneId);
@@ -1986,7 +2101,7 @@ async function preloadConnectedScenes(sceneIds) {
       .map(async sceneId => {
         try {
           const previewData = await fetchPreviewData(sceneId);
-          await preloadPreviewAssets(previewData);
+          await preloadPreviewAssets(previewData, {mode: 'initial'});
         } catch {
           invalidatePreviewDataCache(sceneId);
         }

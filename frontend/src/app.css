@@ -589,6 +589,11 @@ p {
   overflow-wrap: anywhere;
 }
 
+.object-warning {
+  color: #9b5c12;
+  font-weight: 600;
+}
+
 .object-action-summary {
   margin-top: 10px;
   display: flex;
@@ -1367,6 +1372,75 @@ textarea {
   align-items: stretch;
 }
 
+.scene-runtime-loading-screen {
+  min-height: 420px;
+  display: grid;
+  place-items: center;
+  padding: 32px;
+}
+
+.scene-runtime-loading-screen.is-hidden {
+  display: none;
+}
+
+.scene-runtime-loading-overlay {
+  position: absolute;
+  inset: 14px;
+  z-index: 6;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  background:
+    linear-gradient(180deg, rgba(248, 246, 239, 0.92) 0%, rgba(241, 236, 225, 0.9) 100%);
+  backdrop-filter: blur(5px);
+}
+
+.scene-runtime-loading-overlay.is-hidden {
+  display: none;
+}
+
+.scene-runtime-loading-card {
+  width: min(520px, 100%);
+  padding: 26px 28px;
+  border: 1px solid #d9d3c3;
+  border-radius: 18px;
+  background:
+    linear-gradient(180deg, rgba(255, 252, 245, 0.98) 0%, rgba(247, 241, 230, 0.98) 100%);
+  box-shadow: 0 24px 48px rgba(40, 34, 24, 0.16);
+}
+
+.scene-runtime-loading-card h2 {
+  margin: 0;
+  font-size: 1.5rem;
+}
+
+.scene-runtime-loading-card .muted {
+  margin: 10px 0 0;
+}
+
+.scene-runtime-loading-bar {
+  margin-top: 18px;
+  width: 100%;
+  height: 12px;
+  border-radius: 999px;
+  background: rgba(140, 116, 77, 0.18);
+  overflow: hidden;
+}
+
+.scene-runtime-loading-bar__fill {
+  width: 0;
+  height: 100%;
+  border-radius: inherit;
+  background: linear-gradient(90deg, #d4a85d 0%, #7fba89 100%);
+  transition: width 180ms ease;
+}
+
+.scene-runtime-loading-meta {
+  margin: 12px 0 0;
+  color: #625848;
+  font-size: 0.94rem;
+}
+
 .scene-runtime-stage wonky-scene-preview {
   width: 100%;
   height: 100%;
@@ -1652,6 +1726,13 @@ textarea {
   gap: 10px;
 }
 
+.object-prompt-fields {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+  min-width: 0;
+}
+
 .object-order-controls {
   display: grid;
   gap: 6px;
@@ -1926,6 +2007,10 @@ select {
   }
 
   .object-prompt-form {
+    grid-template-columns: 1fr;
+  }
+
+  .object-prompt-fields {
     grid-template-columns: 1fr;
   }
 

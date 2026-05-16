@@ -17,6 +17,7 @@ class WonkyScenePreviewElement extends HTMLElement {
     this.focusedObjectId = null;
     this.longPressTimer = null;
     this.longPressTriggered = false;
+    this.pendingImageUrls = new Set();
     this.resizeObserver = new ResizeObserver(() => this.renderCanvas());
     this.shadowRoot.innerHTML = `
       <style>
@@ -150,10 +151,11 @@ class WonkyScenePreviewElement extends HTMLElement {
   disconnectedCallback() {
     this.resizeObserver.disconnect();
     this.cancelLongPress();
+    this.pendingImageUrls.clear();
     this.stop();
   }
 
-  async configure(preview) {
+  async configure(preview, options = {}) {
     this.preview = preview;
     this.showBackground = preview?.showBackground !== false;
     this.transparentStage = preview?.transparentStage === true;
@@ -161,13 +163,14 @@ class WonkyScenePreviewElement extends HTMLElement {
     this.activeObjectIds.clear();
     this.objectPlaybackState.clear();
     this.hoveredObjectId = null;
+    this.pendingImageUrls.clear();
     if (!preview?.images?.length) {
       this.renderEmpty();
       return;
     }
     this.renderStage();
     try {
-      await this.primeImages(preview);
+      await this.primeImages(preview, options);
     } catch (error) {
       this.dispatchPreviewError(error);
       this.renderEmpty();
@@ -234,8 +237,8 @@ class WonkyScenePreviewElement extends HTMLElement {
     this.renderSubtitleOverlay();
   }
 
-  async primeImages(preview) {
-    await preloadPreviewAssets(preview);
+  async primeImages(preview, options = {}) {
+    await preloadPreviewAssets(preview, options);
   }
 
   setDefaultState() {
@@ -263,6 +266,7 @@ class WonkyScenePreviewElement extends HTMLElement {
       frame => Number(frame.frame_index) === numericFrameIndex
     ) ?? this.preview?.images?.[0] ?? null;
     this.currentBackgroundUrl = backgroundFrame ? uploadedFileUrl(backgroundFrame.uploaded_file_id) : '';
+    this.ensureImageLoaded(this.currentBackgroundUrl);
   }
 
   async playAnimation(objectId, animationId, {mode = 'queued'} = {}) {
@@ -382,6 +386,8 @@ class WonkyScenePreviewElement extends HTMLElement {
     const backgroundImage = imageCache.get(this.currentBackgroundUrl)?.value ?? null;
     if (this.showBackground && backgroundImage) {
       ctx.drawImage(backgroundImage, 0, 0, canvasWidth, canvasHeight);
+    } else if (this.showBackground && this.currentBackgroundUrl) {
+      this.ensureImageLoaded(this.currentBackgroundUrl);
     }
 
     const objects = [...(this.preview.objects ?? [])];
@@ -396,8 +402,12 @@ class WonkyScenePreviewElement extends HTMLElement {
       if (objectState?.visible === false) continue;
       const render = this.currentObjectRenders.get(Number(object.id));
       if (!render?.url) continue;
-      const image = imageCache.get(resolvePreviewUrl(render.url))?.value ?? null;
-      if (!image) continue;
+      const imageUrl = resolvePreviewUrl(render.url);
+      const image = imageCache.get(imageUrl)?.value ?? null;
+      if (!image) {
+        this.ensureImageLoaded(imageUrl);
+        continue;
+      }
       const x = (render.left / sceneWidth) * canvasWidth;
       const y = (render.top / sceneHeight) * canvasHeight;
       const width = (render.width / sceneWidth) * canvasWidth;
@@ -578,6 +588,20 @@ class WonkyScenePreviewElement extends HTMLElement {
       height: bounds.height
     };
   }
+
+  ensureImageLoaded(url) {
+    if (!url || this.pendingImageUrls.has(url) || imageCache.get(url)?.value) return;
+    this.pendingImageUrls.add(url);
+    void loadImage(url)
+      .then(() => {
+        this.pendingImageUrls.delete(url);
+        this.renderCanvas();
+      })
+      .catch(error => {
+        this.pendingImageUrls.delete(url);
+        this.dispatchPreviewError(error);
+      });
+  }
 }
 
 const imageCache = new Map();
@@ -608,20 +632,44 @@ async function loadImage(url) {
   return promise;
 }
 
-async function preloadPreviewAssets(preview) {
+async function preloadPreviewAssets(preview, options = {}) {
   if (!preview?.images?.length) return;
+  const onProgress = typeof options.onProgress === 'function' ? options.onProgress : null;
+  const mode = options.mode === 'all' ? 'all' : 'initial';
+  const urls = collectPreviewAssetUrls(preview, mode);
+  const orderedUrls = [...urls];
+  const total = orderedUrls.length;
+  let loaded = 0;
+  onProgress?.({loaded, total});
+  await Promise.all(
+    orderedUrls.map(async url => {
+      await loadImage(url);
+      loaded += 1;
+      onProgress?.({loaded, total});
+    })
+  );
+}
+
+function collectPreviewAssetUrls(preview, mode = 'initial') {
   const urls = new Set();
-  const firstBackground = preview.images?.[0];
-  if (firstBackground) urls.add(uploadedFileUrl(firstBackground.uploaded_file_id));
+  const backgroundFrameIndex = Number(preview?.background_frame_index ?? 0);
+  const selectedBackground = (preview?.images ?? []).find(
+    frame => Number(frame.frame_index) === backgroundFrameIndex
+  ) ?? preview?.images?.[0] ?? null;
+  if (selectedBackground) urls.add(uploadedFileUrl(selectedBackground.uploaded_file_id));
   for (const object of preview.objects ?? []) {
     if (object.default_render?.url) urls.add(resolvePreviewUrl(object.default_render.url));
+    if (mode !== 'all') continue;
     for (const animation of object.animations ?? []) {
       for (const frame of animation.frames ?? []) {
         if (frame.render?.url) urls.add(resolvePreviewUrl(frame.render.url));
       }
     }
+    for (const render of Object.values(object.frame_renders ?? {})) {
+      if (render?.url) urls.add(resolvePreviewUrl(render.url));
+    }
   }
-  await Promise.all([...urls].map(url => loadImage(url)));
+  return urls;
 }
 
 function blobToImage(blob) {

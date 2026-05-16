@@ -252,6 +252,7 @@ function prepareImageRecord(image) {
   return {
     ...image,
     sceneLabel: image.scene_title ? `Scene ${image.scene_id} · ${image.scene_title}` : 'Unassigned',
+    frameLabel: Number.isFinite(Number(image.sort_order)) ? `Frame ${Number(image.sort_order) + 1}` : '',
     thumbUrl: uploadedFileThumbnailUrl(image.uploaded_file_id, 320, cacheKey)
   };
 }

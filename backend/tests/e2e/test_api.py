@@ -24,6 +24,8 @@ def api_client(
     vlm_provider=None,
     segmentation_provider=None,
     inventory_image_provider=USE_DEFAULT_PROVIDER,
+    scene_removal_provider=USE_DEFAULT_PROVIDER,
+    script_localization_provider=USE_DEFAULT_PROVIDER,
 ) -> Iterator[tuple[TestClient, Path, Settings]]:
     db_path = tmp_path / "test.sqlite3"
     settings = Settings(
@@ -38,6 +40,9 @@ def api_client(
         google_redirect_uri="http://127.0.0.1:8000/api/auth/google/callback",
         storage_root=tmp_path / "uploads",
         script_audio_root=tmp_path / "audio",
+        script_localization_provider=(
+            "disabled" if script_localization_provider is USE_DEFAULT_PROVIDER else "subprocess"
+        ),
         inventory_image_provider=(
             "disabled" if inventory_image_provider is None else "comfyui"
         ),
@@ -49,6 +54,12 @@ def api_client(
         segmentation_provider=segmentation_provider,
         inventory_image_provider=(
             None if inventory_image_provider is USE_DEFAULT_PROVIDER else inventory_image_provider
+        ),
+        scene_removal_provider=(
+            None if scene_removal_provider is USE_DEFAULT_PROVIDER else scene_removal_provider
+        ),
+        script_localization_provider=(
+            None if script_localization_provider is USE_DEFAULT_PROVIDER else script_localization_provider
         ),
     )
 
@@ -456,18 +467,34 @@ def test_scene_background_frame_can_be_updated_and_drives_representative_image(t
             ],
         )
         scene = client.post(f"/api/uploads/batches/{upload_response.json()['id']}/process-scene").json()["scene"]
+        manifest_path = (
+            settings.storage_root
+            / settings.organization_id
+            / "derived"
+            / "scenes"
+            / str(scene["id"])
+            / "preview"
+            / "manifest.json"
+        )
+        first_preview_response = client.get(f"/api/scenes/{scene['id']}/preview-data")
+        cached_manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
         patch_response = client.patch(
             f"/api/scenes/{scene['id']}",
             json={"background_frame_index": 1},
         )
         preview_response = client.get(f"/api/scenes/{scene['id']}/preview-data")
 
+    assert first_preview_response.status_code == 200
+    assert manifest_path.exists()
+    assert cached_manifest["manifest"]["background_frame_index"] == 0
     assert patch_response.status_code == 200
     updated_scene = patch_response.json()
     assert updated_scene["background_frame_index"] == 1
     assert updated_scene["representative_uploaded_file_id"] == updated_scene["images"][1]["uploaded_file_id"]
     assert preview_response.status_code == 200
     assert preview_response.json()["background_frame_index"] == 1
+    refreshed_manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    assert refreshed_manifest["manifest"]["background_frame_index"] == 1
 
 
 def test_images_can_be_listed_moved_and_reordered_manually(tmp_path):
@@ -1313,6 +1340,78 @@ def test_script_review_audio_upload_creates_candidate_and_processed_file(tmp_pat
     assert content_response.content
 
 
+def test_new_script_lines_queue_auto_translation_and_tts_generation(tmp_path):
+    fake_localization = FakeScriptLocalizationProvider()
+    with api_client(tmp_path, script_localization_provider=fake_localization) as (client, db_path, settings):
+        authenticate(client, db_path, settings, role="admin")
+
+        create_response = client.post(
+            "/api/script-lines",
+            json={
+                "source_text": "Look at the nightstand",
+                "path_text": "ROOMS / BEDROOM",
+                "translations": [
+                    {"language": "fr", "text": "Regarde la table de nuit", "review_status": "needs_review"}
+                ],
+            },
+        )
+        assert create_response.status_code == 201
+        created_line = create_response.json()
+
+        active_job_response = client.get(f"/api/script-lines/{created_line['line_id']}/jobs/active")
+        assert active_job_response.status_code == 200
+        active_job = active_job_response.json()
+        assert active_job is not None
+
+        completed_job = wait_for_job(client, active_job["id"])
+        detail_response = client.get(f"/api/script-lines/{created_line['line_id']}")
+
+    assert completed_job["status"] == "succeeded"
+    detail = detail_response.json()
+    translations = {item["language"]: item for item in detail["translations"]}
+    assert translations["fr"]["text"] == "Regarde la table de nuit"
+    assert translations["es"]["text"] == "Mira la mesita de noche"
+    assert translations["en"]["text"] == "Look at the nightstand"
+    tts_candidates = [candidate for candidate in detail["audio_candidates"] if candidate["source_type"] == "tts"]
+    assert {candidate["language"] for candidate in tts_candidates} >= {"en", "es", "fr"}
+    assert all(candidate["relative_path"].endswith(".ogg") for candidate in tts_candidates if candidate["relative_path"])
+
+
+def test_script_line_generate_tts_endpoint_uses_current_translation(tmp_path):
+    fake_localization = FakeScriptLocalizationProvider()
+    with api_client(tmp_path, script_localization_provider=fake_localization) as (client, db_path, settings):
+        authenticate(client, db_path, settings, role="admin")
+        create_script_audio_fixture(settings.script_audio_root)
+        assert client.post("/api/admin/import-script-audio", json={}).status_code == 200
+
+        update_response = client.patch(
+            "/api/script-lines/1/translations/fr",
+            json={
+                "text": "Bonjour le monde",
+                "review_status": "approved",
+                "notes": "",
+            },
+        )
+        assert update_response.status_code == 200
+
+        generate_response = client.post(
+            "/api/script-lines/1/generate-tts",
+            json={"language": "fr"},
+        )
+        assert generate_response.status_code == 201
+        candidate = generate_response.json()["candidate"]
+        detail_response = client.get("/api/script-lines/1")
+
+    assert candidate["language"] == "fr"
+    assert candidate["source_type"] == "tts"
+    assert candidate["relative_path"].endswith(".ogg")
+    fr_candidates = [
+        item for item in detail_response.json()["audio_candidates"]
+        if item["language"] == "fr" and item["source_type"] == "tts"
+    ]
+    assert any(item["relative_path"].endswith(".ogg") for item in fr_candidates)
+
+
 def test_scene_vlm_analysis_updates_description_and_adds_missing_draft_objects(tmp_path):
     fake_vlm = FakeVlmProvider()
     with api_client(tmp_path, vlm_provider=fake_vlm) as (client, db_path, settings):
@@ -1430,7 +1529,9 @@ def test_scene_object_prompts_can_be_reviewed_extracted_and_removed(tmp_path):
     changed_result = json.loads(changed_extract_job["result_json"])
     assert fake_segmentation.prompt_calls[-1] == ["bed with covers and pillow plus blanket"]
     assert changed_result["created_candidate_count"] == 1
-    assert len(changed_detail_response.json()["objects"][0]["masks"]) == 2
+    changed_masks = changed_detail_response.json()["objects"][0]["masks"]
+    assert len(changed_masks) == 1
+    assert changed_masks[0]["prompt_text"] == "bed with covers and pillow plus blanket"
     assert delete_response.status_code == 204
     assert deleted_detail_response.json()["objects"] == []
 
@@ -1803,7 +1904,12 @@ def test_scene_inventory_images_can_be_generated_for_keyboard_targets(tmp_path):
         ).json()["scene"]
         scene_object = client.post(
             f"/api/scenes/{scene['id']}/objects",
-            json={"name": "clock", "description": "alarm clock", "prompt": "clock"},
+            json={
+                "name": "clock",
+                "description": "alarm clock",
+                "prompt": "clock",
+                "inventory_image_prompt": "storybook brass alarm clock icon",
+            },
         ).json()
         client.patch(
             f"/api/scenes/{scene['id']}/objects/{scene_object['id']}",
@@ -1821,11 +1927,138 @@ def test_scene_inventory_images_can_be_generated_for_keyboard_targets(tmp_path):
         assert payload["generated_count"] == 1
         assert payload["skipped_count"] == 0
         assert payload["updated_object_ids"] == [scene_object["id"]]
+        assert payload["failed_object_ids"] == []
         generated_scene_object = payload["scene"]["objects"][0]
+        assert generated_scene_object["inventory_image_prompt"] == "storybook brass alarm clock icon"
         assert generated_scene_object["inventory_image_relative_path"].endswith("generated.png")
+        assert generated_scene_object["inventory_image_failed"] is False
         assert fake_inventory.calls[0]["object_name"] == "clock"
-        assert fake_inventory.calls[0]["object_description"] == "alarm clock"
+        assert fake_inventory.calls[0]["object_description"] == "storybook brass alarm clock icon"
         thumbnail_response = client.get(f"/api/scene-objects/{scene_object['id']}/thumbnail")
+        assert thumbnail_response.status_code == 200
+        assert thumbnail_response.content.startswith(b"\x89PNG")
+
+
+def test_single_object_inventory_image_generation_uses_updated_inventory_prompt(tmp_path):
+    fake_segmentation = FakeSegmentationProvider()
+    fake_inventory = FakeInventoryImageProvider()
+    with api_client(
+        tmp_path,
+        segmentation_provider=fake_segmentation,
+        inventory_image_provider=fake_inventory,
+    ) as (client, db_path, settings):
+        authenticate(client, db_path, settings, role="user")
+        upload_response = client.post(
+            "/api/uploads/batches",
+            files=[("files", ("bedroom.png", png_bytes(draw_flower=True), "image/png"))],
+        )
+        scene = client.post(
+            f"/api/uploads/batches/{upload_response.json()['id']}/process-scene"
+        ).json()["scene"]
+        scene_object = client.post(
+            f"/api/scenes/{scene['id']}/objects",
+            json={"name": "nightstand", "description": "small table", "prompt": "nightstand"},
+        ).json()
+        updated_object = client.patch(
+            f"/api/scenes/{scene['id']}/objects/{scene_object['id']}",
+            json={
+                "prompt": "nightstand",
+                "keyboard_target_enabled": True,
+                "inventory_image_prompt": "storybook bedside table icon",
+            },
+        ).json()
+        assert updated_object["inventory_image_prompt"] == "storybook bedside table icon"
+
+        wait_for_job(client, client.post(f"/api/scenes/{scene['id']}/extract-masks").json()["id"])
+        response = client.post(
+            f"/api/scenes/{scene['id']}/objects/{scene_object['id']}/generate-inventory-image"
+        )
+
+        assert response.status_code == 200
+        payload = response.json()
+        assert payload["status"] == "generated"
+        assert payload["scene_object"]["inventory_image_relative_path"].endswith("generated.png")
+        assert fake_inventory.calls[-1]["object_description"] == "storybook bedside table icon"
+
+
+def test_scene_pickup_frames_can_be_generated_for_keyboard_targets(tmp_path):
+    fake_segmentation = FakeSegmentationProvider()
+    fake_removal = FakeInventoryImageProvider()
+    with api_client(
+        tmp_path,
+        segmentation_provider=fake_segmentation,
+        scene_removal_provider=fake_removal,
+    ) as (client, db_path, settings):
+        authenticate(client, db_path, settings, role="user")
+        upload_response = client.post(
+            "/api/uploads/batches",
+            files=[("files", ("bedroom.png", png_bytes(draw_flower=True), "image/png"))],
+        )
+        scene = client.post(
+            f"/api/uploads/batches/{upload_response.json()['id']}/process-scene"
+        ).json()["scene"]
+        scene_object = client.post(
+            f"/api/scenes/{scene['id']}/objects",
+            json={"name": "clock", "description": "alarm clock", "prompt": "clock"},
+        ).json()
+        client.patch(
+            f"/api/scenes/{scene['id']}/objects/{scene_object['id']}",
+            json={"prompt": "clock", "keyboard_target_enabled": True},
+        )
+        wait_for_job(client, client.post(f"/api/scenes/{scene['id']}/extract-masks").json()["id"])
+
+        response = client.post(f"/api/scenes/{scene['id']}/generate-removal-frames")
+
+        assert response.status_code == 200
+        payload = response.json()
+        assert payload["generated_count"] == 1
+        assert payload["skipped_count"] == 0
+        assert payload["failed_object_ids"] == []
+        generated_uploaded_file_id = payload["generated_uploaded_file_ids"][0]
+        updated_scene = payload["scene"]
+        assert len(updated_scene["images"]) == 2
+        generated_object = updated_scene["objects"][0]
+        assert any(int(mask["uploaded_file_id"]) == int(generated_uploaded_file_id) for mask in generated_object["masks"])
+        assert fake_removal.calls[-1]["object_description"] == "clock"
+
+
+def test_invalid_generated_inventory_image_falls_back_to_mask_thumbnail(tmp_path):
+    fake_segmentation = FakeSegmentationProvider()
+    bad_inventory = BrokenInventoryImageProvider()
+    with api_client(
+        tmp_path,
+        segmentation_provider=fake_segmentation,
+        inventory_image_provider=bad_inventory,
+    ) as (client, db_path, settings):
+        authenticate(client, db_path, settings, role="user")
+        upload_response = client.post(
+            "/api/uploads/batches",
+            files=[("files", ("bedroom.png", png_bytes(draw_flower=True), "image/png"))],
+        )
+        scene = client.post(
+            f"/api/uploads/batches/{upload_response.json()['id']}/process-scene"
+        ).json()["scene"]
+        scene_object = client.post(
+            f"/api/scenes/{scene['id']}/objects",
+            json={"name": "nightstand", "description": "small table", "prompt": "nightstand"},
+        ).json()
+        client.patch(
+            f"/api/scenes/{scene['id']}/objects/{scene_object['id']}",
+            json={"prompt": "nightstand", "keyboard_target_enabled": True, "sort_order": 1},
+        )
+        wait_for_job(client, client.post(f"/api/scenes/{scene['id']}/extract-masks").json()["id"])
+
+        response = client.post(f"/api/scenes/{scene['id']}/generate-inventory-images")
+        scene_detail = client.get(f"/api/scenes/{scene['id']}")
+        thumbnail_response = client.get(f"/api/scene-objects/{scene_object['id']}/thumbnail")
+
+        assert response.status_code == 200
+        payload = response.json()
+        assert payload["generated_count"] == 0
+        assert payload["failed_object_ids"] == [scene_object["id"]]
+        generated_scene_object = payload["scene"]["objects"][0]
+        assert generated_scene_object["inventory_image_failed"] is True
+        assert scene_detail.json()["objects"][0]["inventory_image_failed"] is True
         assert thumbnail_response.status_code == 200
         assert thumbnail_response.content.startswith(b"\x89PNG")
 
@@ -2090,7 +2323,7 @@ def test_object_masks_can_be_combined_and_cleared(tmp_path):
         assert cleared.convert("L").getbbox() is None
 
 
-def test_mask_extraction_generates_default_animation_for_new_motion_masks(tmp_path):
+def test_mask_extraction_does_not_generate_default_animation_for_new_motion_masks(tmp_path):
     fake_segmentation = FakeMovingSegmentationProvider()
     with api_client(
         tmp_path,
@@ -2117,13 +2350,10 @@ def test_mask_extraction_generates_default_animation_for_new_motion_masks(tmp_pa
 
     assert extract_job["status"] == "succeeded"
     result = json.loads(extract_job["result_json"])
-    assert result["generated_animation_count"] == 1
+    assert result["generated_animation_count"] == 0
     assert animations_response.status_code == 200
     animations = animations_response.json()
-    assert len(animations) == 1
-    assert animations[0]["name"] == "Generated motion"
-    assert animations[0]["segments"][0]["start_frame"] == 0
-    assert animations[0]["segments"][0]["end_frame"] == 1
+    assert animations == []
 
 
 def test_admin_can_reset_workspace_tables_without_removing_users_or_session(tmp_path):
@@ -2323,6 +2553,91 @@ class FakeInventoryImageProvider:
         )
         output_path.parent.mkdir(parents=True, exist_ok=True)
         Image.new("RGBA", (64, 64), (240, 230, 200, 255)).save(output_path)
+
+
+class BrokenInventoryImageProvider:
+    async def generate_inventory_image(
+        self,
+        *,
+        rendered_input_path: Path,
+        object_name: str,
+        object_description: str,
+        output_path: Path,
+    ) -> None:
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        output_path.write_bytes(b"")
+
+
+class FakeScriptLocalizationProvider:
+    target_languages = ("en", "es", "fr")
+
+    async def localize_line(
+        self,
+        line_id: int,
+        source_text: str,
+        path_parts: list[str],
+        existing_translations: dict[str, str],
+        progress_callback=None,
+    ) -> dict:
+        del path_parts
+        working_root = Path(f"/tmp/fake-script-localization-{line_id}")
+        working_root.mkdir(parents=True, exist_ok=True)
+        translations = [
+            {
+                "language": "en",
+                "text": source_text,
+                "source": "source_text",
+                "meta": {},
+            },
+            {
+                "language": "fr",
+                "text": existing_translations.get("fr") or "Regarde la table de nuit",
+                "source": "existing",
+                "meta": {},
+            },
+            {
+                "language": "es",
+                "text": "Mira la mesita de noche",
+                "source": "ollama_auto",
+                "meta": {"model": "fake"},
+            },
+        ]
+        if progress_callback is not None:
+            maybe = progress_callback(1, 5, "Translated ES")
+            if maybe is not None:
+                await maybe
+        audio_outputs = []
+        for index, language in enumerate(("en", "fr", "es"), start=2):
+            wav_path = working_root / f"{language}.wav"
+            wav_path.write_bytes(wav_bytes())
+            audio_outputs.append({"language": language, "wav_path": wav_path})
+            if progress_callback is not None:
+                maybe = progress_callback(index, 5, f"Generated {language.upper()} audio")
+                if maybe is not None:
+                    await maybe
+        return {
+            "translations": translations,
+            "audio_outputs": audio_outputs,
+            "errors": [],
+            "working_root": working_root,
+        }
+
+    async def generate_tts(
+        self,
+        line_id: int,
+        language: str,
+        text: str,
+    ) -> dict:
+        working_root = Path(f"/tmp/fake-script-tts-{line_id}-{language}")
+        working_root.mkdir(parents=True, exist_ok=True)
+        wav_path = working_root / f"{language}.wav"
+        wav_path.write_bytes(wav_bytes())
+        return {
+            "language": language,
+            "text": text,
+            "wav_path": wav_path,
+            "working_root": working_root,
+        }
 
 
 def png_bytes(draw_flower: bool) -> bytes:

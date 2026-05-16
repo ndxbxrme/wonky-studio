@@ -89,6 +89,9 @@
                 <div class="image-library-card__meta">
                   <strong>{{image.original_filename}}</strong>
                   <p>{{image.sceneLabel}}</p>
+                  {{#if image.scene_id}}
+                    <p>{{image.frameLabel}}</p>
+                  {{/if}}
                   {{#if image.width}}
                     <p>{{image.width}} × {{image.height}}</p>
                   {{/if}}

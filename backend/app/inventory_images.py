@@ -4,7 +4,7 @@ import copy
 import json
 import uuid
 from pathlib import Path
-from typing import Any, Protocol
+from typing import Any, Callable, Protocol
 
 import httpx
 
@@ -35,12 +35,16 @@ class ComfyUiInventoryImageProvider:
         comfy_input_root: str,
         output_root: Path,
         timeout_seconds: float,
+        prompt_builder: Callable[[str, str], str],
+        filename_prefix_root: str,
     ) -> None:
         self.comfy_url = comfy_url.rstrip("/")
         self.workflow_path = workflow_path
         self.comfy_input_root = comfy_input_root.rstrip("/\\")
         self.output_root = output_root
         self.timeout_seconds = timeout_seconds
+        self.prompt_builder = prompt_builder
+        self.filename_prefix_root = filename_prefix_root.strip("/\\")
         self.client_id = f"wonky-studio-inventory-{uuid.uuid4().hex}"
         self.workflow_template = json.loads(self.workflow_path.read_text(encoding="utf-8"))
 
@@ -57,8 +61,8 @@ class ComfyUiInventoryImageProvider:
         input_node = _find_node_id(prompt, class_type="LoadImage")
         output_node = _find_node_id(prompt, class_type="SaveImage")
 
-        generated_prefix = f"inventory/{_safe_inventory_name(object_name)}_{uuid.uuid4().hex[:10]}"
-        prompt[positive_node]["inputs"]["text"] = _inventory_prompt(object_name, object_description)
+        generated_prefix = f"{self.filename_prefix_root}/{_safe_inventory_name(object_name)}_{uuid.uuid4().hex[:10]}"
+        prompt[positive_node]["inputs"]["text"] = self.prompt_builder(object_name, object_description)
         prompt[input_node]["inputs"]["image"] = _comfy_visible_input_path(
             self.comfy_input_root,
             rendered_input_path,
@@ -124,6 +128,29 @@ def build_inventory_image_provider(settings: Settings) -> InventoryImageProvider
             comfy_input_root=settings.inventory_image_comfy_input_root,
             output_root=settings.inventory_image_output_root,
             timeout_seconds=settings.inventory_image_timeout_seconds,
+            prompt_builder=_inventory_prompt,
+            filename_prefix_root="inventory",
+        )
+    raise ValueError(f"Unsupported inventory image provider: {settings.inventory_image_provider}")
+
+
+def build_scene_removal_provider(settings: Settings) -> InventoryImageProvider | None:
+    provider = settings.inventory_image_provider.strip().lower()
+    if provider in {"", "none", "disabled"}:
+        return None
+    if provider == "comfyui":
+        if not settings.scene_removal_workflow_path.exists():
+            raise ValueError(
+                f"Scene removal workflow file was not found: {settings.scene_removal_workflow_path}"
+            )
+        return ComfyUiInventoryImageProvider(
+            comfy_url=settings.inventory_image_comfy_url,
+            workflow_path=settings.scene_removal_workflow_path,
+            comfy_input_root=settings.inventory_image_comfy_input_root,
+            output_root=settings.inventory_image_output_root,
+            timeout_seconds=settings.inventory_image_timeout_seconds,
+            prompt_builder=_scene_removal_prompt,
+            filename_prefix_root="scene-removals",
         )
     raise ValueError(f"Unsupported inventory image provider: {settings.inventory_image_provider}")
 
@@ -143,6 +170,15 @@ def _inventory_prompt(object_name: str, object_description: str) -> str:
         "cream background. Miniature scale, tactile handcrafted realism, soft studio lighting, gentle shadows, "
         "warm color palette, slightly worn materials, charming storybook feel. Clean readable silhouette, "
         "game asset, inventory icon, high detail, no text, no labels, no extra objects, no hands, no clutter."
+    )
+
+
+def _scene_removal_prompt(object_name: str, object_description: str) -> str:
+    subject = (object_description or object_name).strip() or object_name.strip() or "object"
+    return (
+        f"Please remove the {subject} from this scene, keeping everything else intact. "
+        "Preserve the original composition, lighting, materials, perspective, and handcrafted storybook aesthetic. "
+        "Fill in the missing background naturally and seamlessly. No new objects, no text, no labels, no framing changes."
     )
 
 
