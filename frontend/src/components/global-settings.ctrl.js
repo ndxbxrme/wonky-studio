@@ -1,4 +1,5 @@
 import {apiFetch, globalSettingsAssetUrl} from '../api.js';
+import {applyStatus} from '../status.js';
 import {user} from '../state/user.js';
 
 const KEY_CODE_OPTIONS = [
@@ -22,6 +23,8 @@ const GlobalSettingsCtrl = app => async () => {
     status: '',
     isEditingVerb: false,
     verbSubmitLabel: 'Add verb',
+    hasVerbs: false,
+    hasOverlayBindings: false,
     hasVerbTagBackground: false,
     hasInventoryBackground: false,
     verbTagBackgroundUrl: '',
@@ -68,6 +71,8 @@ const GlobalSettingsCtrl = app => async () => {
             .join(' · '),
           isSelected: Number(verb.id) === Number(this.selectedVerbId)
         }));
+      this.hasVerbs = this.verbs.length > 0;
+      this.hasOverlayBindings = this.overlayBindings.length > 0;
       if (!this.verbs.some(verb => Number(verb.id) === Number(this.selectedVerbId))) {
         this.selectedVerbId = null;
       }
@@ -297,7 +302,7 @@ const GlobalSettingsCtrl = app => async () => {
     setStatus(message) {
       this.status = message;
       const status = this.root?.querySelector('[data-global-settings-status]');
-      if (status) status.textContent = message;
+      applyStatus(status, message);
     }
   };
 

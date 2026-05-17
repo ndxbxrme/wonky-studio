@@ -1,0 +1,61 @@
+<main class="scene-layout" data-system-health-page>
+  <nav class="app-topbar" aria-label="Primary">
+    <a class="app-topbar__brand" href="/">Wonky Studio</a>
+    <div class="app-topbar__links">
+      <a class="app-topbar__link" href="/"><span class="ui-icon" data-icon="clapperboard"></span><span>Scenes</span></a>
+      <a class="app-topbar__link" href="/images"><span class="ui-icon" data-icon="images"></span><span>Images</span></a>
+      <a class="app-topbar__link" href="/script-review"><span class="ui-icon" data-icon="captions"></span><span>Transcript library</span></a>
+      <a class="app-topbar__link" href="/audio-library"><span class="ui-icon" data-icon="audio-lines"></span><span>Audio library</span></a>
+      <a class="app-topbar__link" href="/global-settings"><span class="ui-icon" data-icon="settings-2"></span><span>Global settings</span></a>
+      <a class="app-topbar__link" href="/system-health"><span class="ui-icon" data-icon="activity"></span><span>Health</span></a>
+      <button class="app-topbar__link app-topbar__link--primary" type="button" data-action="open-game-preview"><span class="ui-icon" data-icon="play"></span><span>Preview game</span></button>
+    </div>
+  </nav>
+
+  <header class="scene-header">
+    <div>
+      <a class="back-link" href="/">Home</a>
+      <p class="eyebrow">Runtime</p>
+      <h1>System health</h1>
+      <p>Check whether the local AI and media services the artists rely on are reachable.</p>
+    </div>
+    <div class="scene-header__actions">
+      <button class="button secondary compact" type="button" data-action="refresh-health">Refresh</button>
+      <p class="form-status" data-system-health-status aria-live="polite">{{status}}</p>
+    </div>
+  </header>
+
+  <section class="actions-panel">
+    <div class="actions-panel__header">
+      <div>
+        <p class="eyebrow">Dependencies</p>
+        <h2>Service checks</h2>
+      </div>
+      <span class="status-pill status-pill--{{overallStatus}}">{{overallStatus}}</span>
+    </div>
+    {{#if hasDependencies}}
+      <div class="system-health-list">
+        {{#each dependencies as dependency}}
+          <article class="system-health-card system-health-card--{{dependency.status}}">
+            <div class="system-health-card__header">
+              <strong>{{dependency.label}}</strong>
+              <span class="status-pill status-pill--{{dependency.status}}">{{dependency.status}}</span>
+            </div>
+            <p>{{dependency.detail}}</p>
+          </article>
+        {{/each}}
+      </div>
+    {{/if}}
+    {{#if not hasDependencies}}
+      <div class="editor-empty-state editor-empty-state--compact">
+        <strong>Checking services...</strong>
+        {{#if hasChecked}}
+          <p>No service checks were returned.</p>
+        {{/if}}
+        {{#if not hasChecked}}
+          <p>Fetching the current status of the local AI and media tools.</p>
+        {{/if}}
+      </div>
+    {{/if}}
+  </section>
+</main>

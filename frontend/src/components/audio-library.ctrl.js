@@ -1,4 +1,5 @@
 import {apiFetch, audioAssetUrl} from '../api.js';
+import {applyStatus} from '../status.js';
 import {user} from '../state/user.js';
 
 const AudioLibraryCtrl = app => async () => {
@@ -123,7 +124,7 @@ const AudioLibraryCtrl = app => async () => {
     setStatus(message) {
       this.status = message;
       const status = this.root?.querySelector('[data-audio-library-status]');
-      if (status) status.textContent = message;
+      applyStatus(status, message);
     }
   };
 

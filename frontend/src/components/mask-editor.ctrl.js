@@ -1,4 +1,5 @@
 import {apiFetch} from '../api.js';
+import {applyStatus} from '../status.js';
 import {
   findScene,
   loadScene,
@@ -31,10 +32,10 @@ const MaskEditorCtrl = app => async params => {
     async postLoad() {
       this.root = document.querySelector('[data-mask-editor-page]');
       this.editor = this.root?.querySelector('wonky-mask-editor');
-      this.bind(this.editor, 'navigate-mask', event => this.navigateMask(event));
       this.bind(this.editor, 'editor-message', event => this.setStatus(event.detail.message ?? ''));
       this.bind(this.editor, 'save-mask', event => this.saveMask(event));
       this.bind(this.editor, 'process-mask', event => this.processMask(event));
+      this.bind(this.editor, 'set-default-frame', event => this.setDefaultFrame(event));
       this.bind(window, 'keydown', event => this.onKeyDown(event));
       await this.configureEditor();
     },
@@ -73,11 +74,7 @@ const MaskEditorCtrl = app => async params => {
 
     setStatus(message) {
       const status = document.querySelector('[data-editor-status]');
-      if (status) status.textContent = message;
-    },
-
-    navigateMask(event) {
-      app.goto(`/mask-editor/${this.sceneId}/${this.objectId}/${event.detail.maskId}`);
+      applyStatus(status, message);
     },
 
     onKeyDown(event) {
@@ -99,7 +96,7 @@ const MaskEditorCtrl = app => async params => {
     },
 
     async saveMask(event) {
-      if (!this.editor || !this.currentMask) return;
+      if (!this.editor || !event?.detail?.uploadedFileId) return;
       this.setStatus(event.detail.applyAll ? 'Saving edits to all frames...' : 'Saving mask...');
       try {
         if (event.detail.applyAll) {
@@ -108,10 +105,20 @@ const MaskEditorCtrl = app => async params => {
             await uploadMaskBlob(edit.mask.id, edit.blob);
           }
         } else {
-          await uploadMaskBlob(this.currentMask.id, await this.editor.exportCurrentBlob());
+          let maskId = Number(event.detail.maskId ?? 0);
+          if (!maskId) {
+            const createdMask = await apiFetch(`/api/scenes/${this.sceneId}/objects/${this.objectId}/masks`, {
+              method: 'POST',
+              body: JSON.stringify({
+                uploaded_file_id: Number(event.detail.uploadedFileId)
+              })
+            });
+            maskId = Number(createdMask.id);
+          }
+          this.maskId = maskId;
+          await uploadMaskBlob(maskId, await this.editor.exportCurrentBlob());
         }
         await this.refreshScene();
-        app.refresh();
         await this.configureEditor();
         notifyScenePreview(this.sceneId, 'mask-updated');
         this.setStatus('Saved.');
@@ -121,7 +128,7 @@ const MaskEditorCtrl = app => async params => {
     },
 
     async processMask(event) {
-      if (!this.currentMask) return;
+      if (!event?.detail?.maskId) return;
       const operationLabels = {
         grow: 'Growing mask...',
         fill_holes: 'Filling holes...',
@@ -133,7 +140,8 @@ const MaskEditorCtrl = app => async params => {
       const label = operationLabels[event.detail.operation] ?? 'Processing mask...';
       this.setStatus(event.detail.applyAll ? `${label} Applying to all frames...` : label);
       try {
-        await apiFetch(`/api/object-masks/${this.currentMask.id}/process`, {
+        this.maskId = Number(event.detail.maskId);
+        await apiFetch(`/api/object-masks/${this.maskId}/process`, {
           method: 'POST',
           body: JSON.stringify({
             operation: event.detail.operation,
@@ -142,12 +150,31 @@ const MaskEditorCtrl = app => async params => {
           })
         });
         await this.refreshScene();
-        app.refresh();
         await this.configureEditor();
         notifyScenePreview(this.sceneId, 'mask-updated');
         this.setStatus('Mask operation complete.');
       } catch {
         this.setStatus('Could not process mask.');
+      }
+    },
+
+    async setDefaultFrame(event) {
+      if (!this.object || !event?.detail?.uploadedFileId) return;
+      this.setStatus('Setting default frame...');
+      try {
+        if (event.detail.maskId) this.maskId = Number(event.detail.maskId);
+        await apiFetch(`/api/scenes/${this.sceneId}/objects/${this.objectId}/default-frame`, {
+          method: 'POST',
+          body: JSON.stringify({
+            uploaded_file_id: Number(event.detail.uploadedFileId)
+          })
+        });
+        await this.refreshScene();
+        await this.configureEditor();
+        notifyScenePreview(this.sceneId, 'object-updated');
+        this.setStatus('Default frame updated.');
+      } catch {
+        this.setStatus('Could not update the default frame.');
       }
     }
   };

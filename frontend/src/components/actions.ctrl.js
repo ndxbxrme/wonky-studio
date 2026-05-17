@@ -1,4 +1,5 @@
 import {apiFetch, scriptAudioCandidateUrl} from '../api.js';
+import {applyStatus} from '../status.js';
 import {findScene, loadScene, replaceScene} from '../state/scenes.js';
 import {notifyScenePreview, openScenePreview} from '../preview-sync.js';
 import {user} from '../state/user.js';
@@ -76,6 +77,7 @@ const ActionsCtrl = app => async params => {
     variableSubmitLabel: 'Add variable',
     editorReady: false,
     editorMissing: false,
+    editorLoadError: '',
     unloadHandlers: [],
 
     async postLoad() {
@@ -99,6 +101,7 @@ const ActionsCtrl = app => async params => {
 
     async refreshData() {
       try {
+        this.editorLoadError = '';
         this.scene = replaceScene(await loadScene(this.sceneId));
         this.sceneOptions = [{
           id: this.scene.id,
@@ -124,9 +127,12 @@ const ActionsCtrl = app => async params => {
           this.selectedInteractionId = this.interactions[0]?.id ?? null;
         }
         this.prepareState();
-      } catch {
+      } catch (error) {
         this.editorReady = false;
-        this.editorMissing = true;
+        this.editorMissing = error?.response?.status === 404;
+        this.editorLoadError = this.editorMissing
+          ? ''
+          : 'Could not load the actions editor. Please refresh and try again.';
       }
     },
 
@@ -516,7 +522,7 @@ const ActionsCtrl = app => async params => {
     setStatus(message) {
       this.status = message;
       const status = this.root?.querySelector('[data-actions-status]');
-      if (status) status.textContent = message;
+      applyStatus(status, message);
     },
 
     prepareSceneNavigation() {
@@ -572,6 +578,10 @@ const ActionsCtrl = app => async params => {
       const targetObjectField = form.querySelector('[data-form-field="target-object"]');
       if (targetObjectField && selectedType === 'go_to_frame' && targetScope === 'background') {
         targetObjectField.hidden = true;
+      }
+      const frameIndexField = form.querySelector('[data-form-field="frame-index"]');
+      if (frameIndexField && selectedType === 'go_to_frame' && targetScope === 'pickup_background') {
+        frameIndexField.hidden = true;
       }
       form.querySelectorAll('[data-property-visible-for]').forEach(field => {
         const visibleFor = (field.dataset.propertyVisibleFor ?? '').split(/\s+/);
@@ -702,10 +712,14 @@ function readActionStepForm(form) {
     const step = {
       type,
       target_scope: targetScope,
-      frame_index: Number(formData.get('frame_index') || 0),
       wait
     };
     if (targetScope === 'object') {
+      step.frame_index = Number(formData.get('frame_index') || 0);
+      step.target_object_id = Number(formData.get('target_object_id'));
+    } else if (targetScope === 'background') {
+      step.frame_index = Number(formData.get('frame_index') || 0);
+    } else if (targetScope === 'pickup_background') {
       step.target_object_id = Number(formData.get('target_object_id'));
     }
     return step;
@@ -982,7 +996,13 @@ function actionMeta(step) {
   if (step.type === 'play_audio') return `audio lines ${step.script_line_ids?.join(', ')}`;
   if (step.type === 'show_subtitle') return `subtitle lines ${step.script_line_ids?.join(', ')}`;
   if (step.type === 'go_to_frame') {
-    return `${step.target_scope === 'background' ? 'background' : `object ${step.target_object_id}`} · frame ${step.frame_index}`;
+    if (step.target_scope === 'background') {
+      return `background · frame ${step.frame_index}`;
+    }
+    if (step.target_scope === 'pickup_background') {
+      return `pickup background · object ${step.target_object_id}`;
+    }
+    return `object ${step.target_object_id} · frame ${step.frame_index}`;
   }
   if (step.type === 'set_object_property') return `${step.property} = ${step.value}`;
   if (step.type === 'set_variable') return `variable ${step.variable_id} = ${step.value}`;
@@ -1006,7 +1026,7 @@ function actionMeta(step) {
 function actionTypeHelp(type) {
   return {
     play_animation: 'Uses the animation picker. Mode controls queued vs immediate playback.',
-    go_to_frame: 'Uses a target scope plus a raw frame index from this scene. Background changes the scene backdrop.',
+    go_to_frame: 'Object/background use a raw frame index. Pickup background jumps to the linked removal frame for the selected object.',
     set_object_property: 'Uses target object, property, and value fields.',
     show_subtitle: 'Uses script line IDs and duration. Search below and add matching lines.',
     play_audio: 'Uses script line IDs. Search below and add matching lines.',

@@ -1,4 +1,5 @@
 import {apiFetch} from '../api.js';
+import {applyStatus} from '../status.js';
 import {
   findScene,
   loadScene,
@@ -82,9 +83,21 @@ const SceneCtrl = app => async params => {
         return;
       }
 
+      const objectInventoryButton = event.target.closest('[data-action="generate-object-inventory-image"]');
+      if (objectInventoryButton) {
+        await this.generateInventoryImageForObject(objectInventoryButton);
+        return;
+      }
+
       const removalButton = event.target.closest('[data-action="generate-removal-frames"]');
       if (removalButton) {
         await this.generateRemovalFrames(removalButton);
+        return;
+      }
+
+      const objectRemovalButton = event.target.closest('[data-action="generate-object-removal-frame"]');
+      if (objectRemovalButton) {
+        await this.generateRemovalFrameForObject(objectRemovalButton);
         return;
       }
 
@@ -215,7 +228,122 @@ const SceneCtrl = app => async params => {
 
     setStatus(selector, message) {
       const status = document.querySelector(selector);
-      if (status) status.textContent = message;
+      applyStatus(status, message);
+    },
+
+    objectActionStatusSelector(objectId) {
+      return `[data-object-action-status="${objectId}"]`;
+    },
+
+    setObjectActionStatus(objectId, message) {
+      if (!objectId) return;
+      this.setStatus(this.objectActionStatusSelector(objectId), message);
+    },
+
+    markObjectGenerationFailure(objectId, kind) {
+      const index = (this.scene?.objects ?? []).findIndex(sceneObject => Number(sceneObject.id) === Number(objectId));
+      if (index < 0) return;
+      const currentObject = this.scene.objects[index];
+      this.scene.objects[index] = {
+        ...currentObject,
+        inventory_image_failed: kind === 'inventory' ? true : Boolean(currentObject.inventory_image_failed),
+        pickup_frame_failed: kind === 'pickup' ? true : Boolean(currentObject.pickup_frame_failed)
+      };
+    },
+
+    markObjectGenerationSuccess(objectId, kind) {
+      const index = (this.scene?.objects ?? []).findIndex(sceneObject => Number(sceneObject.id) === Number(objectId));
+      if (index < 0) return;
+      const currentObject = this.scene.objects[index];
+      this.scene.objects[index] = {
+        ...currentObject,
+        inventory_image_failed: kind === 'inventory' ? false : Boolean(currentObject.inventory_image_failed),
+        pickup_frame_failed: kind === 'pickup' ? false : Boolean(currentObject.pickup_frame_failed)
+      };
+    },
+
+    formatFailedObjectSummary(failedObjects, label) {
+      const names = Array.from(failedObjects ?? [])
+        .map(item => String(item?.name || '').trim())
+        .filter(Boolean);
+      if (!names.length) return '';
+      const shown = names.slice(0, 3).join(', ');
+      const remainder = names.length - Math.min(names.length, 3);
+      return ` Failed ${label}: ${shown}${remainder > 0 ? ` and ${remainder} more` : ''}.`;
+    },
+
+    async runObjectGenerationBatch({
+      button,
+      statusSelector,
+      idleLabel,
+      progressLabel,
+      endpointForObject,
+      generationKind,
+      failedLabel,
+      unavailableMessage
+    }) {
+      const objects = Array.from(this.scene?.objects ?? []).filter(object => object.keyboard_target_enabled);
+      if (!objects.length) {
+        this.setStatus(statusSelector, 'Scene does not have any keyboard-target objects.');
+        return null;
+      }
+
+      button.disabled = true;
+      button.textContent = 'Generating...';
+      let generatedCount = 0;
+      let skippedCount = 0;
+      const failedObjects = [];
+      let currentIndex = 0;
+
+      try {
+        for (const object of objects) {
+          currentIndex += 1;
+          this.setStatus(
+            statusSelector,
+            `${progressLabel} ${currentIndex}/${objects.length}: ${object.name}...`
+          );
+          try {
+            const result = await apiFetch(endpointForObject(object), {
+              method: 'POST'
+            });
+            if (result.status === 'generated') {
+              this.markObjectGenerationSuccess(object.id, generationKind);
+              generatedCount += 1;
+            } else if (result.status === 'failed') {
+              this.markObjectGenerationFailure(object.id, generationKind);
+              failedObjects.push({id: object.id, name: object.name, error: failedLabel});
+            } else {
+              skippedCount += 1;
+            }
+          } catch (error) {
+            let detail = '';
+            try {
+              detail = error?.response ? (await error.response.clone().json()).detail ?? '' : '';
+            } catch {
+              detail = '';
+            }
+            if (error?.response?.status === 503) {
+              this.markObjectGenerationFailure(object.id, generationKind);
+              window.alert(detail || unavailableMessage);
+              failedObjects.push({id: object.id, name: object.name, error: detail || unavailableMessage});
+              break;
+            }
+            this.markObjectGenerationFailure(object.id, generationKind);
+            failedObjects.push({id: object.id, name: object.name, error: detail || failedLabel});
+          }
+        }
+
+        await this.refreshScene();
+        return {
+          generated_count: generatedCount,
+          skipped_count: skippedCount,
+          failed_object_ids: failedObjects.map(item => Number(item.id)),
+          failed_objects: failedObjects
+        };
+      } finally {
+        button.disabled = false;
+        button.textContent = idleLabel;
+      }
     },
 
     async uploadSceneImages(files) {
@@ -298,65 +426,73 @@ const SceneCtrl = app => async params => {
     },
 
     async generateInventoryImages(button) {
-      button.disabled = true;
-      button.textContent = 'Generating...';
-      this.setStatus('[data-inventory-image-status]', 'Generating inventory art for keyboard-target objects...');
       try {
-        const result = await apiFetch(`/api/scenes/${this.sceneId}/generate-inventory-images`, {
-          method: 'POST'
+        const result = await this.runObjectGenerationBatch({
+          button,
+          statusSelector: '[data-inventory-image-status]',
+          idleLabel: 'Generate inventory art',
+          progressLabel: 'Generating inventory art for keyboard-target objects',
+          endpointForObject: object => `/api/scenes/${this.sceneId}/objects/${object.id}/generate-inventory-image`,
+          generationKind: 'inventory',
+          failedLabel: 'Inventory art generation failed.',
+          unavailableMessage: 'Inventory image generator is unavailable. Please contact the administrator to turn Comfy on.'
         });
-        this.scene = replaceScene(result.scene);
-        this.sceneFound = true;
-        this.sceneMissing = false;
+        if (!result) return;
         const failedCount = Number(result.failed_object_ids?.length ?? 0);
         this.setStatus(
           '[data-inventory-image-status]',
-          `Generated ${result.generated_count} inventory image${result.generated_count === 1 ? '' : 's'}${result.skipped_count ? `, skipped ${result.skipped_count}` : ''}${failedCount ? `, failed ${failedCount}` : ''}.`
+          `Generated ${result.generated_count} inventory image${result.generated_count === 1 ? '' : 's'}${result.skipped_count ? `, skipped ${result.skipped_count}` : ''}${failedCount ? `, failed ${failedCount}` : ''}.${this.formatFailedObjectSummary(result.failed_objects, 'inventory art')}`
         );
-        button.disabled = false;
-        button.textContent = 'Generate inventory art';
-        app.refresh();
-      } catch (error) {
-        button.disabled = false;
-        button.textContent = 'Generate inventory art';
-        let detail = '';
-        try {
-          detail = error?.response ? (await error.response.clone().json()).detail ?? '' : '';
-        } catch {
-          detail = '';
-        }
-        if (error?.response?.status === 503) {
-          window.alert(detail || 'Inventory image generator is unavailable. Please contact the administrator to turn Comfy on.');
-        }
-        this.setStatus(
-          '[data-inventory-image-status]',
-          detail || 'Could not generate inventory art.'
-        );
+      } catch {
+        this.setStatus('[data-inventory-image-status]', 'Could not generate inventory art.');
       }
     },
 
     async generateRemovalFrames(button) {
-      button.disabled = true;
-      button.textContent = 'Generating...';
-      this.setStatus('[data-scene-removal-status]', 'Generating pickup frames for keyboard-target objects...');
       try {
-        const result = await apiFetch(`/api/scenes/${this.sceneId}/generate-removal-frames`, {
-          method: 'POST'
+        const result = await this.runObjectGenerationBatch({
+          button,
+          statusSelector: '[data-scene-removal-status]',
+          idleLabel: 'Generate pickup frames',
+          progressLabel: 'Generating pickup frames for keyboard-target objects',
+          endpointForObject: object => `/api/scenes/${this.sceneId}/objects/${object.id}/generate-removal-frame`,
+          generationKind: 'pickup',
+          failedLabel: 'Pickup frame generation failed.',
+          unavailableMessage: 'Inventory image generator is unavailable. Please contact the administrator to turn Comfy on.'
         });
-        this.scene = replaceScene(result.scene);
-        this.sceneFound = true;
-        this.sceneMissing = false;
+        if (!result) return;
         const failedCount = Number(result.failed_object_ids?.length ?? 0);
         this.setStatus(
           '[data-scene-removal-status]',
-          `Generated ${result.generated_count} pickup frame${result.generated_count === 1 ? '' : 's'}${result.skipped_count ? `, skipped ${result.skipped_count}` : ''}${failedCount ? `, failed ${failedCount}` : ''}.`
+          `Generated ${result.generated_count} pickup frame${result.generated_count === 1 ? '' : 's'}${result.skipped_count ? `, skipped ${result.skipped_count}` : ''}${failedCount ? `, failed ${failedCount}` : ''}.${this.formatFailedObjectSummary(result.failed_objects, 'pickup frames')}`
         );
-        button.disabled = false;
-        button.textContent = 'Generate pickup frames';
-        app.refresh();
+      } catch {
+        this.setStatus('[data-scene-removal-status]', 'Could not generate pickup frames.');
+      }
+    },
+
+    async generateInventoryImageForObject(button) {
+      const objectId = Number(button.dataset.objectId);
+      if (!objectId) return;
+      button.disabled = true;
+      this.setObjectActionStatus(objectId, 'Generating inventory art for this object...');
+      try {
+        const result = await apiFetch(`/api/scenes/${this.sceneId}/objects/${objectId}/generate-inventory-image`, {
+          method: 'POST'
+        });
+        const objectName = this.scene?.objects?.find(item => Number(item.id) === objectId)?.name ?? 'Object';
+        let statusMessage = '';
+        if (result.status === 'generated') {
+          statusMessage = `${objectName} inventory art regenerated.`;
+        } else if (result.status === 'failed') {
+          statusMessage = `${objectName} inventory art generation failed. Showing mask thumbnail instead.`;
+        } else {
+          statusMessage = `${objectName} inventory art was skipped because no usable mask render is available.`;
+        }
+        await this.refreshScene();
+        this.setObjectActionStatus(objectId, statusMessage);
+        notifyScenePreview(this.sceneId, 'object-updated');
       } catch (error) {
-        button.disabled = false;
-        button.textContent = 'Generate pickup frames';
         let detail = '';
         try {
           detail = error?.response ? (await error.response.clone().json()).detail ?? '' : '';
@@ -366,10 +502,49 @@ const SceneCtrl = app => async params => {
         if (error?.response?.status === 503) {
           window.alert(detail || 'Inventory image generator is unavailable. Please contact the administrator to turn Comfy on.');
         }
-        this.setStatus(
-          '[data-scene-removal-status]',
-          detail || 'Could not generate pickup frames.'
-        );
+        this.setObjectActionStatus(objectId, detail || 'Could not generate inventory art for this object.');
+      } finally {
+        button.disabled = false;
+      }
+    },
+
+    async generateRemovalFrameForObject(button) {
+      const objectId = Number(button.dataset.objectId);
+      if (!objectId) return;
+      button.disabled = true;
+      this.setObjectActionStatus(objectId, 'Generating a pickup frame for this object...');
+      try {
+        const result = await apiFetch(`/api/scenes/${this.sceneId}/objects/${objectId}/generate-removal-frame`, {
+          method: 'POST'
+        });
+        const objectName = this.scene?.objects?.find(item => Number(item.id) === objectId)?.name ?? 'Object';
+        let statusMessage = '';
+        if (result.status === 'generated') {
+          statusMessage = `${objectName} pickup frame generated.`;
+        } else if (result.status === 'failed') {
+          statusMessage = `${objectName} pickup frame generation failed.`;
+        } else {
+          statusMessage = `${objectName} pickup frame was skipped because no visible mask was found.`;
+        }
+        if (result.scene) {
+          this.scene = replaceScene(result.scene);
+        }
+        await this.refreshScene();
+        this.setObjectActionStatus(objectId, statusMessage);
+        notifyScenePreview(this.sceneId, 'scene-updated');
+      } catch (error) {
+        let detail = '';
+        try {
+          detail = error?.response ? (await error.response.clone().json()).detail ?? '' : '';
+        } catch {
+          detail = '';
+        }
+        if (error?.response?.status === 503) {
+          window.alert(detail || 'Inventory image generator is unavailable. Please contact the administrator to turn Comfy on.');
+        }
+        this.setObjectActionStatus(objectId, detail || 'Could not generate a pickup frame for this object.');
+      } finally {
+        button.disabled = false;
       }
     },
 
@@ -423,7 +598,7 @@ const SceneCtrl = app => async params => {
       const prompt = String(formData.get('prompt') ?? '').trim();
       const inventoryImagePrompt = String(formData.get('inventory_image_prompt') ?? '').trim();
       if (!name) return;
-      if (status) status.textContent = 'Adding object...';
+      applyStatus(status, 'Adding object...');
       try {
         await apiFetch(`/api/scenes/${this.sceneId}/objects`, {
           method: 'POST',
@@ -435,11 +610,11 @@ const SceneCtrl = app => async params => {
           })
         });
         form.reset();
-        if (status) status.textContent = '';
+        applyStatus(status, '');
         await this.refreshScene();
         notifyScenePreview(this.sceneId, 'scene-updated');
       } catch {
-        if (status) status.textContent = 'Could not add object.';
+        applyStatus(status, 'Could not add object.');
       }
     },
 
@@ -454,7 +629,7 @@ const SceneCtrl = app => async params => {
       const previousInventoryImagePrompt = String(form.dataset.inventoryImagePrompt ?? '').trim();
       const keyboardTargetEnabled = formData.get('keyboard_target_enabled') === 'on';
       if (!prompt) return;
-      if (status) status.textContent = 'Saving...';
+      applyStatus(status, 'Saving...');
       try {
         const updatedObject = await apiFetch(`/api/scenes/${this.sceneId}/objects/${objectId}`, {
           method: 'PATCH',
@@ -481,25 +656,25 @@ const SceneCtrl = app => async params => {
         }
         const inventoryPromptChanged = previousInventoryImagePrompt !== String(updatedObject.inventory_image_prompt ?? inventoryImagePrompt).trim();
         if (inventoryPromptChanged) {
-          if (status) status.textContent = 'Saved. Regenerating inventory art...';
+          applyStatus(status, 'Saved. Regenerating inventory art...');
           const generationResult = await apiFetch(
             `/api/scenes/${this.sceneId}/objects/${objectId}/generate-inventory-image`,
             {method: 'POST'}
           );
           if (generationResult.status === 'generated') {
-            if (status) status.textContent = 'Saved. Inventory art regenerated.';
+            applyStatus(status, 'Saved. Inventory art regenerated.');
           } else if (generationResult.status === 'failed') {
-            if (status) status.textContent = 'Saved. Inventory art generation failed. Showing mask thumbnail instead.';
+            applyStatus(status, 'Saved. Inventory art generation failed. Showing mask thumbnail instead.');
           } else {
-            if (status) status.textContent = 'Saved. Inventory art skipped for this object.';
+            applyStatus(status, 'Saved. Inventory art skipped for this object.');
           }
           await this.refreshScene();
         } else if (status) {
-          status.textContent = 'Saved.';
+          applyStatus(status, 'Saved.');
         }
         notifyScenePreview(this.sceneId, 'object-updated');
       } catch {
-        if (status) status.textContent = 'Could not save prompt.';
+        applyStatus(status, 'Could not save prompt.');
       }
     },
 
@@ -517,7 +692,7 @@ const SceneCtrl = app => async params => {
         notifyScenePreview(this.sceneId, 'object-updated');
       } catch {
         button.disabled = false;
-        this.setStatus('[data-object-action-status]', 'Could not remove object.');
+        this.setStatus('[data-object-list-status]', 'Could not remove object.');
       } finally {
         button.disabled = false;
       }
@@ -535,7 +710,7 @@ const SceneCtrl = app => async params => {
       const currentObject = objects[currentIndex];
       const swapObject = objects[nextIndex];
       button.disabled = true;
-      this.setStatus('[data-object-action-status]', `Moving ${currentObject.name}...`);
+      this.setStatus('[data-object-list-status]', `Moving ${currentObject.name}...`);
       try {
         await Promise.all([
           apiFetch(`/api/scenes/${this.sceneId}/objects/${currentObject.id}`, {
@@ -549,9 +724,9 @@ const SceneCtrl = app => async params => {
         ]);
         await this.refreshScene();
         notifyScenePreview(this.sceneId, 'object-updated');
-        this.setStatus('[data-object-action-status]', 'Object order updated.');
+        this.setStatus('[data-object-list-status]', 'Object order updated.');
       } catch {
-        this.setStatus('[data-object-action-status]', 'Could not change object order.');
+        this.setStatus('[data-object-list-status]', 'Could not change object order.');
       } finally {
         button.disabled = false;
       }

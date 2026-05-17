@@ -1,4 +1,5 @@
 import {apiFetch, scriptAudioCandidateUrl} from '../api.js';
+import {applyStatus} from '../status.js';
 import {user} from '../state/user.js';
 
 const LANGUAGES = ['en', 'de', 'es', 'fr', 'it', 'pt'];
@@ -16,11 +17,14 @@ const ScriptReviewCtrl = app => async () => {
     audioStatus: '',
     audioSource: '',
     missingAudio: false,
+    missingTranslation: false,
+    failedTts: false,
     limit: 50,
     offset: 0,
     total: 0,
     lines: [],
     pathOptions: [],
+    selectedLineIds: [],
     selectedLineId: null,
     selectedLine: null,
     status: '',
@@ -28,6 +32,8 @@ const ScriptReviewCtrl = app => async () => {
     hasSelectedLine: false,
     hasPreviousPage: false,
     hasNextPage: false,
+    selectedLineCount: 0,
+    allVisibleLinesSelected: false,
     lineLocalizationPollTimer: null,
     unloadHandlers: [],
 
@@ -94,6 +100,49 @@ const ScriptReviewCtrl = app => async () => {
       const generateTtsButton = event.target.closest('[data-action="generate-tts"]');
       if (generateTtsButton) {
         await this.generateTts(generateTtsButton);
+        return;
+      }
+
+      const generateTranslationButton = event.target.closest('[data-action="generate-translation"]');
+      if (generateTranslationButton) {
+        await this.generateTranslation(generateTranslationButton);
+        return;
+      }
+
+      const toggleSelection = event.target.closest('[data-action="toggle-script-line-selection"]');
+      if (toggleSelection) {
+        event.stopPropagation();
+        this.toggleLineSelection(Number(toggleSelection.dataset.lineId));
+        return;
+      }
+
+      const toggleAll = event.target.closest('[data-action="toggle-select-all-lines"]');
+      if (toggleAll) {
+        this.toggleAllVisibleSelections(toggleAll.checked);
+        return;
+      }
+
+      const bulkApproveButton = event.target.closest('[data-action="bulk-approve-translation"]');
+      if (bulkApproveButton) {
+        await this.bulkApproveTranslation(bulkApproveButton);
+        return;
+      }
+
+      const bulkGenerateTtsButton = event.target.closest('[data-action="bulk-generate-tts"]');
+      if (bulkGenerateTtsButton) {
+        await this.bulkGenerateTts(bulkGenerateTtsButton, {selectedOnly: true});
+        return;
+      }
+
+      const bulkGenerateMissingTtsButton = event.target.closest('[data-action="bulk-generate-missing-tts"]');
+      if (bulkGenerateMissingTtsButton) {
+        await this.bulkGenerateTts(bulkGenerateMissingTtsButton, {selectedOnly: false, missingAudio: true});
+        return;
+      }
+
+      const bulkRetryFailedTtsButton = event.target.closest('[data-action="bulk-retry-failed-tts"]');
+      if (bulkRetryFailedTtsButton) {
+        await this.bulkGenerateTts(bulkRetryFailedTtsButton, {selectedOnly: false, failedTts: true});
         return;
       }
 
@@ -177,6 +226,8 @@ const ScriptReviewCtrl = app => async () => {
       this.audioStatus = String(formData.get('audio_status') ?? '');
       this.audioSource = String(formData.get('audio_source') ?? '');
       this.missingAudio = formData.get('missing_audio') === 'on';
+      this.missingTranslation = formData.get('missing_translation') === 'on';
+      this.failedTts = formData.get('failed_tts') === 'on';
     },
 
     async loadLines() {
@@ -189,6 +240,8 @@ const ScriptReviewCtrl = app => async () => {
         audio_status: this.audioStatus,
         audio_source: this.audioSource,
         missing_audio: String(this.missingAudio),
+        missing_translation: String(this.missingTranslation),
+        failed_tts: String(this.failedTts),
         limit: String(this.limit),
         offset: String(this.offset)
       });
@@ -198,9 +251,10 @@ const ScriptReviewCtrl = app => async () => {
         this.lines = response.items.map(line => ({
           ...line,
           isSelected: line.line_id === this.selectedLineId,
+          isChecked: this.selectedLineIds.includes(line.line_id),
           pathLabel: line.path_text || 'Unsorted',
           translationStatusLabel: statusLabel(line.selected_translation?.review_status),
-          audioSummary: `${line.audio_candidate_count} audio`
+          audioSummary: `${line.audio_candidate_count} audio`,
         }));
         if (!this.selectedLineId && this.lines.length) {
           await this.selectLine(this.lines[0].line_id, {skipListRefresh: true});
@@ -238,6 +292,9 @@ const ScriptReviewCtrl = app => async () => {
       this.hasLines = this.lines.length > 0;
       this.hasPreviousPage = this.offset > 0;
       this.hasNextPage = this.offset + this.limit < this.total;
+      this.selectedLineCount = this.selectedLineIds.length;
+      this.allVisibleLinesSelected = this.lines.length > 0
+        && this.lines.every(line => this.selectedLineIds.includes(line.line_id));
     },
 
     async importScriptAudio(button) {
@@ -375,6 +432,7 @@ const ScriptReviewCtrl = app => async () => {
 
     async deleteSelectedLine() {
       if (!this.selectedLineId || !this.selectedLine) return;
+      const lineId = this.selectedLineId;
       if (this.selectedLine.usage_references?.length) {
         this.setStatus(
           `Line #${this.selectedLineId} is still in use by ${this.selectedLine.usage_references.length} interaction` +
@@ -390,6 +448,7 @@ const ScriptReviewCtrl = app => async () => {
         this.selectedLineId = null;
         this.selectedLine = null;
         this.hasSelectedLine = false;
+        this.selectedLineIds = this.selectedLineIds.filter(id => id !== lineId);
         await this.loadLines();
         this.setStatus('Script line deleted.');
       } catch (error) {
@@ -442,10 +501,126 @@ const ScriptReviewCtrl = app => async () => {
       }
     },
 
+    async generateTranslation(button) {
+      if (!this.selectedLineId) return;
+      button.disabled = true;
+      this.setStatus(`Generating ${this.language.toUpperCase()} translation for line #${this.selectedLineId}...`);
+      try {
+        await apiFetch(`/api/script-lines/${this.selectedLineId}/generate-translation`, {
+          method: 'POST',
+          body: JSON.stringify({language: this.language})
+        });
+        await this.selectLine(this.selectedLineId);
+        await this.loadLines();
+        this.setStatus(`Generated ${this.language.toUpperCase()} translation for line #${this.selectedLineId}.`);
+      } catch (error) {
+        this.setStatus(await readErrorDetail(error, 'Could not generate translation.'));
+      } finally {
+        button.disabled = false;
+      }
+    },
+
+    toggleLineSelection(lineId) {
+      if (this.selectedLineIds.includes(lineId)) {
+        this.selectedLineIds = this.selectedLineIds.filter(id => id !== lineId);
+      } else {
+        this.selectedLineIds = [...this.selectedLineIds, lineId];
+      }
+      this.lines = this.lines.map(line => ({
+        ...line,
+        isChecked: this.selectedLineIds.includes(line.line_id)
+      }));
+      this.preparePaging();
+      this.refreshView();
+    },
+
+    toggleAllVisibleSelections(checked) {
+      const visibleIds = this.lines.map(line => line.line_id);
+      if (checked) {
+        const merged = new Set([...this.selectedLineIds, ...visibleIds]);
+        this.selectedLineIds = Array.from(merged);
+      } else {
+        this.selectedLineIds = this.selectedLineIds.filter(id => !visibleIds.includes(id));
+      }
+      this.lines = this.lines.map(line => ({
+        ...line,
+        isChecked: this.selectedLineIds.includes(line.line_id)
+      }));
+      this.preparePaging();
+      this.refreshView();
+    },
+
+    async bulkApproveTranslation(button) {
+      if (!this.selectedLineIds.length) {
+        this.setStatus('Select one or more lines first.');
+        return;
+      }
+      button.disabled = true;
+      this.setStatus(`Marking ${this.selectedLineIds.length} ${this.language.toUpperCase()} translation${this.selectedLineIds.length === 1 ? '' : 's'} approved...`);
+      try {
+        const result = await apiFetch('/api/script-lines/bulk/approve-translation', {
+          method: 'POST',
+          body: JSON.stringify({
+            line_ids: this.selectedLineIds,
+            language: this.language
+          })
+        });
+        await this.loadLines();
+        if (this.selectedLineId) await this.selectLine(this.selectedLineId, {skipListRefresh: true});
+        this.setStatus(formatBulkResult(result, 'Translation approval complete.'));
+      } catch (error) {
+        this.setStatus(await readErrorDetail(error, 'Could not approve translations.'));
+      } finally {
+        button.disabled = false;
+      }
+    },
+
+    async bulkGenerateTts(button, options = {}) {
+      button.disabled = true;
+      const selectedOnly = Boolean(options.selectedOnly);
+      const payload = {
+        language: this.language,
+        line_ids: selectedOnly ? this.selectedLineIds : [],
+        q: this.query,
+        path: this.path,
+        translation_status: this.translationStatus,
+        audio_status: this.audioStatus,
+        audio_source: this.audioSource,
+        missing_audio: Boolean(options.missingAudio),
+        missing_translation: this.missingTranslation,
+        failed_tts: Boolean(options.failedTts)
+      };
+      if (selectedOnly && !this.selectedLineIds.length) {
+        this.setStatus('Select one or more lines first.');
+        button.disabled = false;
+        return;
+      }
+      this.setStatus(
+        selectedOnly
+          ? `Generating ${this.language.toUpperCase()} TTS for ${this.selectedLineIds.length} selected line${this.selectedLineIds.length === 1 ? '' : 's'}...`
+          : (options.failedTts
+            ? `Retrying failed ${this.language.toUpperCase()} TTS...`
+            : `Generating missing ${this.language.toUpperCase()} TTS...`)
+      );
+      try {
+        const result = await apiFetch('/api/script-lines/bulk/generate-tts', {
+          method: 'POST',
+          body: JSON.stringify(payload)
+        });
+        await this.loadLines();
+        if (this.selectedLineId) await this.selectLine(this.selectedLineId, {skipListRefresh: true});
+        this.setStatus(formatBulkResult(result, 'Bulk TTS generation finished.'));
+      } catch (error) {
+        this.setStatus(await readErrorDetail(error, 'Could not run bulk TTS generation.'));
+      } finally {
+        button.disabled = false;
+      }
+    },
+
     setStatus(message) {
       this.status = message;
       const status = this.root?.querySelector('[data-script-status]');
-      if (status) status.textContent = message;
+      applyStatus(status, message);
     },
 
     setControlValues() {
@@ -458,6 +633,8 @@ const ScriptReviewCtrl = app => async () => {
       form.elements.audio_status.value = this.audioStatus;
       form.elements.audio_source.value = this.audioSource;
       form.elements.missing_audio.checked = this.missingAudio;
+      form.elements.missing_translation.checked = this.missingTranslation;
+      form.elements.failed_tts.checked = this.failedTts;
       const translationForm = this.root?.querySelector('[data-translation-form]');
       if (translationForm && this.selectedLine?.activeTranslation) {
         translationForm.elements.review_status.value = this.selectedLine.activeTranslation.review_status;
@@ -475,6 +652,8 @@ const ScriptReviewCtrl = app => async () => {
       const nextButton = this.root?.querySelector('[data-action="next-page"]');
       if (previousButton) previousButton.disabled = !this.hasPreviousPage;
       if (nextButton) nextButton.disabled = !this.hasNextPage;
+      const selectAllToggle = this.root?.querySelector('[data-action="toggle-select-all-lines"]');
+      if (selectAllToggle) selectAllToggle.checked = this.allVisibleLinesSelected;
     },
 
     refreshView() {
@@ -525,13 +704,15 @@ function prepareLineDetail(line, activeLanguage) {
         audioUrl: candidate.relative_path ? scriptAudioCandidateUrl(candidate.id) : '',
         sourceLabel: sourceLabel(candidate.source_type),
         statusLabel: statusLabel(candidate.review_status),
+        errorLabel: readableAudioError(candidate.error),
         durationLabel: candidate.duration_seconds
           ? `${Number(candidate.duration_seconds).toFixed(2)}s`
           : '',
         scoreLabel: candidate.score ? `${Number(candidate.score).toFixed(1)}` : '',
         hasAudio: Boolean(candidate.relative_path)
       })),
-    hasAudioCandidates: line.audio_candidates.some(candidate => candidate.language === activeLanguage)
+    hasAudioCandidates: line.audio_candidates.some(candidate => candidate.language === activeLanguage),
+    preferredAudioLabel: describePreferredAudio(line, activeLanguage)
   };
 }
 
@@ -567,8 +748,58 @@ function formatLocalizationSuccess(job) {
   }
 }
 
+function formatBulkResult(result, fallback) {
+  if (!result) return fallback;
+  let message = result.detail || fallback;
+  if (Array.isArray(result.errors) && result.errors.length) {
+    message += ` ${result.errors[0]}`;
+    if (result.errors.length > 1) {
+      message += ` (+${result.errors.length - 1} more)`;
+    }
+  }
+  return message;
+}
+
+function describePreferredAudio(line, activeLanguage) {
+  const candidates = (line.audio_candidates ?? []).filter(candidate => candidate.language === activeLanguage);
+  const playable = candidates.filter(candidate => candidate.relative_path && candidate.manifest_status !== 'error');
+  const selectedPlayable = playable.filter(candidate => candidate.selected);
+  const selectedReviewed = selectedPlayable.find(candidate => candidate.source_type !== 'tts');
+  if (selectedReviewed) {
+    return 'Preview will prefer the selected reviewed audio take.';
+  }
+  const selectedTts = selectedPlayable.find(candidate => candidate.source_type === 'tts');
+  if (selectedTts) {
+    return 'Preview will currently use the selected TTS take.';
+  }
+  const reviewed = playable.find(candidate => candidate.source_type !== 'tts');
+  if (reviewed) {
+    return 'Reviewed audio is available, but no selected take is set yet.';
+  }
+  const tts = playable.find(candidate => candidate.source_type === 'tts');
+  if (tts) {
+    return 'Only TTS is available right now, so preview will fall back to that.';
+  }
+  const failed = candidates.find(candidate => candidate.source_type === 'tts' && candidate.manifest_status === 'error');
+  if (failed) {
+    return 'The latest TTS generation failed. Regenerate TTS or upload reviewed audio.';
+  }
+  return 'No playable audio is available yet for this language.';
+}
+
 function statusLabel(value) {
   return String(value || 'missing').replace(/_/g, ' ');
+}
+
+function readableAudioError(value) {
+  const message = String(value || '').trim();
+  if (!message) return '';
+  const lowered = message.toLowerCase();
+  if (lowered.includes('translation service')) return 'Translation service unavailable. Check the Health page.';
+  if (lowered.includes('xtts') || lowered.includes('tts generation failed')) {
+    return 'TTS generation failed. Check XTTS on the Health page.';
+  }
+  return message;
 }
 
 async function readErrorDetail(error, fallback) {
@@ -576,7 +807,7 @@ async function readErrorDetail(error, fallback) {
   if (!response) return fallback;
   try {
     const payload = await response.json();
-    return payload?.detail || fallback;
+    return readableAudioError(payload?.detail || fallback) || fallback;
   } catch {
     return fallback;
   }

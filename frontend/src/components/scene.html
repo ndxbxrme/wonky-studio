@@ -2,12 +2,13 @@
   <nav class="app-topbar" aria-label="Primary">
     <a class="app-topbar__brand" href="/">Wonky Studio</a>
     <div class="app-topbar__links">
-      <a class="app-topbar__link" href="/">Scenes</a>
-      <a class="app-topbar__link" href="/images">Images</a>
-      <a class="app-topbar__link" href="/script-review">Transcript library</a>
-      <a class="app-topbar__link" href="/audio-library">Audio library</a>
-      <a class="app-topbar__link" href="/global-settings">Global settings</a>
-      <button class="app-topbar__link app-topbar__link--primary" type="button" data-action="open-game-preview">Preview game</button>
+      <a class="app-topbar__link" href="/"><span class="ui-icon" data-icon="clapperboard"></span><span>Scenes</span></a>
+      <a class="app-topbar__link" href="/images"><span class="ui-icon" data-icon="images"></span><span>Images</span></a>
+      <a class="app-topbar__link" href="/script-review"><span class="ui-icon" data-icon="captions"></span><span>Transcript library</span></a>
+      <a class="app-topbar__link" href="/audio-library"><span class="ui-icon" data-icon="audio-lines"></span><span>Audio library</span></a>
+      <a class="app-topbar__link" href="/global-settings"><span class="ui-icon" data-icon="settings-2"></span><span>Global settings</span></a>
+      <a class="app-topbar__link" href="/system-health"><span class="ui-icon" data-icon="activity"></span><span>Health</span></a>
+      <button class="app-topbar__link app-topbar__link--primary" type="button" data-action="open-game-preview"><span class="ui-icon" data-icon="play"></span><span>Preview game</span></button>
     </div>
   </nav>
 
@@ -20,26 +21,34 @@
         <p>{{scene.description}}</p>
       </div>
       <div class="scene-header__actions">
-        <div class="scene-switcher">
-          {{#if previousSceneId}}<a class="button secondary compact" href="/scene/{{previousSceneId}}">Prev scene</a>{{/if}}
-          <form class="scene-switcher__form" data-scene-jump-form>
-            <select name="scene_id">
-              {{#each sceneOptions as sceneOption}}
-                <option value="{{sceneOption.id}}" {{#if sceneOption.isCurrent}}selected{{/if}}>Scene {{sceneOption.id}}</option>
-              {{/each}}
-            </select>
-            <button class="button secondary compact" type="submit">Go</button>
-          </form>
-          {{#if nextSceneId}}<a class="button secondary compact" href="/scene/{{nextSceneId}}">Next scene</a>{{/if}}
+        <div class="scene-header__action-row">
+          <div class="scene-switcher">
+            {{#if previousSceneId}}<a class="button secondary compact" href="/scene/{{previousSceneId}}">Prev scene</a>{{/if}}
+            <form class="scene-switcher__form" data-scene-jump-form>
+              <select name="scene_id">
+                {{#each sceneOptions as sceneOption}}
+                  <option value="{{sceneOption.id}}" {{#if sceneOption.isCurrent}}selected{{/if}}>Scene {{sceneOption.id}}</option>
+                {{/each}}
+              </select>
+              <button class="button secondary compact" type="submit">Go</button>
+            </form>
+            {{#if nextSceneId}}<a class="button secondary compact" href="/scene/{{nextSceneId}}">Next scene</a>{{/if}}
+          </div>
+          <div class="scene-header__button-group">
+            <a class="button secondary compact" href="/actions/{{scene.id}}"><span class="ui-icon" data-icon="workflow"></span><span>Edit actions</span></a>
+            <button class="button secondary compact" type="button" data-action="open-preview"><span class="ui-icon" data-icon="external-link"></span><span>Open preview</span></button>
+            <button class="button secondary compact" type="button" data-action="logout"><span class="ui-icon" data-icon="log-out"></span><span>Sign out</span></button>
+          </div>
         </div>
-        <button class="button secondary compact" type="button" data-action="analyze-vlm">Analyze with VLM</button>
-        <button class="button primary compact" type="button" data-action="extract-masks">Extract masks</button>
-        <button class="button secondary compact" type="button" data-action="browse-scene-images">Upload images</button>
-        <button class="button secondary compact" type="button" data-action="generate-inventory-images">Generate inventory art</button>
-        <button class="button secondary compact" type="button" data-action="generate-removal-frames">Generate pickup frames</button>
-        <a class="button secondary compact" href="/actions/{{scene.id}}">Edit actions</a>
-        <button class="button secondary compact" type="button" data-action="open-preview">Open preview</button>
-        <button class="button secondary compact" type="button" data-action="logout">Sign out</button>
+        <div class="scene-header__action-row scene-header__action-row--tools">
+          <div class="scene-header__button-group scene-header__button-group--tools">
+            <button class="button secondary compact" type="button" data-action="analyze-vlm"><span class="ui-icon" data-icon="sparkles"></span><span>Analyze with VLM</span></button>
+            <button class="button primary compact" type="button" data-action="extract-masks"><span class="ui-icon" data-icon="scan-search"></span><span>Extract masks</span></button>
+            <button class="button secondary compact" type="button" data-action="browse-scene-images"><span class="ui-icon" data-icon="upload"></span><span>Upload images</span></button>
+            <button class="button secondary compact" type="button" data-action="generate-inventory-images"><span class="ui-icon" data-icon="package"></span><span>Generate inventory art</span></button>
+            <button class="button secondary compact" type="button" data-action="generate-removal-frames"><span class="ui-icon" data-icon="image-minus"></span><span>Generate pickup frames</span></button>
+          </div>
+        </div>
       </div>
     </header>
 
@@ -119,24 +128,6 @@
           </form>
 
           <div>
-            <h2>Merge Into Scene</h2>
-            <p class="muted">Move this scene's images, objects, masks, prompts, interactions, and animations into another base scene, then remove this scene.</p>
-          </div>
-          <form class="object-form" data-scene-merge-form>
-            <label>
-              Target scene
-              <select name="target_scene_id" required>
-                <option value="">Choose target scene</option>
-                {{#each mergeSceneOptions as sceneOption}}
-                  <option value="{{sceneOption.id}}">Scene {{sceneOption.id}} · {{sceneOption.title}}</option>
-                {{/each}}
-              </select>
-            </label>
-            <button class="button danger compact" type="submit">Merge into scene</button>
-            <p class="form-status scene-form-status" data-scene-merge-status aria-live="polite"></p>
-          </form>
-
-          <div>
             <h2>New Object</h2>
           </div>
           <form class="object-form" data-object-form>
@@ -202,6 +193,9 @@
                     {{#if object.inventory_image_failed}}
                       <p class="object-warning">Inventory art generation failed. Showing mask thumbnail instead.</p>
                     {{/if}}
+                    {{#if object.pickup_frame_failed}}
+                      <p class="object-warning">Pickup frame generation failed for this object.</p>
+                    {{/if}}
                     {{#if object.hasActionSummaries}}
                       <div class="object-action-summary" aria-label="{{object.name}} actions">
                         {{#each object.actionSummaries as action}}
@@ -216,7 +210,7 @@
                     data-action="delete-object"
                     data-object-id="{{object.id}}"
                     data-object-name="{{object.name}}"
-                  >Remove</button>
+                  ><span class="ui-icon" data-icon="trash-2"></span><span>Remove</span></button>
                 </div>
                 <form
                   class="object-prompt-form"
@@ -234,44 +228,63 @@
                       <input name="inventory_image_prompt" type="text" value="{{object.inventory_image_prompt}}" placeholder="storybook bedside table icon" />
                     </label>
                   </div>
-                  <div class="object-order-controls">
-                    <span class="object-order-controls__label">Object order</span>
-                    <div class="object-order-controls__buttons">
-                      <button
-                        class="button secondary compact"
-                        type="button"
-                        data-action="move-object"
-                        data-object-id="{{object.id}}"
-                        data-direction="up"
-                        {{#if not object.hasPreviousObject}}disabled{{/if}}
-                      >↑</button>
-                      <button
-                        class="button secondary compact"
-                        type="button"
-                        data-action="move-object"
-                        data-object-id="{{object.id}}"
-                        data-direction="down"
-                        {{#if not object.hasNextObject}}disabled{{/if}}
-                      >↓</button>
+                  <div class="object-prompt-form__footer">
+                    <div class="object-prompt-form__meta">
+                      <div class="object-order-controls">
+                        <span class="object-order-controls__label">Object order</span>
+                        <div class="object-order-controls__buttons">
+                          <button
+                            class="button secondary compact icon-button"
+                            type="button"
+                            data-action="move-object"
+                            data-object-id="{{object.id}}"
+                            data-direction="up"
+                            aria-label="Move {{object.name}} up"
+                            title="Move up"
+                            {{#if not object.hasPreviousObject}}disabled{{/if}}
+                          ><span class="ui-icon" data-icon="arrow-up"></span></button>
+                          <button
+                            class="button secondary compact icon-button"
+                            type="button"
+                            data-action="move-object"
+                            data-object-id="{{object.id}}"
+                            data-direction="down"
+                            aria-label="Move {{object.name}} down"
+                            title="Move down"
+                            {{#if not object.hasNextObject}}disabled{{/if}}
+                          ><span class="ui-icon" data-icon="arrow-down"></span></button>
+                        </div>
+                      </div>
+                      <label class="checkbox-label">
+                        <input
+                          name="keyboard_target_enabled"
+                          type="checkbox"
+                          {{#if object.keyboard_target_enabled}}checked{{/if}}
+                        />
+                        Keyboard target
+                      </label>
+                    </div>
+                  <div class="form-actions object-row-actions">
+                      <button class="button secondary compact" type="submit">Save</button>
+                      <button class="button secondary compact" type="button" data-action="generate-object-inventory-image" data-object-id="{{object.id}}"><span class="ui-icon" data-icon="package"></span><span>Generate inventory art</span></button>
+                      <button class="button secondary compact" type="button" data-action="generate-object-removal-frame" data-object-id="{{object.id}}"><span class="ui-icon" data-icon="image-minus"></span><span>Generate pickup frame</span></button>
                     </div>
                   </div>
-                  <label class="checkbox-label">
-                    <input
-                      name="keyboard_target_enabled"
-                      type="checkbox"
-                      {{#if object.keyboard_target_enabled}}checked{{/if}}
-                    />
-                    Keyboard target
-                  </label>
-                  <button class="button secondary compact" type="submit">Save</button>
                   <p class="form-status scene-form-status" data-object-prompt-status aria-live="polite"></p>
+                  <p class="form-status scene-form-status" data-object-action-status="{{object.id}}" aria-live="polite"></p>
                 </form>
               </div>
             </article>
           {{/each}}
         </div>
       {{/if}}
-      <p class="form-status scene-form-status" data-object-action-status aria-live="polite"></p>
+      {{#if not scene.hasObjects}}
+        <div class="editor-empty-state editor-empty-state--large">
+          <strong>No objects yet.</strong>
+          <p>Add your first object from the scene settings panel, then run mask extraction when you are ready.</p>
+        </div>
+      {{/if}}
+      <p class="form-status scene-form-status" data-object-list-status aria-live="polite"></p>
     </section>
   {{/if}}
 

@@ -60,6 +60,14 @@ class ScriptLocalizationProvider:
     ) -> dict[str, Any]:
         raise NotImplementedError
 
+    async def generate_translation(
+        self,
+        source_text: str,
+        path_parts: list[str],
+        language: str,
+    ) -> dict[str, Any]:
+        raise NotImplementedError
+
 
 @dataclass(frozen=True)
 class ScriptLocalizationSubprocessProvider(ScriptLocalizationProvider):
@@ -138,7 +146,7 @@ class ScriptLocalizationSubprocessProvider(ScriptLocalizationProvider):
                         },
                     }
                 except Exception as exc:
-                    errors.append({"language": language, "error": f"Translation failed: {exc}"})
+                    errors.append({"language": language, "error": "Translation service is unavailable or returned an invalid response."})
                 current_step += 1
                 await report(f"Translated {language.upper()} ({current_step}/{total_steps})")
 
@@ -164,7 +172,7 @@ class ScriptLocalizationSubprocessProvider(ScriptLocalizationProvider):
                         }
                     )
                 except Exception as exc:
-                    errors.append({"language": language, "error": f"TTS failed: {exc}"})
+                    errors.append({"language": language, "error": "TTS generation failed."})
                 current_step += 1
                 await report(f"Generated {language.upper()} audio ({current_step}/{total_steps})")
 
@@ -294,6 +302,36 @@ class ScriptLocalizationSubprocessProvider(ScriptLocalizationProvider):
         except Exception:
             shutil.rmtree(working_root, ignore_errors=True)
             raise
+
+    async def generate_translation(
+        self,
+        source_text: str,
+        path_parts: list[str],
+        language: str,
+    ) -> dict[str, Any]:
+        normalized_language = str(language or "").strip().lower()
+        if not normalized_language:
+            raise RuntimeError("Language is required")
+        if normalized_language == "en":
+            return {
+                "language": "en",
+                "text": source_text.strip(),
+                "source": "source_text",
+                "meta": {"source_lang": self.translate_source_language},
+            }
+        translated_text = await self._translate_line(source_text, path_parts, normalized_language)
+        if not translated_text:
+            raise RuntimeError("Translation was empty")
+        return {
+            "language": normalized_language,
+            "text": translated_text,
+            "source": "ollama_auto",
+            "meta": {
+                "model": self.translate_model,
+                "source_lang": self.translate_source_language,
+                "target_lang": LANGUAGE_NAMES.get(normalized_language, normalized_language),
+            },
+        }
 
 
 def build_script_localization_provider(settings: Settings) -> ScriptLocalizationProvider:

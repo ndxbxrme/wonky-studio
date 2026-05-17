@@ -8,6 +8,8 @@ class WonkyMaskEditor extends HTMLElement {
     this.currentIndex = 0;
     this.currentMask = null;
     this.originalImage = null;
+    this.browseAllFrames = false;
+    this.currentFrameIndex = 0;
     this.maskCanvas = document.createElement('canvas');
     this.maskContext = this.maskCanvas.getContext('2d', {willReadFrequently: true});
     this.maskAlphaCanvas = document.createElement('canvas');
@@ -49,6 +51,7 @@ class WonkyMaskEditor extends HTMLElement {
     this.masks = masks ?? [];
     this.currentIndex = Math.max(0, Math.min(currentIndex ?? 0, this.masks.length - 1));
     this.currentMask = this.masks[this.currentIndex] ?? null;
+    this.currentFrameIndex = this.findSceneFrameIndexForUploadedFileId(this.currentMask?.uploaded_file_id);
     this.undoStack = [];
     this.redoStack = [];
     this.render();
@@ -63,6 +66,8 @@ class WonkyMaskEditor extends HTMLElement {
     root.querySelector('[data-action="previous"]')?.addEventListener('click', () => this.navigate(-1));
     root.querySelector('[data-action="next"]')?.addEventListener('click', () => this.navigate(1));
     root.querySelector('[data-action="go-to-frame"]')?.addEventListener('click', () => this.goToFrameNumber());
+    root.querySelector('[data-action="go-to-pickup-frame"]')?.addEventListener('click', () => this.goToPickupFrame());
+    root.querySelector('[data-action="set-default-frame"]')?.addEventListener('click', () => this.dispatchSetDefaultFrame());
     root.querySelector('[data-action="save"]')?.addEventListener('click', () => this.dispatchSave());
     root.querySelector('[data-action="undo"]')?.addEventListener('click', () => this.undo());
     root.querySelector('[data-action="redo"]')?.addEventListener('click', () => this.redo());
@@ -93,6 +98,9 @@ class WonkyMaskEditor extends HTMLElement {
     root.querySelector('[name="applyAll"]')?.addEventListener('change', event => {
       this.applyAll = event.target.checked;
     });
+    root.querySelector('[name="browseAllFrames"]')?.addEventListener('change', event => {
+      this.setBrowseAllFrames(event.target.checked);
+    });
     root.querySelector('[name="frameNumber"]')?.addEventListener('keydown', event => {
       if (event.key === 'Enter') {
         event.preventDefault();
@@ -112,9 +120,22 @@ class WonkyMaskEditor extends HTMLElement {
     const maxFrameNumber = Array.isArray(this.scene?.images) && this.scene.images.length
       ? this.scene.images.length
       : Math.max(1, this.masks.length);
+    const currentSceneImage = this.currentSceneImage();
     const frameLabel = this.currentMask
       ? `Mask ${this.currentIndex + 1} / ${this.masks.length} · Scene frame ${currentFrameNumber} / ${maxFrameNumber} · ${this.currentMask.original_filename}`
-      : 'No mask selected';
+      : currentSceneImage
+        ? `No mask yet · Scene frame ${currentFrameNumber} / ${maxFrameNumber} · ${currentSceneImage.original_filename}`
+        : 'No mask selected';
+    const isDefaultFrame = Boolean(
+      this.currentMask
+      && this.object
+      && Number(this.object.default_uploaded_file_id) === Number(this.currentMask.uploaded_file_id)
+    );
+    const isPickupFrame = Boolean(
+      this.currentMask
+      && this.object
+      && Number(this.object.pickup_uploaded_file_id) === Number(this.currentMask.uploaded_file_id)
+    );
     this.shadowRoot.innerHTML = `
       <style>
         :host {
@@ -175,6 +196,11 @@ class WonkyMaskEditor extends HTMLElement {
           color: #ffffff;
           background: #1f6f5b;
         }
+        button.toggle-active {
+          border-color: #1f6f5b;
+          background: #eef7f1;
+          color: #1f6f5b;
+        }
         button:disabled {
           opacity: 0.45;
           cursor: default;
@@ -211,8 +237,8 @@ class WonkyMaskEditor extends HTMLElement {
       </style>
       <div class="toolbar">
         <div class="toolbar-group">
-          <button type="button" data-action="previous" ${this.currentIndex <= 0 ? 'disabled' : ''}>Previous</button>
-          <button type="button" data-action="next" ${this.currentIndex >= this.masks.length - 1 ? 'disabled' : ''}>Next</button>
+          <button type="button" data-action="previous" ${(this.browseAllFrames ? this.currentFrameIndex <= 0 : this.currentIndex <= 0) ? 'disabled' : ''}>Previous</button>
+          <button type="button" data-action="next" ${(this.browseAllFrames ? this.currentFrameIndex >= maxFrameNumber - 1 : this.currentIndex >= this.masks.length - 1) ? 'disabled' : ''}>Next</button>
         </div>
         <label>
           Go to frame
@@ -222,6 +248,7 @@ class WonkyMaskEditor extends HTMLElement {
           </div>
         </label>
         <div class="frame-label">${escapeHtml(frameLabel)}</div>
+        ${isPickupFrame ? '<div class="frame-label">Pickup frame linked to this object</div>' : ''}
         <label>
           Brush <span data-brush-size>${this.brushSize}</span>
           <input name="brushSize" type="range" min="2" max="180" value="${this.brushSize}" />
@@ -243,21 +270,27 @@ class WonkyMaskEditor extends HTMLElement {
           </select>
         </label>
         <label class="checkbox">
-          <input name="applyAll" type="checkbox" ${this.applyAll ? 'checked' : ''} />
+          <input name="applyAll" type="checkbox" ${this.applyAll ? 'checked' : ''} ${this.currentMask ? '' : 'disabled'} />
           Apply to all frames
         </label>
+        <label class="checkbox">
+          <input name="browseAllFrames" type="checkbox" ${this.browseAllFrames ? 'checked' : ''} />
+          Browse all scene frames
+        </label>
         <div class="toolbar-group">
+          <button type="button" data-action="go-to-pickup-frame" ${this.object?.pickup_uploaded_file_id ? '' : 'disabled'}>Go to pickup frame</button>
           <button type="button" data-action="undo" ${this.undoStack.length ? '' : 'disabled'}>Undo</button>
           <button type="button" data-action="redo" ${this.redoStack.length ? '' : 'disabled'}>Redo</button>
           <button type="button" data-action="fit">Fit</button>
         </div>
         <div class="toolbar-group">
-          <button type="button" data-action="grow">Grow mask</button>
-          <button type="button" data-action="fill-holes">Fill holes</button>
-          <button type="button" data-action="combine">Combine masks</button>
-          <button type="button" data-action="invert">Invert mask</button>
-          <button type="button" data-action="solid">Solid mask</button>
-          <button type="button" data-action="clear">Clear mask</button>
+          <button type="button" data-action="grow" ${this.currentMask ? '' : 'disabled'}>Grow mask</button>
+          <button type="button" data-action="fill-holes" ${this.currentMask ? '' : 'disabled'}>Fill holes</button>
+          <button type="button" data-action="combine" ${this.currentMask ? '' : 'disabled'}>Combine masks</button>
+          <button type="button" data-action="invert" ${this.currentMask ? '' : 'disabled'}>Invert mask</button>
+          <button type="button" data-action="solid" ${this.currentMask ? '' : 'disabled'}>Solid mask</button>
+          <button type="button" data-action="clear" ${this.currentMask ? '' : 'disabled'}>Clear mask</button>
+          <button class="${isDefaultFrame ? 'toggle-active' : ''}" type="button" data-action="set-default-frame" ${this.currentMask ? '' : 'disabled'}>${isDefaultFrame ? 'Default frame' : 'Use as default frame'}</button>
           <button class="primary" type="button" data-action="save">Save</button>
         </div>
       </div>
@@ -268,16 +301,21 @@ class WonkyMaskEditor extends HTMLElement {
   }
 
   async loadCurrentFrame() {
-    if (!this.currentMask) return;
-    const [originalImage, maskImage] = await Promise.all([
-      loadImage(this.currentMask.originalUrl),
-      loadImage(this.currentMask.rawUrl)
-    ]);
+    const sceneImage = this.currentSceneImage();
+    const originalUrl = sceneImage?.originalUrl || this.currentMask?.originalUrl;
+    if (!originalUrl) return;
+    const originalImage = await loadImage(originalUrl);
     this.originalImage = originalImage;
     this.maskCanvas.width = originalImage.naturalWidth;
     this.maskCanvas.height = originalImage.naturalHeight;
     this.maskContext.clearRect(0, 0, this.maskCanvas.width, this.maskCanvas.height);
-    this.maskContext.drawImage(maskImage, 0, 0, this.maskCanvas.width, this.maskCanvas.height);
+    if (this.currentMask?.rawUrl) {
+      const maskImage = await loadImage(this.currentMask.rawUrl);
+      this.maskContext.drawImage(maskImage, 0, 0, this.maskCanvas.width, this.maskCanvas.height);
+    } else {
+      this.maskContext.fillStyle = '#000000';
+      this.maskContext.fillRect(0, 0, this.maskCanvas.width, this.maskCanvas.height);
+    }
     this.updateMaskAlphaCanvas();
     this.fitToView();
   }
@@ -498,20 +536,32 @@ class WonkyMaskEditor extends HTMLElement {
   }
 
   navigate(delta) {
+    if (this.browseAllFrames) {
+      const nextFrameIndex = this.currentFrameIndex + delta;
+      if (nextFrameIndex < 0 || nextFrameIndex >= (this.scene?.images?.length ?? 0)) return;
+      this.setCurrentFrameIndex(nextFrameIndex);
+      this.loadCurrentFrame();
+      return;
+    }
     const nextIndex = this.currentIndex + delta;
     if (nextIndex < 0 || nextIndex >= this.masks.length) return;
-    this.dispatchEvent(new CustomEvent('navigate-mask', {
-      bubbles: true,
-      detail: {index: nextIndex, maskId: this.masks[nextIndex].id}
-    }));
+    this.currentIndex = nextIndex;
+    this.currentMask = this.masks[nextIndex] ?? null;
+    this.currentFrameIndex = this.findSceneFrameIndexForUploadedFileId(this.currentMask?.uploaded_file_id);
+    this.undoStack = [];
+    this.redoStack = [];
+    this.render();
+    this.canvas = this.shadowRoot.querySelector('[data-editor-canvas]');
+    this.canvasContext = this.canvas.getContext('2d');
+    this.bindEvents();
+    this.loadCurrentFrame();
   }
 
   currentFrameNumber() {
-    if (!this.currentMask || !Array.isArray(this.scene?.images)) return Math.max(1, this.currentIndex + 1);
-    const sceneFrameIndex = this.scene.images.findIndex(
-      sceneImage => Number(sceneImage.uploaded_file_id) === Number(this.currentMask.uploaded_file_id)
-    );
-    return sceneFrameIndex >= 0 ? sceneFrameIndex + 1 : Math.max(1, this.currentIndex + 1);
+    if (Array.isArray(this.scene?.images) && this.scene.images.length) {
+      return Math.max(1, this.currentFrameIndex + 1);
+    }
+    return Math.max(1, this.currentIndex + 1);
   }
 
   goToFrameNumber() {
@@ -530,28 +580,51 @@ class WonkyMaskEditor extends HTMLElement {
     const targetMask = this.masks.find(
       mask => Number(mask.uploaded_file_id) === Number(targetSceneImage.uploaded_file_id)
     );
-    if (!targetMask) {
-      this.dispatchMessage(`No ${this.object?.name ?? 'object'} mask exists for frame ${frameNumber}.`);
+    if (!this.browseAllFrames && !targetMask) {
+      this.dispatchMessage('Enable "Browse all scene frames" to jump to frames with no mask yet.');
       return;
     }
     this.dispatchMessage('');
-    this.dispatchEvent(new CustomEvent('navigate-mask', {
-      bubbles: true,
-      detail: {maskId: targetMask.id}
-    }));
+    this.setCurrentFrameIndex(frameNumber - 1);
+    this.loadCurrentFrame();
+  }
+
+  goToPickupFrame() {
+    const pickupUploadedFileId = Number(this.object?.pickup_uploaded_file_id ?? 0);
+    if (!pickupUploadedFileId) {
+      this.dispatchMessage('This object does not have a linked pickup frame yet.');
+      return;
+    }
+    const frameIndex = this.findSceneFrameIndexForUploadedFileId(pickupUploadedFileId);
+    this.dispatchMessage('');
+    this.setCurrentFrameIndex(frameIndex);
+    this.loadCurrentFrame();
   }
 
   dispatchSave() {
     this.dispatchEvent(new CustomEvent('save-mask', {
       bubbles: true,
-      detail: {applyAll: this.applyAll}
+      detail: {
+        applyAll: this.currentMask ? this.applyAll : false,
+        maskId: this.currentMask?.id ?? null,
+        uploadedFileId: this.currentSceneImage()?.uploaded_file_id ?? this.currentMask?.uploaded_file_id ?? null
+      }
     }));
   }
 
   dispatchProcess(operation) {
+    if (!this.currentMask) return;
     this.dispatchEvent(new CustomEvent('process-mask', {
       bubbles: true,
-      detail: {operation, applyAll: this.applyAll}
+      detail: {operation, applyAll: this.applyAll, maskId: this.currentMask.id}
+    }));
+  }
+
+  dispatchSetDefaultFrame() {
+    if (!this.currentMask) return;
+    this.dispatchEvent(new CustomEvent('set-default-frame', {
+      bubbles: true,
+      detail: {uploadedFileId: this.currentMask.uploaded_file_id, maskId: this.currentMask.id}
     }));
   }
 
@@ -560,6 +633,54 @@ class WonkyMaskEditor extends HTMLElement {
       bubbles: true,
       detail: {message}
     }));
+  }
+
+  currentSceneImage() {
+    if (Array.isArray(this.scene?.images) && this.scene.images.length) {
+      return this.scene.images[this.currentFrameIndex] ?? null;
+    }
+    return null;
+  }
+
+  findSceneFrameIndexForUploadedFileId(uploadedFileId) {
+    if (!uploadedFileId || !Array.isArray(this.scene?.images)) return 0;
+    const index = this.scene.images.findIndex(
+      sceneImage => Number(sceneImage.uploaded_file_id) === Number(uploadedFileId)
+    );
+    return index >= 0 ? index : 0;
+  }
+
+  setCurrentFrameIndex(index) {
+    const sceneImages = this.scene?.images ?? [];
+    if (!sceneImages.length) return;
+    this.currentFrameIndex = Math.max(0, Math.min(index, sceneImages.length - 1));
+    const uploadedFileId = sceneImages[this.currentFrameIndex]?.uploaded_file_id;
+    this.currentIndex = this.masks.findIndex(
+      mask => Number(mask.uploaded_file_id) === Number(uploadedFileId)
+    );
+    this.currentMask = this.currentIndex >= 0 ? this.masks[this.currentIndex] : null;
+    this.undoStack = [];
+    this.redoStack = [];
+    this.render();
+    this.canvas = this.shadowRoot.querySelector('[data-editor-canvas]');
+    this.canvasContext = this.canvas.getContext('2d');
+    this.bindEvents();
+  }
+
+  setBrowseAllFrames(enabled) {
+    this.browseAllFrames = Boolean(enabled);
+    if (!this.browseAllFrames && !this.currentMask && this.masks.length) {
+      this.currentIndex = 0;
+      this.currentMask = this.masks[0];
+      this.currentFrameIndex = this.findSceneFrameIndexForUploadedFileId(this.currentMask?.uploaded_file_id);
+    }
+    this.undoStack = [];
+    this.redoStack = [];
+    this.render();
+    this.canvas = this.shadowRoot.querySelector('[data-editor-canvas]');
+    this.canvasContext = this.canvas.getContext('2d');
+    this.bindEvents();
+    this.loadCurrentFrame();
   }
 
   async exportCurrentBlob() {

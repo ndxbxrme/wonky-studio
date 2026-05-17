@@ -2,12 +2,13 @@
   <nav class="app-topbar" aria-label="Primary">
     <a class="app-topbar__brand" href="/">Wonky Studio</a>
     <div class="app-topbar__links">
-      <a class="app-topbar__link" href="/">Scenes</a>
-      <a class="app-topbar__link" href="/images">Images</a>
-      <a class="app-topbar__link" href="/script-review">Transcript library</a>
-      <a class="app-topbar__link" href="/audio-library">Audio library</a>
-      <a class="app-topbar__link" href="/global-settings">Global settings</a>
-      <button class="app-topbar__link app-topbar__link--primary" type="button" data-action="open-game-preview">Preview game</button>
+      <a class="app-topbar__link" href="/"><span class="ui-icon" data-icon="clapperboard"></span><span>Scenes</span></a>
+      <a class="app-topbar__link" href="/images"><span class="ui-icon" data-icon="images"></span><span>Images</span></a>
+      <a class="app-topbar__link" href="/script-review"><span class="ui-icon" data-icon="captions"></span><span>Transcript library</span></a>
+      <a class="app-topbar__link" href="/audio-library"><span class="ui-icon" data-icon="audio-lines"></span><span>Audio library</span></a>
+      <a class="app-topbar__link" href="/global-settings"><span class="ui-icon" data-icon="settings-2"></span><span>Global settings</span></a>
+      <a class="app-topbar__link" href="/system-health"><span class="ui-icon" data-icon="activity"></span><span>Health</span></a>
+      <button class="app-topbar__link app-topbar__link--primary" type="button" data-action="open-game-preview"><span class="ui-icon" data-icon="play"></span><span>Preview game</span></button>
     </div>
   </nav>
 
@@ -21,7 +22,7 @@
       </div>
       <div class="scene-header__actions">
         <div class="scene-switcher">
-          {{#if previousSceneId}}<a class="button secondary compact" href="/actions/{{previousSceneId}}">Prev scene</a>{{/if}}
+          {{#if previousSceneId}}<a class="button secondary compact" href="/actions/{{previousSceneId}}"><span class="ui-icon" data-icon="arrow-up"></span><span>Prev scene</span></a>{{/if}}
           <form class="scene-switcher__form" data-scene-jump-form>
             <select name="scene_id">
               {{#each sceneOptions as sceneOption}}
@@ -30,7 +31,7 @@
             </select>
             <button class="button secondary compact" type="submit">Go</button>
           </form>
-          {{#if nextSceneId}}<a class="button secondary compact" href="/actions/{{nextSceneId}}">Next scene</a>{{/if}}
+          {{#if nextSceneId}}<a class="button secondary compact" href="/actions/{{nextSceneId}}"><span>Next scene</span><span class="ui-icon" data-icon="arrow-down"></span></a>{{/if}}
         </div>
         <a class="button secondary compact" href="/scene/{{scene.id}}">Scene view</a>
         <button class="button secondary compact" type="button" data-action="open-preview">Open preview</button>
@@ -45,10 +46,11 @@
             <div>
               <p class="eyebrow">Interactions</p>
               <h2>Triggers</h2>
+              <p class="panel-intro">Create a trigger on the left, then build its step sequence on the right.</p>
             </div>
           </div>
-          <form class="stack-form" data-interaction-create-form>
-            <label>
+          <form class="stack-form stack-form--two-col" data-interaction-create-form>
+            <label class="field-span-full">
               Name
               <input name="name" type="text" placeholder="Click clock" required />
             </label>
@@ -111,7 +113,7 @@
                 {{/each}}
               </select>
             </label>
-            <button class="button primary compact" type="submit">Add interaction</button>
+            <button class="button primary compact field-span-full" type="submit">Add interaction</button>
           </form>
 
           {{#if hasInteractions}}
@@ -130,16 +132,23 @@
               {{/each}}
             </div>
           {{/if}}
+          {{#if not hasInteractions}}
+            <div class="editor-empty-state">
+              <strong>No interactions yet.</strong>
+              <p>Add a trigger above to start authoring scene logic.</p>
+            </div>
+          {{/if}}
         </section>
 
         <section class="actions-panel">
           <div>
             <p class="eyebrow">Globals</p>
             <h2>Variables</h2>
+            <p class="panel-intro">Counters, toggles, language settings, and shared runtime state.</p>
           </div>
-          <form class="stack-form" data-variable-form>
+          <form class="stack-form stack-form--two-col" data-variable-form>
             <input type="hidden" name="variable_id" value="{{selectedVariableId}}" />
-            <label>
+            <label class="field-span-full">
               Name
               <input name="name" type="text" placeholder="has_clock_key" required />
             </label>
@@ -159,7 +168,7 @@
               Description
               <input name="description" type="text" placeholder="Optional note" />
             </label>
-            <div class="form-actions">
+            <div class="form-actions field-span-full">
               <button class="button secondary compact" type="submit">{{variableSubmitLabel}}</button>
               {{#if isEditingVariable}}
                 <button class="button secondary compact form-actions__cancel" type="button" data-action="cancel-variable-edit">X</button>
@@ -182,6 +191,12 @@
               {{/each}}
             </div>
           {{/if}}
+          {{#if not hasVariables}}
+            <div class="editor-empty-state editor-empty-state--compact">
+              <strong>No variables yet.</strong>
+              <p>Add globals here for counters, toggles, language settings, and volumes.</p>
+            </div>
+          {{/if}}
         </section>
       </aside>
 
@@ -192,6 +207,7 @@
               <div>
                 <p class="eyebrow">Selected interaction</p>
                 <h2>{{selectedInteraction.name}}</h2>
+                <p class="panel-intro">Adjust the trigger details here, then use the sequence editor below for behavior.</p>
               </div>
               <button
                 class="button danger compact"
@@ -277,6 +293,7 @@
             <div>
               <p class="eyebrow">Sequence</p>
               <h2>Action steps</h2>
+              <p class="panel-intro">Add a step to the selected branch, then reorder or remove steps below.</p>
             </div>
             <form class="action-step-form" data-action-step-form>
               <label data-form-field="branch">
@@ -307,6 +324,7 @@
                 <select name="target_scope">
                   <option value="object">Object</option>
                   <option value="background">Background</option>
+                  <option value="pickup_background">Pickup background</option>
                 </select>
               </label>
               <label data-form-field="target-object" data-visible-for="go_to_frame set_object_property">
@@ -466,9 +484,9 @@
                     <p>{{row.branch}} {{row.meta}}</p>
                   </div>
                   <div class="action-step-row__actions">
-                    <button class="button secondary compact" type="button" data-action="move-step" data-direction="up" data-step-id="{{row.id}}">Up</button>
-                    <button class="button secondary compact" type="button" data-action="move-step" data-direction="down" data-step-id="{{row.id}}">Down</button>
-                    <button class="button danger compact" type="button" data-action="remove-step" data-step-id="{{row.id}}">Remove</button>
+                    <button class="button secondary compact icon-button" type="button" data-action="move-step" data-direction="up" data-step-id="{{row.id}}" title="Move up" aria-label="Move step up"><span class="ui-icon" data-icon="arrow-up"></span></button>
+                    <button class="button secondary compact icon-button" type="button" data-action="move-step" data-direction="down" data-step-id="{{row.id}}" title="Move down" aria-label="Move step down"><span class="ui-icon" data-icon="arrow-down"></span></button>
+                    <button class="button danger compact" type="button" data-action="remove-step" data-step-id="{{row.id}}"><span class="ui-icon" data-icon="trash-2"></span><span>Remove</span></button>
                   </div>
                 </article>
               {{/each}}
@@ -479,9 +497,10 @@
             <div>
               <p class="eyebrow">Audio picker</p>
               <h2>Find script lines</h2>
+              <p class="panel-intro">Search the transcript library and pull line IDs straight into subtitle or audio steps.</p>
             </div>
             <form class="script-line-picker" data-script-line-search-form>
-              <label>
+              <label class="field-span-wide">
                 Search
                 <input name="q" type="search" placeholder="clock, bedroom, hello" />
               </label>
@@ -496,7 +515,7 @@
                   <option value="pt">PT</option>
                 </select>
               </label>
-              <button class="button secondary compact" type="submit">Search lines</button>
+              <button class="button secondary compact" type="submit"><span class="ui-icon" data-icon="scan-search"></span><span>Search lines</span></button>
             </form>
             {{#if hasScriptSearchResults}}
               <div class="script-line-search-results">
@@ -517,6 +536,12 @@
             {{/if}}
           </section>
         {{/if}}
+        {{#if not hasSelectedInteraction}}
+          <section class="actions-panel editor-empty-state editor-empty-state--large">
+            <strong>No interaction selected.</strong>
+            <p>Select a trigger from the left, or create a new one to start building action steps.</p>
+          </section>
+        {{/if}}
       </section>
     </section>
   {{/if}}
@@ -525,6 +550,13 @@
     <section class="empty-state">
       <p>Scene not found.</p>
       <a class="button secondary" href="/">Back to scenes</a>
+    </section>
+  {{/if}}
+
+  {{#if editorLoadError}}
+    <section class="empty-state">
+      <p>{{editorLoadError}}</p>
+      <a class="button secondary" href="/actions/{{sceneId}}">Try again</a>
     </section>
   {{/if}}
 </main>

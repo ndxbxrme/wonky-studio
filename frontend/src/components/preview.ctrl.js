@@ -1,4 +1,5 @@
 import {apiFetch, audioAssetUrl, globalSettingsAssetUrl, objectThumbnailUrl, scriptAudioCandidateUrl} from '../api.js';
+import {applyStatus} from '../status.js';
 import {previewAudioRuntime} from '../audio-runtime.js';
 import {findScene} from '../state/scenes.js';
 import {user} from '../state/user.js';
@@ -613,7 +614,7 @@ const PreviewCtrl = app => async params => {
     setStatus(message) {
       this.status = message;
       const status = this.root?.querySelector('[data-preview-status]');
-      if (status) status.textContent = message;
+      applyStatus(status, message);
     },
 
     setLoadingState({visible, title, detail, percent, meta} = {}) {
@@ -1138,6 +1139,20 @@ const PreviewCtrl = app => async params => {
       if (step.type === 'go_to_frame') {
         if ((step.target_scope ?? 'object') === 'background') {
           if (runtimeState) runtimeState.background_frame_index = Number(step.frame_index);
+          this.pushRuntimeToPreview(layer);
+          return;
+        }
+        if ((step.target_scope ?? 'object') === 'pickup_background') {
+          const sceneObject = previewData?.scene?.objects?.find(
+            object => Number(object.id) === Number(step.target_object_id)
+          );
+          const pickupUploadedFileId = Number(sceneObject?.pickup_uploaded_file_id ?? 0);
+          const pickupFrameIndex = Array.isArray(previewData?.scene?.images)
+            ? previewData.scene.images.findIndex(
+              image => Number(image.uploaded_file_id) === pickupUploadedFileId
+            )
+            : -1;
+          if (runtimeState && pickupFrameIndex >= 0) runtimeState.background_frame_index = pickupFrameIndex;
           this.pushRuntimeToPreview(layer);
           return;
         }

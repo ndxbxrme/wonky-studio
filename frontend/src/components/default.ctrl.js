@@ -1,4 +1,5 @@
 import {apiFetch} from '../api.js';
+import {applyStatus} from '../status.js';
 import {loadScenes, scenes} from '../state/scenes.js';
 import {logoutUser, user} from '../state/user.js';
 
@@ -12,6 +13,8 @@ const DefaultCtrl = app => async () => {
     hasUploadBatches: false,
     scenes,
     hasScenes: false,
+    workspaceSummary: null,
+    hasWorkspaceSummary: false,
     uploadStatus: '',
     sceneCreateStatus: '',
     unloadHandlers: [],
@@ -25,6 +28,7 @@ const DefaultCtrl = app => async () => {
       this.bind(window, 'dragover', event => this.onDrag(event));
       this.bind(window, 'dragleave', event => this.onDrag(event));
       this.bind(window, 'drop', event => this.onDrop(event));
+      this.syncStaticStatuses();
     },
 
     unload() {
@@ -45,6 +49,12 @@ const DefaultCtrl = app => async () => {
         return;
       }
 
+      const browseImportButton = event.target.closest('[data-action="browse-import-project"]');
+      if (browseImportButton) {
+        document.querySelector('[data-import-project-input]')?.click();
+        return;
+      }
+
       const logoutButton = event.target.closest('[data-action="logout"]');
       if (logoutButton) {
         await logoutUser();
@@ -52,9 +62,21 @@ const DefaultCtrl = app => async () => {
         return;
       }
 
+      const exportProjectButton = event.target.closest('[data-action="export-project"]');
+      if (exportProjectButton) {
+        this.exportProject(exportProjectButton);
+        return;
+      }
+
       const resetButton = event.target.closest('[data-action="reset-database"]');
       if (resetButton) {
         await this.resetDatabase(resetButton);
+        return;
+      }
+
+      const moveSceneButton = event.target.closest('[data-action="move-scene-up"], [data-action="move-scene-down"]');
+      if (moveSceneButton) {
+        await this.moveScene(moveSceneButton);
       }
     },
 
@@ -73,9 +95,15 @@ const DefaultCtrl = app => async () => {
     },
 
     async onChange(event) {
-      if (!event.target.matches('[data-file-input]')) return;
-      await this.uploadFiles(event.target.files);
-      event.target.value = '';
+      if (event.target.matches('[data-file-input]')) {
+        await this.uploadFiles(event.target.files);
+        event.target.value = '';
+        return;
+      }
+      if (event.target.matches('[data-import-project-input]')) {
+        await this.importProject(event.target.files?.[0] ?? null);
+        event.target.value = '';
+      }
     },
 
     onDrag(event) {
@@ -106,7 +134,7 @@ const DefaultCtrl = app => async () => {
       const hasImageFiles = selectedFiles.some(file => String(file.type || '').startsWith('image/'));
       const status = document.querySelector('[data-upload-status]');
       if (status) {
-        status.textContent = `Uploading ${selectedFiles.length} file${selectedFiles.length === 1 ? '' : 's'}...`;
+        applyStatus(status, `Uploading ${selectedFiles.length} file${selectedFiles.length === 1 ? '' : 's'}...`);
       }
 
       const formData = new FormData();
@@ -120,14 +148,15 @@ const DefaultCtrl = app => async () => {
         this.hasUploadBatches = this.uploadBatches.length > 0;
         if (status) {
           if (hasImageFiles) {
-            status.textContent = `Uploaded ${batch.file_count} file${batch.file_count === 1 ? '' : 's'}. Assign them from Images or by dropping them onto a scene.`;
+            applyStatus(status, `Uploaded ${batch.file_count} file${batch.file_count === 1 ? '' : 's'}. Assign them from Images or by dropping them onto a scene.`);
           } else {
-            status.textContent = `Queued ${batch.file_count} file${batch.file_count === 1 ? '' : 's'}.`;
+            applyStatus(status, `Queued ${batch.file_count} file${batch.file_count === 1 ? '' : 's'}.`);
           }
         }
+        await this.reloadWorkspaceSummary();
         app.refresh();
       } catch {
-        if (status) status.textContent = 'Upload failed. Check that the API is running and try again.';
+        applyStatus(status, 'Upload failed. Check that the API is running and try again.');
       }
     },
 
@@ -135,7 +164,7 @@ const DefaultCtrl = app => async () => {
       const selectedFiles = Array.from(files ?? []).filter(file => String(file.type || '').startsWith('image/'));
       if (!sceneId || !selectedFiles.length) return;
       const status = document.querySelector('[data-upload-status]');
-      if (status) status.textContent = `Uploading ${selectedFiles.length} image${selectedFiles.length === 1 ? '' : 's'} to scene ${sceneId}...`;
+      applyStatus(status, `Uploading ${selectedFiles.length} image${selectedFiles.length === 1 ? '' : 's'} to scene ${sceneId}...`);
       const formData = new FormData();
       selectedFiles.forEach(file => formData.append('files', file));
       try {
@@ -144,10 +173,11 @@ const DefaultCtrl = app => async () => {
           body: formData
         });
         await this.reloadScenes();
-        if (status) status.textContent = `Added ${selectedFiles.length} image${selectedFiles.length === 1 ? '' : 's'} to scene ${sceneId}.`;
+        await this.reloadWorkspaceSummary();
+        applyStatus(status, `Added ${selectedFiles.length} image${selectedFiles.length === 1 ? '' : 's'} to scene ${sceneId}.`);
         app.refresh();
       } catch {
-        if (status) status.textContent = `Could not add images to scene ${sceneId}.`;
+        applyStatus(status, `Could not add images to scene ${sceneId}.`);
       }
     },
 
@@ -157,10 +187,12 @@ const DefaultCtrl = app => async () => {
       if (!title) {
         this.sceneCreateStatus = 'Scene title is required.';
         app.refresh();
+        requestAnimationFrame(() => this.syncStaticStatuses());
         return;
       }
       this.sceneCreateStatus = 'Creating scene...';
       app.refresh();
+      requestAnimationFrame(() => this.syncStaticStatuses());
       try {
         const scene = await apiFetch('/api/scenes', {
           method: 'POST',
@@ -173,16 +205,36 @@ const DefaultCtrl = app => async () => {
         form.reset();
         this.sceneCreateStatus = `Scene ${scene.id} created.`;
         await this.reloadScenes();
+        await this.reloadWorkspaceSummary();
         app.refresh();
+        requestAnimationFrame(() => this.syncStaticStatuses());
       } catch {
         this.sceneCreateStatus = 'Could not create scene.';
         app.refresh();
+        requestAnimationFrame(() => this.syncStaticStatuses());
       }
+    },
+
+    syncStaticStatuses() {
+      applyStatus(document.querySelector('[data-upload-status]'), this.uploadStatus);
+      const sceneCreateStatus = document.querySelector('[data-scene-create-form] .form-status');
+      applyStatus(sceneCreateStatus, this.sceneCreateStatus);
+    },
+
+    exportProject(button) {
+      const status = document.querySelector('[data-project-archive-status]');
+      button.disabled = true;
+      applyStatus(status, 'Preparing project export...');
+      window.location.assign('/api/admin/export-project');
+      window.setTimeout(() => {
+        button.disabled = false;
+        applyStatus(status, 'Project export started.');
+      }, 800);
     },
 
     async generateInvite(form) {
       const result = document.querySelector('[data-invite-result]');
-      if (result) result.textContent = 'Generating invite...';
+      applyStatus(result, 'Generating invite...');
       const formData = new FormData(form);
       try {
         const invite = await apiFetch('/api/invites', {
@@ -199,10 +251,12 @@ const DefaultCtrl = app => async () => {
           link.href = invite.invite_link;
           link.textContent = invite.invite_link;
           result.append(link);
+          result.hidden = false;
+          result.dataset.tone = 'success';
         }
         form.reset();
       } catch {
-        if (result) result.textContent = 'Could not generate an invite link.';
+        applyStatus(result, 'Could not generate an invite link.');
       }
     },
 
@@ -214,31 +268,96 @@ const DefaultCtrl = app => async () => {
 
       const status = document.querySelector('[data-reset-database-status]');
       button.disabled = true;
-      if (status) status.textContent = 'Resetting database...';
+      applyStatus(status, 'Resetting database...');
       try {
         await apiFetch('/api/admin/reset-database', {method: 'POST'});
         this.uploadBatches = [];
         this.hasUploadBatches = false;
         scenes.splice(0, scenes.length);
         this.hasScenes = false;
-        if (status) status.textContent = 'Workspace data cleared.';
+        this.workspaceSummary = null;
+        this.hasWorkspaceSummary = false;
+        applyStatus(status, 'Workspace data cleared.');
         button.disabled = false;
         app.refresh();
       } catch {
-        if (status) status.textContent = 'Could not reset database.';
+        applyStatus(status, 'Could not reset database.');
         button.disabled = false;
+      }
+    },
+
+    async importProject(file) {
+      if (!(file instanceof File)) return;
+      const confirmed = window.confirm(
+        'Import a project zip into this workspace? Import only works on an empty workspace and will fail if content already exists.'
+      );
+      if (!confirmed) return;
+      const status = document.querySelector('[data-project-archive-status]');
+      applyStatus(status, `Importing ${file.name}...`);
+      const formData = new FormData();
+      formData.append('archive', file);
+      try {
+        const result = await apiFetch('/api/admin/import-project', {
+          method: 'POST',
+          body: formData
+        });
+        this.uploadBatches = [];
+        this.hasUploadBatches = false;
+        await this.reloadScenes();
+        await this.reloadWorkspaceSummary();
+        app.refresh();
+        const sceneCount = Number(result.archive?.table_counts?.scenes ?? 0);
+        const fileCount = Number(result.archive?.restored_file_count ?? 0);
+        applyStatus(status, `Imported project. Restored ${sceneCount} scene${sceneCount === 1 ? '' : 's'} and ${fileCount} file${fileCount === 1 ? '' : 's'}.`);
+      } catch (error) {
+        applyStatus(status, error?.message || 'Could not import project.');
       }
     },
 
     async reloadScenes() {
       await loadScenes();
       this.hasScenes = scenes.length > 0;
+      this.scenes = scenes.map((scene, index) => ({
+        ...scene,
+        canMoveUp: index > 0,
+        canMoveDown: index < scenes.length - 1,
+        disableMoveUp: index === 0,
+        disableMoveDown: index === scenes.length - 1
+      }));
+    },
+
+    async moveScene(button) {
+      const sceneId = Number(button.dataset.sceneId || 0);
+      const direction = button.matches('[data-action="move-scene-up"]') ? 'up' : 'down';
+      if (!sceneId) return;
+      button.disabled = true;
+      try {
+        await apiFetch(`/api/scenes/${sceneId}/move`, {
+          method: 'POST',
+          body: JSON.stringify({direction})
+        });
+        await this.reloadScenes();
+        app.refresh();
+      } finally {
+        button.disabled = false;
+      }
+    },
+
+    async reloadWorkspaceSummary() {
+      try {
+        this.workspaceSummary = await apiFetch('/api/workspace-summary');
+        this.hasWorkspaceSummary = Boolean(this.workspaceSummary);
+      } catch {
+        this.workspaceSummary = null;
+        this.hasWorkspaceSummary = false;
+      }
     }
   };
 
   controller.uploadBatches = await loadUploadBatches();
   controller.hasUploadBatches = controller.uploadBatches.length > 0;
   await controller.reloadScenes();
+  await controller.reloadWorkspaceSummary();
   return controller;
 };
 

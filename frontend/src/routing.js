@@ -20,6 +20,8 @@ import {ImagesCtrl} from './components/images.ctrl.js';
 import imagesTemplate from './components/images.html?raw';
 import {GlobalSettingsCtrl} from './components/global-settings.ctrl.js';
 import globalSettingsTemplate from './components/global-settings.html?raw';
+import {SystemHealthCtrl} from './components/system-health.ctrl.js';
+import systemHealthTemplate from './components/system-health.html?raw';
 import {PreviewGameCtrl} from './components/preview-game.ctrl.js';
 import previewGameTemplate from './components/preview-game.html?raw';
 import {authMiddleware} from './auth-middleware.js';
@@ -51,6 +53,8 @@ const initRoutes = async (app) => {
   app.controller('images', ImagesCtrl(app));
   app.template('global-settings', globalSettingsTemplate);
   app.controller('global-settings', GlobalSettingsCtrl(app));
+  app.template('system-health', systemHealthTemplate);
+  app.controller('system-health', SystemHealthCtrl(app));
   app.template('preview-game', previewGameTemplate);
   app.controller('preview-game', PreviewGameCtrl(app));
 }

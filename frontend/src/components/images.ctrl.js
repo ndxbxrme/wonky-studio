@@ -1,4 +1,5 @@
 import {apiFetch, uploadedFileThumbnailUrl} from '../api.js';
+import {applyStatus} from '../status.js';
 import {loadScenes, scenes} from '../state/scenes.js';
 import {user} from '../state/user.js';
 
@@ -239,7 +240,7 @@ const ImagesCtrl = app => async () => {
     setStatus(message) {
       this.status = message;
       const status = this.root?.querySelector('[data-images-status]');
-      if (status) status.textContent = message;
+      applyStatus(status, message);
     }
   };
 
@@ -249,10 +250,13 @@ const ImagesCtrl = app => async () => {
 
 function prepareImageRecord(image) {
   const cacheKey = shortCacheKey(`${image.created_at}|${image.sort_order ?? ''}|${image.scene_id ?? ''}`);
+  const pickupLabel = image.pickup_object_name ? `Pickup frame: ${image.pickup_object_name}` : '';
   return {
     ...image,
     sceneLabel: image.scene_title ? `Scene ${image.scene_id} · ${image.scene_title}` : 'Unassigned',
-    frameLabel: Number.isFinite(Number(image.sort_order)) ? `Frame ${Number(image.sort_order) + 1}` : '',
+    frameLabel: Number.isFinite(Number(image.sort_order))
+      ? `${pickupLabel ? `${pickupLabel} · ` : ''}Frame ${Number(image.sort_order) + 1}`
+      : pickupLabel,
     thumbUrl: uploadedFileThumbnailUrl(image.uploaded_file_id, 320, cacheKey)
   };
 }

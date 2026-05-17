@@ -1,4 +1,5 @@
 import {apiFetch} from '../api.js';
+import {applyStatus} from '../status.js';
 import {
   findScene,
   loadScene,
@@ -122,7 +123,7 @@ const AnimationsCtrl = app => async params => {
 
     setStatus(message) {
       const status = this.root?.querySelector('[data-animation-status]');
-      if (status) status.textContent = message;
+      applyStatus(status, message);
     },
 
     async configurePreview() {

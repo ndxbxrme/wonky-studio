@@ -2,12 +2,13 @@
   <nav class="app-topbar" aria-label="Primary">
     <a class="app-topbar__brand" href="/">Wonky Studio</a>
     <div class="app-topbar__links">
-      <a class="app-topbar__link" href="/">Scenes</a>
-      <a class="app-topbar__link" href="/images">Images</a>
-      <a class="app-topbar__link" href="/script-review">Transcript library</a>
-      <a class="app-topbar__link" href="/audio-library">Audio library</a>
-      <a class="app-topbar__link" href="/global-settings">Global settings</a>
-      <button class="app-topbar__link app-topbar__link--primary" type="button" data-action="open-game-preview">Preview game</button>
+      <a class="app-topbar__link" href="/"><span class="ui-icon" data-icon="clapperboard"></span><span>Scenes</span></a>
+      <a class="app-topbar__link" href="/images"><span class="ui-icon" data-icon="images"></span><span>Images</span></a>
+      <a class="app-topbar__link" href="/script-review"><span class="ui-icon" data-icon="captions"></span><span>Transcript library</span></a>
+      <a class="app-topbar__link" href="/audio-library"><span class="ui-icon" data-icon="audio-lines"></span><span>Audio library</span></a>
+      <a class="app-topbar__link" href="/global-settings"><span class="ui-icon" data-icon="settings-2"></span><span>Global settings</span></a>
+      <a class="app-topbar__link" href="/system-health"><span class="ui-icon" data-icon="activity"></span><span>Health</span></a>
+      <button class="app-topbar__link app-topbar__link--primary" type="button" data-action="open-game-preview"><span class="ui-icon" data-icon="play"></span><span>Preview game</span></button>
     </div>
   </nav>
 
@@ -83,6 +84,14 @@
         <input name="missing_audio" type="checkbox" />
         Missing audio
       </label>
+      <label class="checkbox-label">
+        <input name="missing_translation" type="checkbox" />
+        Missing translation
+      </label>
+      <label class="checkbox-label">
+        <input name="failed_tts" type="checkbox" />
+        Failed TTS
+      </label>
       <button class="button primary" type="submit">Search</button>
     </form>
   </section>
@@ -118,18 +127,52 @@
           <button class="button secondary compact" type="button" data-action="next-page">Next</button>
         </div>
       </div>
+      <section class="script-bulk-toolbar">
+        <label class="checkbox-label">
+          <input name="select_all_visible" type="checkbox" data-action="toggle-select-all-lines" {{#if allVisibleLinesSelected}}checked{{/if}} />
+          Select page
+        </label>
+        <strong>{{selectedLineCount}} selected</strong>
+        <div class="script-bulk-toolbar__actions">
+          <button class="button secondary compact" type="button" data-action="bulk-approve-translation">Mark approved</button>
+          <button class="button secondary compact" type="button" data-action="bulk-generate-tts">Generate TTS</button>
+          <button class="button secondary compact" type="button" data-action="bulk-generate-missing-tts">Generate missing TTS</button>
+          <button class="button secondary compact" type="button" data-action="bulk-retry-failed-tts">Retry failed TTS</button>
+        </div>
+      </section>
       {{#if hasLines}}
         <div class="script-line-list">
           {{#each lines as line}}
-            <button class="script-line-row {{#if line.isSelected}}is-selected{{/if}}" type="button" data-action="select-script-line" data-line-id="{{line.line_id}}">
+            <article class="script-line-row {{#if line.isSelected}}is-selected{{/if}}">
               <span class="script-line-row__number">#{{line.line_id}}</span>
               <span class="script-line-row__body">
-                <strong>{{line.source_text}}</strong>
-                <span>{{line.pathLabel}}</span>
-                <span>{{line.translationStatusLabel}} · {{line.audioSummary}}</span>
+                <span class="script-line-row__topline">
+                  <label class="checkbox-label script-line-row__select">
+                    <input type="checkbox" data-action="toggle-script-line-selection" data-line-id="{{line.line_id}}" {{#if line.isChecked}}checked{{/if}} />
+                    <span>Select</span>
+                  </label>
+                </span>
+                <button class="script-line-row__select-button" type="button" data-action="select-script-line" data-line-id="{{line.line_id}}">
+                  <strong>{{line.source_text}}</strong>
+                  <span>{{line.pathLabel}}</span>
+                  <span>{{line.translationStatusLabel}} · {{line.audioSummary}}</span>
+                  <span class="script-line-health">
+                    <span class="script-line-health__pill {{#if line.translation_present}}is-good{{else}}is-missing{{/if}}">TR</span>
+                    <span class="script-line-health__pill {{#if line.tts_audio_count}}is-good{{else}}is-missing{{/if}}">TTS</span>
+                    <span class="script-line-health__pill {{#if line.reviewed_audio_count}}is-good{{else}}is-muted{{/if}}">REV</span>
+                    <span class="script-line-health__pill {{#if line.selected_audio_count}}is-good{{else}}is-muted{{/if}}">SEL</span>
+                    {{#if line.failed_tts_count}}<span class="script-line-health__pill is-bad">ERR</span>{{/if}}
+                  </span>
+                </button>
               </span>
-            </button>
+            </article>
           {{/each}}
+        </div>
+      {{/if}}
+      {{#if not hasLines}}
+        <div class="editor-empty-state">
+          <strong>No lines match this filter.</strong>
+          <p>Adjust the filters above, or add a new line from this panel.</p>
         </div>
       {{/if}}
       {{#if hasPreviousPage}}
@@ -189,7 +232,10 @@
             Notes
             <textarea name="notes" rows="2">{{selectedLine.activeTranslation.notes}}</textarea>
           </label>
-          <button class="button primary" type="submit">Save translation</button>
+          <div class="form-actions">
+            <button class="button primary" type="submit">Save translation</button>
+            <button class="button secondary compact form-actions__cancel" type="button" data-action="generate-translation">Generate translation</button>
+          </div>
         </form>
 
         <section class="audio-review-section" aria-label="Audio candidates" data-script-audio-dropzone>
@@ -197,6 +243,7 @@
             <div>
               <p class="eyebrow">Audio</p>
               <h2>Candidates</h2>
+              <p class="audio-preference">{{selectedLine.preferredAudioLabel}}</p>
             </div>
             <div class="audio-review-section__actions">
               <input class="file-input" type="file" accept="audio/*" multiple data-script-audio-upload-input />
@@ -224,8 +271,8 @@
                   {{#if candidate.hasAudio}}
                     <audio controls preload="metadata" src="{{candidate.audioUrl}}"></audio>
                   {{/if}}
-                  {{#if candidate.error}}
-                    <p class="audio-candidate-error">{{candidate.error}}</p>
+                  {{#if candidate.errorLabel}}
+                    <p class="audio-candidate-error">{{candidate.errorLabel}}</p>
                   {{/if}}
                   <div class="audio-candidate-row__controls">
                     <label>
@@ -249,6 +296,18 @@
               {{/each}}
             </div>
           {{/if}}
+          {{#if not selectedLine.hasAudioCandidates}}
+            <div class="editor-empty-state editor-empty-state--compact">
+              <strong>No audio candidates for {{language}}.</strong>
+              <p>Generate TTS or upload reviewed audio for this line.</p>
+            </div>
+          {{/if}}
+        </section>
+      {{/if}}
+      {{#if not hasSelectedLine}}
+        <section class="editor-empty-state editor-empty-state--large">
+          <strong>No line selected.</strong>
+          <p>Pick a line from the left to review translations and audio, or add a new one.</p>
         </section>
       {{/if}}
     </section>
