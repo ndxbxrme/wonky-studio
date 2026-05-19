@@ -13,6 +13,67 @@ from .security import hash_token, make_token, now_utc, utc_iso
 
 DEFAULT_DB_PATH = Path(__file__).resolve().parents[1] / "data" / "wonky-studio.sqlite3"
 
+SYSTEM_GAME_VARIABLES: tuple[dict[str, Any], ...] = (
+    {
+        "name": "primary_language",
+        "value_type": "string",
+        "default_value": "en",
+        "description": "Built-in runtime variable controlling the primary spoken language.",
+    },
+    {
+        "name": "secondary_language",
+        "value_type": "string",
+        "default_value": "fr",
+        "description": "Built-in runtime variable controlling the secondary spoken language.",
+    },
+    {
+        "name": "translation_mode",
+        "value_type": "string",
+        "default_value": "sequential",
+        "description": "Built-in runtime variable controlling subtitle/audio translation playback mode.",
+    },
+    {
+        "name": "master_volume",
+        "value_type": "number",
+        "default_value": 5,
+        "description": "Built-in runtime variable controlling overall preview volume.",
+    },
+    {
+        "name": "narrator_volume",
+        "value_type": "number",
+        "default_value": 5,
+        "description": "Built-in runtime variable controlling narrator and spoken-line volume.",
+    },
+    {
+        "name": "music_volume",
+        "value_type": "number",
+        "default_value": 5,
+        "description": "Built-in runtime variable controlling background music volume.",
+    },
+    {
+        "name": "sfx_volume",
+        "value_type": "number",
+        "default_value": 5,
+        "description": "Built-in runtime variable controlling sound-effect volume.",
+    },
+)
+
+CURSOR_STATE_KEYS: tuple[str, ...] = (
+    "default",
+    "hover_interactive",
+    "busy",
+    "blocked",
+)
+
+DEFAULT_CURSOR_STATES: dict[str, dict[str, Any]] = {
+    state_key: {
+        "relative_path": None,
+        "hotspot_x": 0,
+        "hotspot_y": 0,
+    }
+    for state_key in CURSOR_STATE_KEYS
+}
+
 
 def get_database_path() -> Path:
     configured_path = os.environ.get("WONKY_STUDIO_DB_PATH")
@@ -203,7 +264,6 @@ def init_database(
         _ensure_column(connection, "scenes", "presentation_mode", "TEXT NOT NULL DEFAULT 'base'")
         _ensure_column(connection, "scenes", "background_frame_index", "INTEGER NOT NULL DEFAULT 0")
         _ensure_column(connection, "scenes", "sort_order", "INTEGER NOT NULL DEFAULT 0")
-        _ensure_column(connection, "scene_objects", "pickup_uploaded_file_id", "INTEGER")
         connection.execute(
             """
             UPDATE scenes
@@ -273,6 +333,7 @@ def init_database(
         _ensure_column(connection, "scene_objects", "sort_order", "INTEGER NOT NULL DEFAULT 0")
         _ensure_column(connection, "scene_objects", "keyboard_target_enabled", "INTEGER NOT NULL DEFAULT 0")
         _ensure_column(connection, "scene_objects", "default_uploaded_file_id", "INTEGER")
+        _ensure_column(connection, "scene_objects", "pickup_uploaded_file_id", "INTEGER")
         _ensure_column(connection, "scene_objects", "inventory_image_relative_path", "TEXT")
         _ensure_column(connection, "scene_objects", "inventory_image_failed", "INTEGER NOT NULL DEFAULT 0")
         _ensure_column(connection, "scene_objects", "pickup_frame_failed", "INTEGER NOT NULL DEFAULT 0")
@@ -304,6 +365,18 @@ def init_database(
                 inventory_slots_json TEXT NOT NULL DEFAULT '[]',
                 inventory_background_relative_path TEXT,
                 verb_tag_background_relative_path TEXT,
+                cursor_default_relative_path TEXT,
+                cursor_default_hotspot_x INTEGER NOT NULL DEFAULT 0,
+                cursor_default_hotspot_y INTEGER NOT NULL DEFAULT 0,
+                cursor_hover_interactive_relative_path TEXT,
+                cursor_hover_interactive_hotspot_x INTEGER NOT NULL DEFAULT 0,
+                cursor_hover_interactive_hotspot_y INTEGER NOT NULL DEFAULT 0,
+                cursor_busy_relative_path TEXT,
+                cursor_busy_hotspot_x INTEGER NOT NULL DEFAULT 0,
+                cursor_busy_hotspot_y INTEGER NOT NULL DEFAULT 0,
+                cursor_blocked_relative_path TEXT,
+                cursor_blocked_hotspot_x INTEGER NOT NULL DEFAULT 0,
+                cursor_blocked_hotspot_y INTEGER NOT NULL DEFAULT 0,
                 created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
                 updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
                 FOREIGN KEY (organization_id) REFERENCES organizations(id),
@@ -317,6 +390,18 @@ def init_database(
         _ensure_column(connection, "global_settings", "inventory_slots_json", "TEXT NOT NULL DEFAULT '[]'")
         _ensure_column(connection, "global_settings", "inventory_background_relative_path", "TEXT")
         _ensure_column(connection, "global_settings", "verb_tag_background_relative_path", "TEXT")
+        _ensure_column(connection, "global_settings", "cursor_default_relative_path", "TEXT")
+        _ensure_column(connection, "global_settings", "cursor_default_hotspot_x", "INTEGER NOT NULL DEFAULT 0")
+        _ensure_column(connection, "global_settings", "cursor_default_hotspot_y", "INTEGER NOT NULL DEFAULT 0")
+        _ensure_column(connection, "global_settings", "cursor_hover_interactive_relative_path", "TEXT")
+        _ensure_column(connection, "global_settings", "cursor_hover_interactive_hotspot_x", "INTEGER NOT NULL DEFAULT 0")
+        _ensure_column(connection, "global_settings", "cursor_hover_interactive_hotspot_y", "INTEGER NOT NULL DEFAULT 0")
+        _ensure_column(connection, "global_settings", "cursor_busy_relative_path", "TEXT")
+        _ensure_column(connection, "global_settings", "cursor_busy_hotspot_x", "INTEGER NOT NULL DEFAULT 0")
+        _ensure_column(connection, "global_settings", "cursor_busy_hotspot_y", "INTEGER NOT NULL DEFAULT 0")
+        _ensure_column(connection, "global_settings", "cursor_blocked_relative_path", "TEXT")
+        _ensure_column(connection, "global_settings", "cursor_blocked_hotspot_x", "INTEGER NOT NULL DEFAULT 0")
+        _ensure_column(connection, "global_settings", "cursor_blocked_hotspot_y", "INTEGER NOT NULL DEFAULT 0")
         connection.execute(
             """
             CREATE TABLE IF NOT EXISTS object_animations (
@@ -600,6 +685,32 @@ def init_database(
         connection.execute(
             "CREATE INDEX IF NOT EXISTS idx_verbs_org ON verbs (organization_id, sort_order, id)"
         )
+    ensure_system_game_variables(db_path, organization_id)
+
+
+def ensure_system_game_variables(db_path: Path, organization_id: str) -> None:
+    with connect(db_path) as connection:
+        for variable in SYSTEM_GAME_VARIABLES:
+            connection.execute(
+                """
+                INSERT INTO game_variables (
+                    organization_id,
+                    name,
+                    value_type,
+                    default_value_json,
+                    description
+                )
+                VALUES (?, ?, ?, ?, ?)
+                ON CONFLICT (organization_id, name) DO NOTHING
+                """,
+                (
+                    organization_id,
+                    variable["name"],
+                    variable["value_type"],
+                    json.dumps(variable["default_value"], separators=(",", ":")),
+                    variable["description"],
+                ),
+            )
 
 
 def list_assets(db_path: Path, organization_id: str) -> list[dict[str, Any]]:
@@ -1344,6 +1455,18 @@ def get_global_settings(db_path: Path, organization_id: str) -> dict[str, Any]:
                    inventory_slots_json,
                    inventory_background_relative_path,
                    verb_tag_background_relative_path,
+                   cursor_default_relative_path,
+                   cursor_default_hotspot_x,
+                   cursor_default_hotspot_y,
+                   cursor_hover_interactive_relative_path,
+                   cursor_hover_interactive_hotspot_x,
+                   cursor_hover_interactive_hotspot_y,
+                   cursor_busy_relative_path,
+                   cursor_busy_hotspot_x,
+                   cursor_busy_hotspot_y,
+                   cursor_blocked_relative_path,
+                   cursor_blocked_hotspot_x,
+                   cursor_blocked_hotspot_y,
                    created_at,
                    updated_at
             FROM global_settings
@@ -1372,6 +1495,18 @@ def get_global_settings(db_path: Path, organization_id: str) -> dict[str, Any]:
                        inventory_slots_json,
                        inventory_background_relative_path,
                        verb_tag_background_relative_path,
+                       cursor_default_relative_path,
+                       cursor_default_hotspot_x,
+                       cursor_default_hotspot_y,
+                       cursor_hover_interactive_relative_path,
+                       cursor_hover_interactive_hotspot_x,
+                       cursor_hover_interactive_hotspot_y,
+                       cursor_busy_relative_path,
+                       cursor_busy_hotspot_x,
+                       cursor_busy_hotspot_y,
+                       cursor_blocked_relative_path,
+                       cursor_blocked_hotspot_x,
+                       cursor_blocked_hotspot_y,
                        created_at,
                        updated_at
                 FROM global_settings
@@ -1382,6 +1517,7 @@ def get_global_settings(db_path: Path, organization_id: str) -> dict[str, Any]:
     result = dict(row)
     result["overlay_affect_audio"] = bool(result["overlay_affect_audio"])
     result["inventory_slots"] = _json_loads(result.pop("inventory_slots_json", "[]"), [])
+    result["cursor_states"] = _extract_cursor_states(result)
     return result
 
 
@@ -1398,11 +1534,12 @@ def update_global_settings(
     inventory_slots: list[dict[str, Any]] | None = None,
     inventory_background_relative_path: str | None = None,
     verb_tag_background_relative_path: str | None = None,
+    cursor_states: dict[str, dict[str, Any]] | None = None,
     update_start_scene_id: bool = False,
     update_inventory_background_relative_path: bool = False,
     update_verb_tag_background_relative_path: bool = False,
 ) -> dict[str, Any]:
-    get_global_settings(db_path, organization_id)
+    current_settings = get_global_settings(db_path, organization_id)
     assignments = ["updated_at = CURRENT_TIMESTAMP"]
     values: list[Any] = []
     if overlay_open_duration_seconds is not None:
@@ -1435,6 +1572,16 @@ def update_global_settings(
     if update_verb_tag_background_relative_path:
         assignments.append("verb_tag_background_relative_path = ?")
         values.append(verb_tag_background_relative_path)
+    if cursor_states is not None:
+        normalized_cursor_states = _merge_cursor_states(current_settings.get("cursor_states"), cursor_states)
+        for state_key in CURSOR_STATE_KEYS:
+            state = normalized_cursor_states[state_key]
+            assignments.append(f"cursor_{state_key}_relative_path = ?")
+            values.append(state.get("relative_path"))
+            assignments.append(f"cursor_{state_key}_hotspot_x = ?")
+            values.append(int(state.get("hotspot_x") or 0))
+            assignments.append(f"cursor_{state_key}_hotspot_y = ?")
+            values.append(int(state.get("hotspot_y") or 0))
     with connect(db_path) as connection:
         connection.execute(
             f"""
@@ -1445,6 +1592,47 @@ def update_global_settings(
             (*values, organization_id),
         )
     return get_global_settings(db_path, organization_id)
+
+
+def _extract_cursor_states(result: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    cursor_states = _merge_cursor_states(None, None)
+    for state_key in CURSOR_STATE_KEYS:
+        cursor_states[state_key] = {
+            "relative_path": result.pop(f"cursor_{state_key}_relative_path", None),
+            "hotspot_x": int(result.pop(f"cursor_{state_key}_hotspot_x", 0) or 0),
+            "hotspot_y": int(result.pop(f"cursor_{state_key}_hotspot_y", 0) or 0),
+        }
+    return cursor_states
+
+
+def _merge_cursor_states(
+    existing_states: dict[str, dict[str, Any]] | None,
+    incoming_states: dict[str, dict[str, Any]] | None,
+) -> dict[str, dict[str, Any]]:
+    merged = {
+        state_key: {
+            "relative_path": DEFAULT_CURSOR_STATES[state_key]["relative_path"],
+            "hotspot_x": DEFAULT_CURSOR_STATES[state_key]["hotspot_x"],
+            "hotspot_y": DEFAULT_CURSOR_STATES[state_key]["hotspot_y"],
+        }
+        for state_key in CURSOR_STATE_KEYS
+    }
+    for state_key, state in (existing_states or {}).items():
+        if state_key not in merged or not isinstance(state, dict):
+            continue
+        merged[state_key]["relative_path"] = state.get("relative_path") or None
+        merged[state_key]["hotspot_x"] = int(state.get("hotspot_x") or 0)
+        merged[state_key]["hotspot_y"] = int(state.get("hotspot_y") or 0)
+    for state_key, state in (incoming_states or {}).items():
+        if state_key not in merged or not isinstance(state, dict):
+            continue
+        if "relative_path" in state:
+            merged[state_key]["relative_path"] = state.get("relative_path") or None
+        if "hotspot_x" in state:
+            merged[state_key]["hotspot_x"] = int(state.get("hotspot_x") or 0)
+        if "hotspot_y" in state:
+            merged[state_key]["hotspot_y"] = int(state.get("hotspot_y") or 0)
+    return merged
 
 
 def create_or_update_overlay_scene_binding(
@@ -1908,6 +2096,9 @@ def list_script_lines(
         missing_translation=missing_translation,
         failed_tts=failed_tts,
     )
+    normalized_query = query.strip().lower()
+    order_sql = _build_script_line_order_sql(bool(normalized_query))
+    order_values = _build_script_line_order_values(normalized_query)
     with connect(db_path) as connection:
         total_row = connection.execute(
             f"SELECT COUNT(*) AS count FROM script_lines sl WHERE {where_sql}",
@@ -1983,11 +2174,11 @@ def list_script_lines(
               ON st.script_line_id = sl.id
              AND st.language = ?
             WHERE {where_sql}
-            ORDER BY sl.line_id ASC
+            {order_sql}
             LIMIT ?
             OFFSET ?
             """,
-            [language, language, language, language, language, language, *values, limit, offset],
+            [language, language, language, language, language, language, *values, *order_values, limit, offset],
         ).fetchall()
 
     return {
@@ -2024,18 +2215,74 @@ def list_script_line_ids(
         missing_translation=missing_translation,
         failed_tts=failed_tts,
     )
+    normalized_query = query.strip().lower()
+    order_sql = _build_script_line_order_sql(bool(normalized_query))
+    order_values = _build_script_line_order_values(normalized_query)
     with connect(db_path) as connection:
         rows = connection.execute(
             f"""
             SELECT sl.line_id
             FROM script_lines sl
             WHERE {where_sql}
-            ORDER BY sl.line_id ASC
+            {order_sql}
             LIMIT ?
             """,
-            [*values, max(1, limit)],
+            [*values, *order_values, max(1, limit)],
         ).fetchall()
     return [int(row["line_id"]) for row in rows]
+
+
+def _build_script_line_order_sql(has_query: bool) -> str:
+    if not has_query:
+        return "ORDER BY sl.line_id ASC"
+    return """
+        ORDER BY
+            CASE
+                WHEN LOWER(sl.source_text) = ? THEN 0
+                WHEN EXISTS (
+                    SELECT 1
+                    FROM script_translations st_exact
+                    WHERE st_exact.script_line_id = sl.id
+                      AND LOWER(TRIM(COALESCE(st_exact.text, ''))) = ?
+                ) THEN 1
+                WHEN LOWER(sl.source_text) LIKE ? THEN 2
+                WHEN EXISTS (
+                    SELECT 1
+                    FROM script_translations st_prefix
+                    WHERE st_prefix.script_line_id = sl.id
+                      AND LOWER(TRIM(COALESCE(st_prefix.text, ''))) LIKE ?
+                ) THEN 3
+                WHEN INSTR(LOWER(sl.source_text), ?) > 0 THEN 4
+                WHEN EXISTS (
+                    SELECT 1
+                    FROM script_translations st_contains
+                    WHERE st_contains.script_line_id = sl.id
+                      AND INSTR(LOWER(COALESCE(st_contains.text, '')), ?) > 0
+                ) THEN 5
+                WHEN LOWER(sl.path_text) LIKE ? THEN 6
+                WHEN INSTR(LOWER(sl.path_text), ?) > 0 THEN 7
+                ELSE 8
+            END ASC,
+            ABS(LENGTH(sl.source_text) - ?) ASC,
+            LENGTH(sl.source_text) ASC,
+            sl.line_id DESC
+    """
+
+
+def _build_script_line_order_values(normalized_query: str) -> list[Any]:
+    if not normalized_query:
+        return []
+    return [
+        normalized_query,
+        normalized_query,
+        f"{normalized_query}%",
+        f"{normalized_query}%",
+        normalized_query,
+        normalized_query,
+        f"{normalized_query}%",
+        normalized_query,
+        len(normalized_query),
+    ]
 
 
 def get_script_line_detail(
@@ -2276,6 +2523,7 @@ def get_script_audio_candidate_by_id(
 
 
 def list_game_variables(db_path: Path, organization_id: str) -> list[dict[str, Any]]:
+    ensure_system_game_variables(db_path, organization_id)
     with connect(db_path) as connection:
         rows = connection.execute(
             """
@@ -3405,10 +3653,12 @@ def list_scenes(db_path: Path, organization_id: str, limit: int = 20) -> list[di
                    scenes.created_at,
                    scenes.updated_at,
                    COUNT(DISTINCT scene_images.id) AS image_count,
-                   COUNT(DISTINCT scene_objects.id) AS object_count
+                   COUNT(DISTINCT scene_objects.id) AS object_count,
+                   COUNT(DISTINCT object_masks.id) AS object_mask_count
             FROM scenes
             LEFT JOIN scene_images ON scene_images.scene_id = scenes.id
             LEFT JOIN scene_objects ON scene_objects.scene_id = scenes.id
+            LEFT JOIN object_masks ON object_masks.scene_object_id = scene_objects.id
             WHERE scenes.organization_id = ?
             GROUP BY scenes.id
             ORDER BY scenes.sort_order ASC, scenes.id ASC
@@ -3527,6 +3777,8 @@ def get_workspace_summary(
 
         missing_translations = 0
         missing_approved_audio = 0
+        referenced_missing_selected_audio = 0
+        referenced_unverified_translations = 0
         if normalized_languages:
             line_rows = connection.execute(
                 """
@@ -3570,12 +3822,66 @@ def get_workspace_summary(
                     if approved_audio_row is None:
                         missing_approved_audio += 1
 
+            interaction_rows = connection.execute(
+                """
+                SELECT action_tree_json
+                FROM scene_interactions si
+                JOIN scenes s ON s.id = si.scene_id
+                WHERE s.organization_id = ?
+                  AND si.enabled = 1
+                """,
+                (organization_id,),
+            ).fetchall()
+            referenced_line_ids: set[int] = set()
+            for row in interaction_rows:
+                try:
+                    action_tree = json.loads(row["action_tree_json"] or "[]")
+                except json.JSONDecodeError:
+                    continue
+                _collect_script_line_ids_from_action_tree(action_tree, referenced_line_ids)
+
+            for line_id in sorted(referenced_line_ids):
+                for language in normalized_languages:
+                    selected_audio_row = connection.execute(
+                        """
+                        SELECT 1
+                        FROM script_audio_candidates
+                        WHERE script_line_id = ?
+                          AND language = ?
+                          AND selected = 1
+                          AND relative_path != ''
+                          AND manifest_status != 'error'
+                        LIMIT 1
+                        """,
+                        (line_id, language),
+                    ).fetchone()
+                    if selected_audio_row is None:
+                        referenced_missing_selected_audio += 1
+
+                    if language == "en":
+                        continue
+                    translation_row = connection.execute(
+                        """
+                        SELECT review_status
+                        FROM script_translations
+                        WHERE script_line_id = ?
+                          AND language = ?
+                          AND TRIM(COALESCE(text, '')) != ''
+                        LIMIT 1
+                        """,
+                        (line_id, language),
+                    ).fetchone()
+                    if translation_row is None or str(translation_row["review_status"] or "") != "approved":
+                        referenced_unverified_translations += 1
+
     return {
         "scenes_count": scenes_count,
         "missing_masks": missing_masks,
         "missing_inventory_art": missing_inventory_art,
         "missing_translations": missing_translations,
         "missing_approved_audio": missing_approved_audio,
+        "referenced_missing_selected_audio": referenced_missing_selected_audio,
+        "referenced_unverified_translations": referenced_unverified_translations,
         "failed_jobs": failed_jobs,
     }
 
@@ -5274,6 +5580,21 @@ def _get_audio_candidate_row(
         """,
         (candidate_id, organization_id),
     ).fetchone()
+
+
+def _collect_script_line_ids_from_action_tree(steps: list[Any], line_ids: set[int]) -> None:
+    for step in steps or []:
+        if not isinstance(step, dict):
+            continue
+        if step.get("type") in {"play_audio", "show_subtitle"}:
+            for line_id in step.get("script_line_ids") or []:
+                try:
+                    numeric_id = int(line_id)
+                except (TypeError, ValueError):
+                    continue
+                line_ids.add(numeric_id)
+        _collect_script_line_ids_from_action_tree(step.get("then_steps") or [], line_ids)
+        _collect_script_line_ids_from_action_tree(step.get("else_steps") or [], line_ids)
 
 
 def _script_line_summary_from_row(row: sqlite3.Row, language: str) -> dict[str, Any]:

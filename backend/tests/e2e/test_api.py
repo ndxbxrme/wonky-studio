@@ -2323,6 +2323,62 @@ def test_object_masks_can_be_combined_and_cleared(tmp_path):
         assert cleared.convert("L").getbbox() is None
 
 
+def test_object_masks_can_be_combined_when_one_mask_has_a_different_size(tmp_path):
+    fake_segmentation = FakeSegmentationProvider()
+    with api_client(
+        tmp_path,
+        segmentation_provider=fake_segmentation,
+    ) as (client, db_path, settings):
+        authenticate(client, db_path, settings, role="user")
+        upload_response = client.post(
+            "/api/uploads/batches",
+            files=[
+                ("files", ("frame_0000.png", png_bytes(draw_flower=True), "image/png")),
+                ("files", ("frame_0001.png", png_bytes(draw_flower=True), "image/png")),
+            ],
+        )
+        batch_id = upload_response.json()["id"]
+        scene = client.post(f"/api/uploads/batches/{batch_id}/process-scene").json()["scene"]
+        client.post(
+            f"/api/scenes/{scene['id']}/objects",
+            json={"name": "bed", "prompt": "bed"},
+        )
+        extract_response = client.post(f"/api/scenes/{scene['id']}/extract-masks")
+        wait_for_job(client, extract_response.json()["id"])
+        detail = client.get(f"/api/scenes/{scene['id']}").json()
+        masks = detail["objects"][0]["masks"]
+        left_mask = masks[0]
+        right_mask = masks[1]
+
+        left_image = Image.new("L", (16, 9), 0)
+        ImageDraw.Draw(left_image).rectangle((1, 2, 5, 6), fill=180)
+        right_image = Image.new("L", (32, 18), 0)
+        ImageDraw.Draw(right_image).rectangle((20, 4, 29, 13), fill=255)
+        client.put(
+            f"/api/object-masks/{left_mask['id']}/content",
+            content=image_bytes(left_image),
+            headers={"Content-Type": "image/png"},
+        )
+        client.put(
+            f"/api/object-masks/{right_mask['id']}/content",
+            content=image_bytes(right_image),
+            headers={"Content-Type": "image/png"},
+        )
+
+        combine_response = client.post(
+            f"/api/object-masks/{left_mask['id']}/process",
+            json={"operation": "combine"},
+        )
+        right_raw_path = settings.storage_root / right_mask["relative_path"]
+
+    assert combine_response.status_code == 200
+    with Image.open(right_raw_path) as combined_right:
+        combined = combined_right.convert("L")
+        assert combined.size == (16, 9)
+        assert combined.getpixel((3, 4)) > 0
+        assert combined.getpixel((12, 4)) > 0
+
+
 def test_mask_extraction_does_not_generate_default_animation_for_new_motion_masks(tmp_path):
     fake_segmentation = FakeMovingSegmentationProvider()
     with api_client(

@@ -1,0 +1,135 @@
+<main class="variables-page" data-variables-page>
+  <nav class="app-topbar" aria-label="Primary">
+    <a class="app-topbar__brand" href="/">Wonky Studio</a>
+    <div class="app-topbar__links">
+      <a class="app-topbar__link" href="/"><span class="ui-icon" data-icon="clapperboard"></span><span>Scenes</span></a>
+      <a class="app-topbar__link" href="/images"><span class="ui-icon" data-icon="images"></span><span>Images</span></a>
+      <a class="app-topbar__link" href="/variables"><span class="ui-icon" data-icon="sliders-horizontal"></span><span>Variables</span></a>
+      <a class="app-topbar__link" href="/script-review"><span class="ui-icon" data-icon="captions"></span><span>Transcript library</span></a>
+      <a class="app-topbar__link" href="/audio-library"><span class="ui-icon" data-icon="audio-lines"></span><span>Audio library</span></a>
+      <a class="app-topbar__link" href="/global-settings"><span class="ui-icon" data-icon="settings-2"></span><span>Global settings</span></a>
+      <a class="app-topbar__link" href="/artist-guide"><span class="ui-icon" data-icon="book-open"></span><span>Guide</span></a>
+      <a class="app-topbar__link" href="/system-health"><span class="ui-icon" data-icon="activity"></span><span>Health</span></a>
+      <button class="app-topbar__link app-topbar__link--primary" type="button" data-action="open-game-preview"><span class="ui-icon" data-icon="play"></span><span>Preview game</span></button>
+    </div>
+  </nav>
+
+  <header class="scene-header actions-header">
+    <div>
+      <a class="back-link" href="/">Back to workspace</a>
+      <p class="eyebrow">Globals</p>
+      <h1>Variables</h1>
+      <p>Manage built-in runtime settings and shared gameplay state in one place.</p>
+    </div>
+    <div class="scene-header__actions">
+      <p class="form-status" data-variables-status aria-live="polite">{{status}}</p>
+    </div>
+  </header>
+
+  <section class="variables-grid">
+    <aside class="actions-sidebar">
+      <section class="actions-panel">
+        <div>
+          <p class="eyebrow">Editor</p>
+          <h2>{{#if isEditingVariable}}Edit variable{{/if}}{{#if not isEditingVariable}}Add variable{{/if}}</h2>
+          <p class="panel-intro">System variables drive runtime behavior. Game variables handle counters, toggles, and puzzle state.</p>
+        </div>
+        <form class="stack-form stack-form--two-col" data-variable-form>
+          <input type="hidden" name="variable_id" value="{{selectedVariableId}}" />
+          <label class="field-span-full">
+            Name
+            <input name="name" type="text" placeholder="has_clock_key" required />
+          </label>
+          <label>
+            Type
+            <select name="value_type">
+              <option value="bool">Bool</option>
+              <option value="string">String</option>
+              <option value="number">Number</option>
+            </select>
+          </label>
+          <label>
+            Default value
+            <input name="default_value" type="text" value="false" />
+          </label>
+          <label class="field-span-full">
+            Description
+            <input name="description" type="text" placeholder="Optional note" />
+          </label>
+          {{#if selectedVariable.isSystem}}
+            <div class="field-span-full editor-inline-note">
+              <strong>{{selectedVariable.name}}</strong> is a built-in runtime variable.
+              You can change its value and note, but its name and type are fixed.
+            </div>
+          {{/if}}
+          <div class="form-actions field-span-full">
+            <button class="button secondary compact" type="submit">{{variableSubmitLabel}}</button>
+            {{#if isEditingVariable}}
+              <button class="button secondary compact form-actions__cancel" type="button" data-action="cancel-variable-edit">X</button>
+            {{/if}}
+          </div>
+        </form>
+      </section>
+    </aside>
+
+    <section class="actions-workbench">
+      <section class="actions-panel">
+        <div>
+          <p class="eyebrow">Built-in</p>
+          <h2>System variables</h2>
+          <p class="panel-intro">Language and audio settings expected by preview/runtime.</p>
+        </div>
+        {{#if hasSystemVariables}}
+          <div class="variable-list variable-list--grid">
+            {{#each systemVariables as variable}}
+              <button
+                class="interaction-list__item {{#if variable.isSelected}}is-selected{{/if}}"
+                type="button"
+                data-action="select-variable"
+                data-variable-id="{{variable.id}}"
+              >
+                <strong>
+                  {{variable.name}}
+                  {{#if variable.isSystem}}<span class="item-badge">{{variable.systemBadge}}</span>{{/if}}
+                </strong>
+                <span>{{variable.value_type}} · {{variable.defaultValueText}}</span>
+                {{#if variable.description}}<span>{{variable.description}}</span>{{/if}}
+                {{#if variable.isSystem}}<span>{{variable.systemHint}}</span>{{/if}}
+              </button>
+            {{/each}}
+          </div>
+        {{/if}}
+      </section>
+
+      <section class="actions-panel">
+        <div>
+          <p class="eyebrow">Gameplay</p>
+          <h2>Game variables</h2>
+          <p class="panel-intro">Shared counters, flags, and authored state for interactions.</p>
+        </div>
+        {{#if hasGameVariables}}
+          <div class="variable-list variable-list--grid">
+            {{#each gameVariables as variable}}
+              <button
+                class="interaction-list__item {{#if variable.isSelected}}is-selected{{/if}}"
+                type="button"
+                data-action="select-variable"
+                data-variable-id="{{variable.id}}"
+              >
+                <strong>{{variable.name}}</strong>
+                <span>{{variable.value_type}} · {{variable.defaultValueText}}</span>
+                {{#if variable.description}}<span>{{variable.description}}</span>{{/if}}
+              </button>
+            {{/each}}
+          </div>
+        {{/if}}
+        {{#if not hasGameVariables}}
+          <div class="editor-empty-state editor-empty-state--compact">
+            <strong>No game variables yet.</strong>
+            <p>Add shared counters, toggles, and puzzle state here.</p>
+          </div>
+        {{/if}}
+      </section>
+    </section>
+  </section>
+</main>

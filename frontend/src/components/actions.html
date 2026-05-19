@@ -4,9 +4,11 @@
     <div class="app-topbar__links">
       <a class="app-topbar__link" href="/"><span class="ui-icon" data-icon="clapperboard"></span><span>Scenes</span></a>
       <a class="app-topbar__link" href="/images"><span class="ui-icon" data-icon="images"></span><span>Images</span></a>
+      <a class="app-topbar__link" href="/variables"><span class="ui-icon" data-icon="sliders-horizontal"></span><span>Variables</span></a>
       <a class="app-topbar__link" href="/script-review"><span class="ui-icon" data-icon="captions"></span><span>Transcript library</span></a>
       <a class="app-topbar__link" href="/audio-library"><span class="ui-icon" data-icon="audio-lines"></span><span>Audio library</span></a>
       <a class="app-topbar__link" href="/global-settings"><span class="ui-icon" data-icon="settings-2"></span><span>Global settings</span></a>
+      <a class="app-topbar__link" href="/artist-guide"><span class="ui-icon" data-icon="book-open"></span><span>Guide</span></a>
       <a class="app-topbar__link" href="/system-health"><span class="ui-icon" data-icon="activity"></span><span>Health</span></a>
       <button class="app-topbar__link app-topbar__link--primary" type="button" data-action="open-game-preview"><span class="ui-icon" data-icon="play"></span><span>Preview game</span></button>
     </div>
@@ -117,8 +119,29 @@
           </form>
 
           {{#if hasInteractions}}
+            <div class="actions-list-filters">
+              <label>
+                Trigger
+                <select data-interaction-filter-trigger>
+                  {{#each interactionFilterOptions as option}}
+                    <option value="{{option.value}}">{{option.label}}</option>
+                  {{/each}}
+                </select>
+              </label>
+              <label>
+                Object
+                <select data-interaction-filter-object>
+                  {{#each interactionObjectFilterOptions as option}}
+                    <option value="{{option.value}}">{{option.label}}</option>
+                  {{/each}}
+                </select>
+              </label>
+            </div>
+          {{/if}}
+
+          {{#if hasInteractions}}
             <div class="interaction-list">
-              {{#each interactions as interaction}}
+              {{#each visibleInteractions as interaction}}
                 <button
                   class="interaction-list__item {{#if interaction.isSelected}}is-selected{{/if}}"
                   type="button"
@@ -132,6 +155,14 @@
               {{/each}}
             </div>
           {{/if}}
+          {{#if hasInteractions}}
+            {{#if not hasVisibleInteractions}}
+              <div class="editor-empty-state editor-empty-state--compact">
+                <strong>No interactions match those filters.</strong>
+                <p>Try a different object or trigger type.</p>
+              </div>
+            {{/if}}
+          {{/if}}
           {{#if not hasInteractions}}
             <div class="editor-empty-state">
               <strong>No interactions yet.</strong>
@@ -144,59 +175,13 @@
           <div>
             <p class="eyebrow">Globals</p>
             <h2>Variables</h2>
-            <p class="panel-intro">Counters, toggles, language settings, and shared runtime state.</p>
+            <p class="panel-intro">Move system settings and gameplay globals to the dedicated Variables page so this screen stays focused on interactions.</p>
           </div>
-          <form class="stack-form stack-form--two-col" data-variable-form>
-            <input type="hidden" name="variable_id" value="{{selectedVariableId}}" />
-            <label class="field-span-full">
-              Name
-              <input name="name" type="text" placeholder="has_clock_key" required />
-            </label>
-            <label>
-              Type
-              <select name="value_type">
-                <option value="bool">Bool</option>
-                <option value="string">String</option>
-                <option value="number">Number</option>
-              </select>
-            </label>
-            <label>
-              Default value
-              <input name="default_value" type="text" value="false" />
-            </label>
-            <label>
-              Description
-              <input name="description" type="text" placeholder="Optional note" />
-            </label>
-            <div class="form-actions field-span-full">
-              <button class="button secondary compact" type="submit">{{variableSubmitLabel}}</button>
-              {{#if isEditingVariable}}
-                <button class="button secondary compact form-actions__cancel" type="button" data-action="cancel-variable-edit">X</button>
-              {{/if}}
-            </div>
-          </form>
-          {{#if hasVariables}}
-            <div class="variable-list">
-              {{#each variables as variable}}
-                <button
-                  class="interaction-list__item {{#if variable.isSelected}}is-selected{{/if}}"
-                  type="button"
-                  data-action="select-variable"
-                  data-variable-id="{{variable.id}}"
-                >
-                  <strong>{{variable.name}}</strong>
-                  <span>{{variable.value_type}} · {{variable.defaultValueText}}</span>
-                  {{#if variable.description}}<span>{{variable.description}}</span>{{/if}}
-                </button>
-              {{/each}}
-            </div>
-          {{/if}}
-          {{#if not hasVariables}}
-            <div class="editor-empty-state editor-empty-state--compact">
-              <strong>No variables yet.</strong>
-              <p>Add globals here for counters, toggles, language settings, and volumes.</p>
-            </div>
-          {{/if}}
+          <div class="editor-inline-note">
+            <strong>{{variableCount}}</strong> total variables.
+            {{systemVariableCount}} system · {{gameVariableCount}} gameplay.
+          </div>
+          <a class="button secondary compact" href="/variables"><span class="ui-icon" data-icon="sliders-horizontal"></span><span>Manage variables</span></a>
         </section>
       </aside>
 
@@ -324,7 +309,7 @@
                 <select name="target_scope">
                   <option value="object">Object</option>
                   <option value="background">Background</option>
-                  <option value="pickup_background">Pickup background</option>
+                  <option value="pickup_background">Pickup frame</option>
                 </select>
               </label>
               <label data-form-field="target-object" data-visible-for="go_to_frame set_object_property">

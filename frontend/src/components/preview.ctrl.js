@@ -17,6 +17,11 @@ const MAX_PRELOADED_CONNECTED_SCENES = 6;
 const OVERLAY_OPEN_DUCK_FACTOR = 0.5;
 const VERB_MENU_LONGPRESS_MS = 420;
 const VERB_MENU_STAGGER_MS = 30;
+const CURSOR_STATE_DEFAULT = 'default';
+const CURSOR_STATE_HOVER_INTERACTIVE = 'hover_interactive';
+const CURSOR_STATE_BUSY = 'busy';
+const CURSOR_STATE_BLOCKED = 'blocked';
+const PREVIEW_LOCAL_AUDIO_SETTINGS_KEY = 'wonky-preview-local-audio-settings';
 let previewSceneCarryover = null;
 let previewRouteTransitionInFlight = false;
 const previewDataCache = new Map();
@@ -53,6 +58,7 @@ const PreviewCtrl = app => async params => {
     editorReady: false,
     editorMissing: false,
     unloadHandlers: [],
+    viewUnloadHandlers: [],
     previewSyncCleanup: null,
     executionVersion: 0,
     subtitleToken: 0,
@@ -66,8 +72,11 @@ const PreviewCtrl = app => async params => {
     openingOverlaySceneId: null,
     activeVerbMenu: null,
     verbMenuDismissTimer: null,
+    verbMenuAnimationTimer: null,
     verbMenuOpenedAt: 0,
     suppressVerbMenuDismissUntil: 0,
+    ignoreNextVerbMenuOutsideClick: false,
+    renderedVerbMenuSignature: '',
     basePreview: null,
     overlayPreview: null,
     overlayShell: null,
@@ -78,6 +87,8 @@ const PreviewCtrl = app => async params => {
     inventoryOverlayFrame: null,
     inventoryStage: null,
     heldInventoryItemRoot: null,
+    stageRoot: null,
+    cursorRoot: null,
     loadingScreen: null,
     loadingOverlay: null,
     loadingVisible: true,
@@ -85,19 +96,33 @@ const PreviewCtrl = app => async params => {
     loadingDetail: 'Fetching scene data…',
     loadingPercent: 4,
     loadingMeta: 'Preparing scene runtime',
+    localMasterVolume: 5,
+    localMusicVolume: 5,
+    startPromptVisible: false,
+    audioUnlocked: false,
+    stagePointerInside: false,
+    pointerClientX: null,
+    pointerClientY: null,
+    hoveredBaseObjectId: null,
+    hoveredOverlayObjectId: null,
+    customCursorStateKey: CURSOR_STATE_DEFAULT,
 
     async postLoad() {
       this.captureDom();
-      this.bind(this.root, 'click', event => this.onClick(event));
-      this.bind(this.root, 'contextmenu', event => this.onContextMenu(event));
-      this.bind(this.root, 'submit', event => this.onSubmit(event));
-      this.bindPreviewEvents();
+      this.bindViewEvents();
       this.bind(window, 'keydown', event => {
+        this.audioUnlocked = true;
         void this.onWindowKeyDown(event);
+      });
+      this.bind(window, 'pointerdown', () => {
+        this.audioUnlocked = true;
+        void previewAudioRuntime.resumePendingBgm();
       });
       this.bind(window, 'pointermove', event => {
         this.syncHeldInventoryItem({clientX: event.clientX, clientY: event.clientY});
+        this.updatePreviewPointer(event);
       });
+      this.bind(window, 'blur', () => this.clearPreviewPointer());
       this.previewSyncCleanup = listenScenePreview(this.sceneId, async () => {
         this.setStatus('Refreshing preview...');
         await this.reloadRuntime({rerunSceneEnter: true});
@@ -111,8 +136,9 @@ const PreviewCtrl = app => async params => {
         meta: 'Preparing scene runtime'
       });
       await this.configurePreview();
-      await this.runSceneEnterActions();
       this.setLoadingState({visible: false});
+      await this.waitForPreviewPresentation();
+      await this.runStartupSceneEnterActions();
     },
 
     unload() {
@@ -123,6 +149,7 @@ const PreviewCtrl = app => async params => {
       this.preloadTimer = null;
       this.unloadHandlers.forEach(unload => unload());
       this.unloadHandlers = [];
+      this.clearViewBindings();
       this.previewSyncCleanup?.();
       this.previewSyncCleanup = null;
     },
@@ -139,6 +166,8 @@ const PreviewCtrl = app => async params => {
       this.inventoryOverlayFrame = this.root?.querySelector('[data-inventory-overlay-frame]') ?? null;
       this.inventoryStage = this.root?.querySelector('[data-inventory-stage]') ?? null;
       this.heldInventoryItemRoot = this.root?.querySelector('[data-held-inventory-item]') ?? null;
+      this.stageRoot = this.root?.querySelector('[data-preview-stage]') ?? null;
+      this.cursorRoot = this.root?.querySelector('[data-preview-cursor]') ?? null;
       this.verbMenuRoot = this.root?.querySelector('[data-verb-menu-root]') ?? null;
       this.loadingScreen = this.root?.querySelector('[data-preview-loading-screen]') ?? null;
       this.loadingOverlay = this.root?.querySelector('[data-preview-loading-overlay]') ?? null;
@@ -150,17 +179,38 @@ const PreviewCtrl = app => async params => {
       this.unloadHandlers.push(() => target.removeEventListener(type, handler));
     },
 
+    bindView(target, type, handler) {
+      if (!target) return;
+      target.addEventListener(type, handler);
+      this.viewUnloadHandlers.push(() => target.removeEventListener(type, handler));
+    },
+
+    clearViewBindings() {
+      this.viewUnloadHandlers.forEach(unload => unload());
+      this.viewUnloadHandlers = [];
+    },
+
+    bindViewEvents() {
+      this.clearViewBindings();
+      this.bindView(this.root, 'click', event => this.onClick(event));
+      this.bindView(this.root, 'contextmenu', event => this.onContextMenu(event));
+      this.bindView(this.root, 'submit', event => this.onSubmit(event));
+      this.bindView(this.root, 'input', event => this.onInput(event));
+      this.bindView(this.root, 'change', event => this.onChange(event));
+      this.bindPreviewEvents();
+    },
+
     bindPreviewEvents() {
-      this.bind(this.basePreview, 'preview-object-click', event => this.onPreviewObjectClick(event, 'base'));
-      this.bind(this.basePreview, 'preview-object-menu', event => this.onPreviewObjectMenu(event, 'base'));
-      this.bind(this.basePreview, 'preview-object-mouseover', event => this.onPreviewObjectMouseover(event, 'base'));
-      this.bind(this.basePreview, 'preview-object-mouseout', event => this.onPreviewObjectMouseout(event, 'base'));
-      this.bind(this.basePreview, 'preview-error', event => this.onPreviewError(event));
-      this.bind(this.overlayPreview, 'preview-object-click', event => this.onPreviewObjectClick(event, 'overlay'));
-      this.bind(this.overlayPreview, 'preview-object-menu', event => this.onPreviewObjectMenu(event, 'overlay'));
-      this.bind(this.overlayPreview, 'preview-object-mouseover', event => this.onPreviewObjectMouseover(event, 'overlay'));
-      this.bind(this.overlayPreview, 'preview-object-mouseout', event => this.onPreviewObjectMouseout(event, 'overlay'));
-      this.bind(this.overlayPreview, 'preview-error', event => this.onPreviewError(event));
+      this.bindView(this.basePreview, 'preview-object-click', event => this.onPreviewObjectClick(event, 'base'));
+      this.bindView(this.basePreview, 'preview-object-menu', event => this.onPreviewObjectMenu(event, 'base'));
+      this.bindView(this.basePreview, 'preview-object-mouseover', event => this.onPreviewObjectMouseover(event, 'base'));
+      this.bindView(this.basePreview, 'preview-object-mouseout', event => this.onPreviewObjectMouseout(event, 'base'));
+      this.bindView(this.basePreview, 'preview-error', event => this.onPreviewError(event));
+      this.bindView(this.overlayPreview, 'preview-object-click', event => this.onPreviewObjectClick(event, 'overlay'));
+      this.bindView(this.overlayPreview, 'preview-object-menu', event => this.onPreviewObjectMenu(event, 'overlay'));
+      this.bindView(this.overlayPreview, 'preview-object-mouseover', event => this.onPreviewObjectMouseover(event, 'overlay'));
+      this.bindView(this.overlayPreview, 'preview-object-mouseout', event => this.onPreviewObjectMouseout(event, 'overlay'));
+      this.bindView(this.overlayPreview, 'preview-error', event => this.onPreviewError(event));
     },
 
     async refreshData() {
@@ -184,6 +234,8 @@ const PreviewCtrl = app => async params => {
         this.prepareSceneNavigation();
         this.prepareState();
         this.applyCarriedVariables();
+        this.applyLocalAudioSettings();
+        this.primeCursorAssets();
         this.scheduleConnectedScenePreload();
         this.editorReady = Boolean(this.previewData);
         this.editorMissing = !this.editorReady;
@@ -250,6 +302,7 @@ const PreviewCtrl = app => async params => {
       this.overlayCurrentFade = null;
       this.overlayPresentationOpacity = 0;
       this.focusedOverlayObjectId = null;
+      this.hoveredOverlayObjectId = null;
       this.openingOverlaySceneId = null;
     },
 
@@ -500,9 +553,7 @@ const PreviewCtrl = app => async params => {
       await Promise.resolve();
       this.captureDom();
       this.syncLoadingUi();
-      this.bind(this.root, 'click', event => this.onClick(event));
-      this.bind(this.root, 'submit', event => this.onSubmit(event));
-      this.bindPreviewEvents();
+      this.bindViewEvents();
       await this.configurePreview();
       this.syncRuntimePanels();
     },
@@ -522,6 +573,22 @@ const PreviewCtrl = app => async params => {
       this.syncVerbMenu();
       this.syncInventoryOverlay();
       this.syncHeldInventoryItem();
+      this.syncCustomCursor();
+      this.syncStartOverlay();
+      this.syncLocalAudioControls();
+    },
+
+    syncLocalAudioControls() {
+      const root = this.root;
+      if (!root) return;
+      const masterInput = root.querySelector('[data-preview-master-volume]');
+      const musicInput = root.querySelector('[data-preview-music-volume]');
+      const masterValue = root.querySelector('[data-preview-master-volume-value]');
+      const musicValue = root.querySelector('[data-preview-music-volume-value]');
+      if (masterInput) masterInput.value = String(this.localMasterVolume);
+      if (musicInput) musicInput.value = String(this.localMusicVolume);
+      if (masterValue) masterValue.textContent = String(this.localMasterVolume);
+      if (musicValue) musicValue.textContent = String(this.localMusicVolume);
     },
 
     syncSubtitleOverlay(layer) {
@@ -551,12 +618,37 @@ const PreviewCtrl = app => async params => {
       const menu = this.activeVerbMenu;
       this.verbMenuRoot.classList.toggle('is-hidden', !menu);
       if (!menu) {
+        if (this.verbMenuAnimationTimer) window.clearTimeout(this.verbMenuAnimationTimer);
+        this.verbMenuAnimationTimer = null;
+        this.verbMenuRoot.classList.remove('is-entering');
+        this.verbMenuRoot.style.left = '';
+        this.verbMenuRoot.style.top = '';
+        this.verbMenuRoot.style.width = '';
+        this.verbMenuRoot.style.height = '';
         this.verbMenuRoot.innerHTML = '';
+        this.renderedVerbMenuSignature = '';
         return;
       }
-      this.verbMenuRoot.style.left = `${menu.left}px`;
-      this.verbMenuRoot.style.top = `${menu.top}px`;
-      this.verbMenuRoot.innerHTML = renderVerbMenu(menu);
+      const preview = this.getLayerPreviewElement(menu.layer);
+      const previewStageRect = preview?.getStageClientRect?.();
+      const stageRootRect = this.stageRoot?.getBoundingClientRect?.();
+      if (previewStageRect && stageRootRect) {
+        this.verbMenuRoot.style.left = `${previewStageRect.left - stageRootRect.left}px`;
+        this.verbMenuRoot.style.top = `${previewStageRect.top - stageRootRect.top}px`;
+        this.verbMenuRoot.style.width = `${previewStageRect.width}px`;
+        this.verbMenuRoot.style.height = `${previewStageRect.height}px`;
+      }
+      const signature = buildVerbMenuSignature(menu);
+      if (signature !== this.renderedVerbMenuSignature) {
+        this.verbMenuRoot.innerHTML = renderVerbMenu(menu);
+        this.renderedVerbMenuSignature = signature;
+        this.verbMenuRoot.classList.add('is-entering');
+        if (this.verbMenuAnimationTimer) window.clearTimeout(this.verbMenuAnimationTimer);
+        this.verbMenuAnimationTimer = window.setTimeout(() => {
+          this.verbMenuAnimationTimer = null;
+          this.verbMenuRoot?.classList.remove('is-entering');
+        }, 260);
+      }
     },
 
     syncInventoryOverlay() {
@@ -592,6 +684,71 @@ const PreviewCtrl = app => async params => {
       this.heldInventoryItemRoot.innerHTML = renderHeldInventoryItem(heldItem);
     },
 
+    syncCustomCursor() {
+      if (!this.stageRoot || !this.cursorRoot) return;
+      const cursorState = this.resolveCustomCursorState();
+      this.customCursorStateKey = cursorState.stateKey;
+      const display = this.getCursorDisplayForState(cursorState.stateKey);
+      const useCustomCursor = Boolean(
+        this.stagePointerInside
+        && this.pointerClientX != null
+        && this.pointerClientY != null
+        && display?.url
+      );
+      if (!useCustomCursor) {
+        this.stageRoot.classList.remove('has-custom-cursor');
+        this.cursorRoot.classList.add('is-hidden');
+        this.cursorRoot.innerHTML = '';
+        this.basePreview?.setUseExternalCursor?.(false);
+        this.overlayPreview?.setUseExternalCursor?.(false);
+        return;
+      }
+      const imageState = getCursorImageState(display.url);
+      if (imageState.status === 'idle') {
+        void loadCursorImage(display.url).finally(() => this.syncCustomCursor());
+      }
+      if (imageState.status !== 'loaded') {
+        this.stageRoot.classList.remove('has-custom-cursor');
+        this.cursorRoot.classList.add('is-hidden');
+        this.cursorRoot.innerHTML = '';
+        this.basePreview?.setUseExternalCursor?.(false);
+        this.overlayPreview?.setUseExternalCursor?.(false);
+        return;
+      }
+      this.stageRoot.classList.add('has-custom-cursor');
+      this.cursorRoot.classList.remove('is-hidden');
+      this.cursorRoot.style.left = `${this.pointerClientX}px`;
+      this.cursorRoot.style.top = `${this.pointerClientY}px`;
+      this.cursorRoot.innerHTML = renderCustomCursor(display);
+      this.basePreview?.setUseExternalCursor?.(true);
+      this.overlayPreview?.setUseExternalCursor?.(true);
+    },
+
+    syncStartOverlay() {
+      const overlay = this.root?.querySelector('[data-preview-start-overlay]');
+      if (!overlay) return;
+      overlay.classList.toggle('is-hidden', !this.startPromptVisible);
+    },
+
+    updatePreviewPointer(event) {
+      const stageRect = this.stageRoot?.getBoundingClientRect();
+      if (!stageRect) return;
+      const inside = pointInsideRect(event.clientX, event.clientY, stageRect);
+      this.stagePointerInside = inside;
+      this.pointerClientX = inside ? event.clientX : null;
+      this.pointerClientY = inside ? event.clientY : null;
+      this.syncCustomCursor();
+    },
+
+    clearPreviewPointer() {
+      this.stagePointerInside = false;
+      this.pointerClientX = null;
+      this.pointerClientY = null;
+      this.hoveredBaseObjectId = null;
+      this.hoveredOverlayObjectId = null;
+      this.syncCustomCursor();
+    },
+
     setOverlayPresentationOpacity(opacity) {
       this.overlayPresentationOpacity = Math.max(0, Math.min(1, Number(opacity) || 0));
       this.syncOverlayPresentation();
@@ -617,6 +774,28 @@ const PreviewCtrl = app => async params => {
       applyStatus(status, message);
     },
 
+    onInput(event) {
+      const target = event.target;
+      if (!(target instanceof HTMLInputElement)) return;
+      if (target.matches('[data-preview-master-volume]')) {
+        this.localMasterVolume = clampNumber(Math.round(Number(target.value) || 0), 0, 10);
+        this.persistLocalAudioSettings();
+        this.syncLocalAudioControls();
+        this.syncContinuousAudioState();
+        return;
+      }
+      if (target.matches('[data-preview-music-volume]')) {
+        this.localMusicVolume = clampNumber(Math.round(Number(target.value) || 0), 0, 10);
+        this.persistLocalAudioSettings();
+        this.syncLocalAudioControls();
+        this.syncContinuousAudioState();
+      }
+    },
+
+    onChange(event) {
+      this.onInput(event);
+    },
+
     setLoadingState({visible, title, detail, percent, meta} = {}) {
       if (typeof visible === 'boolean') this.loadingVisible = visible;
       if (typeof title === 'string') this.loadingTitle = title;
@@ -626,6 +805,7 @@ const PreviewCtrl = app => async params => {
       }
       if (typeof meta === 'string') this.loadingMeta = meta;
       this.syncLoadingUi();
+      this.syncCustomCursor();
     },
 
     syncLoadingUi() {
@@ -655,10 +835,11 @@ const PreviewCtrl = app => async params => {
         this.runtimeState.heldInventoryObjectId = persistedHeldInventoryObjectId;
       }
       await this.refreshView();
+      this.setLoadingState({visible: false});
+      await this.waitForPreviewPresentation();
       if (rerunSceneEnter) {
         await this.runSceneEnterActions();
       }
-      this.setLoadingState({visible: false});
     },
 
     async resetRuntime() {
@@ -707,12 +888,57 @@ const PreviewCtrl = app => async params => {
       this.refreshInspectorState();
     },
 
+    applyLocalAudioSettings() {
+      const authored = this.getAuthoredLanguageSettings();
+      const stored = readPreviewLocalAudioSettings();
+      this.localMasterVolume = clampNumber(
+        Number.isFinite(Number(stored.masterVolume)) ? Math.round(Number(stored.masterVolume)) : authored.masterVolume,
+        0,
+        10
+      );
+      this.localMusicVolume = clampNumber(
+        Number.isFinite(Number(stored.musicVolume)) ? Math.round(Number(stored.musicVolume)) : authored.musicVolume,
+        0,
+        10
+      );
+    },
+
+    persistLocalAudioSettings() {
+      writePreviewLocalAudioSettings({
+        masterVolume: this.localMasterVolume,
+        musicVolume: this.localMusicVolume
+      });
+    },
+
     async runSceneEnterActions() {
       await this.executeMatchingInteractionsForLayer(
         'base',
         interaction => interaction.trigger?.type === 'scene_enter',
         {reason: 'scene_enter'}
       );
+    },
+
+    async runStartupSceneEnterActions() {
+      if (this.startupSceneEnterNeedsUserGesture() && !this.audioUnlocked) {
+        this.startPromptVisible = true;
+        this.syncStartOverlay();
+        return;
+      }
+      this.startPromptVisible = false;
+      this.syncStartOverlay();
+      await this.runSceneEnterActions();
+    },
+
+    startupSceneEnterNeedsUserGesture() {
+      const sceneEnterInteractions = (this.previewData?.interactions ?? []).filter(
+        interaction => interaction.trigger?.type === 'scene_enter' && interaction.enabled !== false
+      );
+      return sceneEnterInteractions.some(interaction => actionTreeContainsAudio(interaction.action_tree ?? []));
+    },
+
+    async waitForPreviewPresentation() {
+      await nextAnimationFrame();
+      await nextAnimationFrame();
     },
 
     async runSceneExitActions() {
@@ -724,6 +950,15 @@ const PreviewCtrl = app => async params => {
     },
 
     async onClick(event) {
+      void previewAudioRuntime.resumePendingBgm();
+      const startPreviewButton = event.target.closest('[data-action="start-preview"]');
+      if (startPreviewButton) {
+        this.audioUnlocked = true;
+        this.startPromptVisible = false;
+        this.syncStartOverlay();
+        await this.runSceneEnterActions();
+        return;
+      }
       const verbButton = event.target.closest('[data-action="select-verb"]');
       if (verbButton) {
         const objectId = Number(verbButton.dataset.objectId);
@@ -780,6 +1015,10 @@ const PreviewCtrl = app => async params => {
 
       const insideVerbMenu = event.target.closest('[data-verb-menu-root]');
       const insideInventory = event.target.closest('[data-inventory-overlay-shell]');
+      if (this.activeVerbMenu && !insideVerbMenu && this.ignoreNextVerbMenuOutsideClick) {
+        this.ignoreNextVerbMenuOutsideClick = false;
+        return;
+      }
       const shouldSuppressVerbDismiss = this.activeVerbMenu
         && performance.now() < Number(this.suppressVerbMenuDismissUntil || 0);
       if (this.activeVerbMenu && !insideVerbMenu && !shouldSuppressVerbDismiss) {
@@ -791,6 +1030,7 @@ const PreviewCtrl = app => async params => {
     },
 
     onContextMenu(event) {
+      void previewAudioRuntime.resumePendingBgm();
       if (this.getHeldInventoryItem()) {
         event.preventDefault();
         this.clearHeldInventoryItem();
@@ -809,6 +1049,7 @@ const PreviewCtrl = app => async params => {
     },
 
     async onWindowKeyDown(event) {
+      void previewAudioRuntime.resumePendingBgm();
       if (event.defaultPrevented || event.repeat || isEditableTarget(event.target)) return;
       const keyCode = normalizeEventKeyCode(event);
       if (!keyCode) return;
@@ -948,6 +1189,9 @@ const PreviewCtrl = app => async params => {
       if (layer === 'overlay' && !this.overlayPreviewData) return;
       const objectId = Number(event.detail?.objectId);
       if (!objectId) return;
+      if (layer === 'overlay') this.hoveredOverlayObjectId = objectId;
+      else this.hoveredBaseObjectId = objectId;
+      this.syncCustomCursor();
       const state = this.getLayerRuntimeState(layer)?.objects?.[objectId];
       if (!state?.enabled || !state?.visible) return;
       await this.executeMatchingInteractionsForLayer(
@@ -965,6 +1209,9 @@ const PreviewCtrl = app => async params => {
       if (layer === 'overlay' && !this.overlayPreviewData) return;
       const objectId = Number(event.detail?.objectId);
       if (!objectId) return;
+      if (layer === 'overlay' && Number(this.hoveredOverlayObjectId) === objectId) this.hoveredOverlayObjectId = null;
+      if (layer === 'base' && Number(this.hoveredBaseObjectId) === objectId) this.hoveredBaseObjectId = null;
+      this.syncCustomCursor();
       await this.executeMatchingInteractionsForLayer(
         layer,
         interaction => (
@@ -988,16 +1235,32 @@ const PreviewCtrl = app => async params => {
       const stageRect = preview?.getStageClientRect?.();
       const objectRect = preview?.getObjectClientBounds?.(objectId);
       if (!stageRect || !objectRect) return;
-      const position = computeVerbMenuPosition(stageRect, objectRect, verbs.length);
+      const pointerAnchor = (
+        Number.isFinite(Number(metadata.clientX)) && Number.isFinite(Number(metadata.clientY))
+      )
+        ? {
+          x: Number(metadata.clientX) - stageRect.left,
+          y: Number(metadata.clientY) - stageRect.top
+        }
+        : {
+          x: (objectRect.left - stageRect.left) + (objectRect.width / 2),
+          y: (objectRect.top - stageRect.top) + (objectRect.height / 2)
+        };
+      const layout = computeVerbMenuLayout(stageRect.width, stageRect.height, pointerAnchor, verbs.length);
       this.activeVerbMenu = {
         layer,
         objectId: Number(objectId),
-        items: verbs,
-        left: position.left,
-        top: position.top
+        items: verbs.map((verb, index) => ({
+          ...verb,
+          offsetX: layout.offsets[index]?.x ?? 0,
+          offsetY: layout.offsets[index]?.y ?? 0
+        })),
+        left: layout.anchorX,
+        top: layout.anchorY
       };
       this.verbMenuOpenedAt = performance.now();
       this.suppressVerbMenuDismissUntil = this.verbMenuOpenedAt + 600;
+      this.ignoreNextVerbMenuOutsideClick = true;
       this.bumpVerbMenuTimeout();
       this.syncVerbMenu();
     },
@@ -1005,9 +1268,12 @@ const PreviewCtrl = app => async params => {
     closeVerbMenu() {
       if (this.verbMenuDismissTimer) window.clearTimeout(this.verbMenuDismissTimer);
       this.verbMenuDismissTimer = null;
+      if (this.verbMenuAnimationTimer) window.clearTimeout(this.verbMenuAnimationTimer);
+      this.verbMenuAnimationTimer = null;
       this.activeVerbMenu = null;
       this.verbMenuOpenedAt = 0;
       this.suppressVerbMenuDismissUntil = 0;
+      this.ignoreNextVerbMenuOutsideClick = false;
       this.syncVerbMenu();
     },
 
@@ -1143,17 +1409,20 @@ const PreviewCtrl = app => async params => {
           return;
         }
         if ((step.target_scope ?? 'object') === 'pickup_background') {
-          const sceneObject = previewData?.scene?.objects?.find(
+          const sceneObject = previewData?.objects?.find(
             object => Number(object.id) === Number(step.target_object_id)
           );
           const pickupUploadedFileId = Number(sceneObject?.pickup_uploaded_file_id ?? 0);
-          const pickupFrameIndex = Array.isArray(previewData?.scene?.images)
-            ? previewData.scene.images.findIndex(
-              image => Number(image.uploaded_file_id) === pickupUploadedFileId
-            )
-            : -1;
-          if (runtimeState && pickupFrameIndex >= 0) runtimeState.background_frame_index = pickupFrameIndex;
-          this.pushRuntimeToPreview(layer);
+          const render = getObjectRenderForUploadedFileId(
+            previewData,
+            step.target_object_id,
+            pickupUploadedFileId
+          );
+          if (runtimeState?.objects?.[step.target_object_id]) {
+            runtimeState.objects[step.target_object_id].render = render;
+          }
+          preview?.setObjectRender?.(step.target_object_id, render);
+          this.refreshInspectorState();
           return;
         }
         const render = getObjectRenderForFrame(previewData, step.target_object_id, step.frame_index);
@@ -1482,7 +1751,7 @@ const PreviewCtrl = app => async params => {
       );
     },
 
-    getLanguageSettings() {
+    getAuthoredLanguageSettings() {
       const variables = this.runtimeState?.variables ?? {};
       return {
         primaryLanguage: normalizeLanguageValue(findVariableByName(variables, 'primary_language')?.value, DEFAULT_PRIMARY_LANGUAGE),
@@ -1492,6 +1761,15 @@ const PreviewCtrl = app => async params => {
         narratorVolume: normalizeVolumeValue(findVariableByName(variables, 'narrator_volume')?.value, 5),
         musicVolume: normalizeVolumeValue(findVariableByName(variables, 'music_volume')?.value, 5),
         sfxVolume: normalizeVolumeValue(findVariableByName(variables, 'sfx_volume')?.value, 5)
+      };
+    },
+
+    getLanguageSettings() {
+      const authored = this.getAuthoredLanguageSettings();
+      return {
+        ...authored,
+        masterVolume: clampNumber(Number(this.localMasterVolume), 0, 10),
+        musicVolume: clampNumber(Number(this.localMusicVolume), 0, 10)
       };
     },
 
@@ -1515,6 +1793,72 @@ const PreviewCtrl = app => async params => {
           ? globalSettingsAssetUrl('inventory_background')
           : ''
       };
+    },
+
+    getCursorDisplayForState(stateKey) {
+      const cursorStates = this.previewData?.global_settings?.cursor_states ?? {};
+      const requestedState = cursorStates?.[stateKey] ?? {};
+      const fallbackState = cursorStates?.[CURSOR_STATE_DEFAULT] ?? {};
+      const useFallback = !requestedState.relative_path && stateKey !== CURSOR_STATE_DEFAULT && Boolean(fallbackState.relative_path);
+      const normalizedState = useFallback ? fallbackState : requestedState;
+      const resolvedStateKey = useFallback ? CURSOR_STATE_DEFAULT : stateKey;
+      const relativePath = normalizedState.relative_path;
+      return {
+        stateKey: resolvedStateKey,
+        url: relativePath ? globalSettingsAssetUrl(`cursor_${resolvedStateKey}`) : '',
+        hotspotX: Number(normalizedState.hotspot_x ?? 0),
+        hotspotY: Number(normalizedState.hotspot_y ?? 0)
+      };
+    },
+
+    primeCursorAssets() {
+      const cursorStates = this.previewData?.global_settings?.cursor_states ?? {};
+      for (const stateKey of [
+        CURSOR_STATE_DEFAULT,
+        CURSOR_STATE_HOVER_INTERACTIVE,
+        CURSOR_STATE_BUSY,
+        CURSOR_STATE_BLOCKED
+      ]) {
+        const relativePath = cursorStates?.[stateKey]?.relative_path;
+        if (!relativePath) continue;
+        void loadCursorImage(globalSettingsAssetUrl(`cursor_${stateKey}`)).catch(() => {});
+      }
+    },
+
+    resolveCustomCursorState() {
+      if (this.loadingVisible && this.previewData?.global_settings?.cursor_states?.busy?.relative_path) {
+        return {stateKey: CURSOR_STATE_BUSY};
+      }
+      const hoveredObjectId = this.overlayPreviewData ? this.hoveredOverlayObjectId : this.hoveredBaseObjectId;
+      if (!hoveredObjectId) return {stateKey: CURSOR_STATE_DEFAULT};
+      if (this.getHeldInventoryItem()) {
+        const heldId = Number(this.runtimeState?.heldInventoryObjectId);
+        return {
+          stateKey: this.objectHasInventoryUse(this.getActiveLayerName(), hoveredObjectId, heldId)
+            ? CURSOR_STATE_HOVER_INTERACTIVE
+            : CURSOR_STATE_BLOCKED
+        };
+      }
+      return {
+        stateKey: this.objectHasDirectInteraction(this.getActiveLayerName(), hoveredObjectId)
+          ? CURSOR_STATE_HOVER_INTERACTIVE
+          : CURSOR_STATE_BLOCKED
+      };
+    },
+
+    objectHasDirectInteraction(layer, objectId) {
+      return (this.getLayerPreviewData(layer)?.interactions ?? []).some(interaction => (
+        Number(interaction.trigger?.object_id) === Number(objectId)
+        && ['object_click', 'object_verb'].includes(interaction.trigger?.type)
+      ));
+    },
+
+    objectHasInventoryUse(layer, objectId, inventoryObjectId) {
+      return (this.getLayerPreviewData(layer)?.interactions ?? []).some(interaction => (
+        interaction.trigger?.type === 'inventory_use'
+        && Number(interaction.trigger?.object_id) === Number(objectId)
+        && Number(interaction.trigger?.inventory_object_id) === Number(inventoryObjectId)
+      ));
     },
 
     findAudioAsset(layer, audioAssetId, expectedKind) {
@@ -1681,6 +2025,18 @@ function getObjectRenderForFrame(previewData, objectId, frameIndex) {
   );
   if (directRender) return directRender;
   return object.default_render ?? null;
+}
+
+function getObjectRenderForUploadedFileId(previewData, objectId, uploadedFileId) {
+  const numericUploadedFileId = Number(uploadedFileId);
+  if (!numericUploadedFileId) return null;
+  const frameIndex = Array.isArray(previewData?.images)
+    ? previewData.images.findIndex(
+      image => Number(image.uploaded_file_id) === numericUploadedFileId
+    )
+    : -1;
+  if (frameIndex < 0) return null;
+  return getObjectRenderForFrame(previewData, objectId, frameIndex);
 }
 
 function compareVariable(leftValue, operator, rightValue) {
@@ -1892,13 +2248,12 @@ function renderInventoryItems(items) {
 }
 
 function renderVerbMenu(menu) {
-  const radius = 92;
   return `
-    <div class="scene-runtime-verb-menu__shell">
-      ${(menu.items ?? []).map((item, index, items) => {
-        const angle = (-90 + ((360 / Math.max(1, items.length)) * index)) * (Math.PI / 180);
-        const x = Math.cos(angle) * radius;
-        const y = Math.sin(angle) * radius;
+    <div
+      class="scene-runtime-verb-menu__shell"
+      style="left:${Number(menu.left || 0).toFixed(2)}px; top:${Number(menu.top || 0).toFixed(2)}px;"
+    >
+      ${(menu.items ?? []).map((item, index) => {
         return `
           <button
             class="scene-runtime-verb-tag ${item.enabled ? '' : 'is-disabled'}"
@@ -1907,7 +2262,7 @@ function renderVerbMenu(menu) {
             data-layer="${escapeHtml(menu.layer)}"
             data-object-id="${menu.objectId}"
             data-verb-id="${item.id}"
-            style="--tag-x:${x.toFixed(2)}px; --tag-y:${y.toFixed(2)}px; --tag-delay:${index * VERB_MENU_STAGGER_MS}ms;${item.backgroundUrl ? `--tag-background:url('${escapeHtml(item.backgroundUrl)}');` : ''}"
+            style="--tag-x:${Number(item.offsetX || 0).toFixed(2)}px; --tag-y:${Number(item.offsetY || 0).toFixed(2)}px; --tag-delay:${index * VERB_MENU_STAGGER_MS}ms;${item.backgroundUrl ? `--tag-background:url('${escapeHtml(item.backgroundUrl)}');` : ''}"
             ${item.enabled ? '' : 'disabled'}
           >
             <span>${escapeHtml(item.label)}</span>
@@ -1916,6 +2271,26 @@ function renderVerbMenu(menu) {
       }).join('')}
     </div>
   `;
+}
+
+function buildVerbMenuSignature(menu) {
+  return JSON.stringify({
+    layer: menu.layer,
+    objectId: menu.objectId,
+    left: roundMenuValue(menu.left),
+    top: roundMenuValue(menu.top),
+    items: (menu.items ?? []).map(item => ({
+      id: item.id,
+      enabled: Boolean(item.enabled),
+      offsetX: roundMenuValue(item.offsetX),
+      offsetY: roundMenuValue(item.offsetY),
+      backgroundUrl: item.backgroundUrl || ''
+    }))
+  });
+}
+
+function roundMenuValue(value) {
+  return Math.round((Number(value) || 0) * 100) / 100;
 }
 
 function renderInventoryOverlay({slots, items}) {
@@ -1946,6 +2321,22 @@ function renderHeldInventoryItem(item) {
   `;
 }
 
+function renderCustomCursor(display) {
+  return `
+    <div
+      class="scene-runtime-cursor__inner"
+      style="transform: translate(${-Math.max(0, Number(display.hotspotX) || 0)}px, ${-Math.max(0, Number(display.hotspotY) || 0)}px);"
+    >
+      <img
+        class="scene-runtime-cursor__image"
+        src="${escapeHtml(display.url)}"
+        alt=""
+        aria-hidden="true"
+      />
+    </div>
+  `;
+}
+
 function escapeHtml(value) {
   return String(value ?? '')
     .replaceAll('&', '&amp;')
@@ -1955,6 +2346,17 @@ function escapeHtml(value) {
     .replaceAll("'", '&#39;');
 }
 
+function actionTreeContainsAudio(steps) {
+  return (steps ?? []).some(step => {
+    if (!step?.type) return false;
+    if (['play_audio', 'crossfade_bgm', 'play_sfx'].includes(step.type)) return true;
+    if (step.type === 'if_variable') {
+      return actionTreeContainsAudio(step.then_steps ?? []) || actionTreeContainsAudio(step.else_steps ?? []);
+    }
+    return false;
+  });
+}
+
 function wait(durationSeconds) {
   const milliseconds = Math.max(1, Math.round(Number(durationSeconds || 0) * 1000));
   return waitMilliseconds(milliseconds);
@@ -1962,6 +2364,22 @@ function wait(durationSeconds) {
 
 function waitMilliseconds(milliseconds) {
   return new Promise(resolve => window.setTimeout(resolve, milliseconds));
+}
+
+function nextAnimationFrame() {
+  return new Promise(resolve => window.requestAnimationFrame(() => resolve()));
+}
+
+function pointInsideRect(x, y, rect) {
+  return (
+    Number.isFinite(x)
+    && Number.isFinite(y)
+    && rect
+    && x >= rect.left
+    && x <= rect.right
+    && y >= rect.top
+    && y <= rect.bottom
+  );
 }
 
 function normalizeEventKeyCode(event) {
@@ -2034,17 +2452,114 @@ function resolveVerbLabel(verb, language) {
 }
 
 function computeVerbMenuPosition(stageRect, objectRect, count) {
-  const centerX = objectRect.left + (objectRect.width / 2);
-  const centerY = objectRect.top + (objectRect.height / 2);
-  const menuRadius = count > 3 ? 126 : 102;
-  const minX = stageRect.left + menuRadius;
-  const minY = stageRect.top + menuRadius;
-  const maxX = stageRect.right - menuRadius;
-  const maxY = stageRect.bottom - menuRadius;
-  return {
-    left: Math.max(minX, Math.min(maxX, centerX)),
-    top: Math.max(minY, Math.min(maxY, centerY))
-  };
+  return computeVerbMenuLayout(
+    stageRect.width,
+    stageRect.height,
+    {
+      x: (objectRect.left - stageRect.left) + (objectRect.width / 2),
+      y: (objectRect.top - stageRect.top) + (objectRect.height / 2)
+    },
+    count
+  );
+}
+
+function computeVerbMenuLayout(stageWidth, stageHeight, anchorPoint, count) {
+  const tagWidth = 132;
+  const tagHeight = 88;
+  const tagPadding = 10;
+  const radius = count <= 2 ? 82 : 92;
+  const minX = (tagWidth / 2) + tagPadding;
+  const maxX = Math.max(minX, stageWidth - (tagWidth / 2) - tagPadding);
+  const minY = (tagHeight / 2) + tagPadding;
+  const maxY = Math.max(minY, stageHeight - (tagHeight / 2) - tagPadding);
+  const anchorX = clampNumber(Number(anchorPoint?.x) || (stageWidth / 2), minX, maxX);
+  const anchorY = clampNumber(Number(anchorPoint?.y) || (stageHeight / 2), minY, maxY);
+  const centerX = stageWidth / 2;
+  const centerY = stageHeight / 2;
+  const dx = centerX - anchorX;
+  const dy = centerY - anchorY;
+  const preferredAngle = (Math.abs(dx) < 2 && Math.abs(dy) < 2)
+    ? (-90 * Math.PI / 180)
+    : Math.atan2(dy, dx);
+  const spreadDegrees = count <= 1
+    ? 0
+    : count === 2
+      ? 90
+      : count === 3
+        ? 128
+        : Math.min(210, 108 + ((count - 3) * 24));
+  const spreadRadians = spreadDegrees * (Math.PI / 180);
+  const offsets = Array.from({length: Math.max(1, count)}, (_, index) => {
+    const angle = count <= 1
+      ? preferredAngle
+      : preferredAngle - (spreadRadians / 2) + ((spreadRadians * index) / (count - 1));
+    const targetX = anchorX + (Math.cos(angle) * radius);
+    const targetY = anchorY + (Math.sin(angle) * radius);
+    const clampedX = clampNumber(targetX, minX, maxX);
+    const clampedY = clampNumber(targetY, minY, maxY);
+    return {
+      x: clampedX - anchorX,
+      y: clampedY - anchorY
+    };
+  });
+  return {anchorX, anchorY, offsets};
+}
+
+function clampNumber(value, min, max) {
+  return Math.max(min, Math.min(max, value));
+}
+
+function readPreviewLocalAudioSettings() {
+  try {
+    const raw = window.localStorage.getItem(PREVIEW_LOCAL_AUDIO_SETTINGS_KEY);
+    if (!raw) return {};
+    const parsed = JSON.parse(raw);
+    return parsed && typeof parsed === 'object' ? parsed : {};
+  } catch {
+    return {};
+  }
+}
+
+function writePreviewLocalAudioSettings(settings) {
+  try {
+    window.localStorage.setItem(
+      PREVIEW_LOCAL_AUDIO_SETTINGS_KEY,
+      JSON.stringify({
+        masterVolume: clampNumber(Number(settings?.masterVolume) || 0, 0, 10),
+        musicVolume: clampNumber(Number(settings?.musicVolume) || 0, 0, 10)
+      })
+    );
+  } catch {
+    // Ignore local storage failures in preview-only settings.
+  }
+}
+
+const cursorImageCache = new Map();
+
+function getCursorImageState(url) {
+  if (!url) return {status: 'missing'};
+  return cursorImageCache.get(url) ?? {status: 'idle'};
+}
+
+function loadCursorImage(url) {
+  if (!url) return Promise.reject(new Error('Could not load cursor: empty source'));
+  const existing = cursorImageCache.get(url);
+  if (existing?.status === 'loaded') return Promise.resolve(existing.image);
+  if (existing?.status === 'loading' && existing.promise) return existing.promise;
+  const promise = new Promise((resolve, reject) => {
+    const image = new Image();
+    image.onload = () => {
+      cursorImageCache.set(url, {status: 'loaded', image});
+      resolve(image);
+    };
+    image.onerror = () => {
+      cursorImageCache.set(url, {status: 'failed'});
+      reject(new Error('Could not load cursor image'));
+    };
+    image.src = url;
+  });
+  cursorImageCache.set(url, {status: 'loading', promise});
+  return promise;
 }
 
 export {PreviewCtrl};

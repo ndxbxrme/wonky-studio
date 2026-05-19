@@ -8,6 +8,7 @@ class WonkyMaskEditor extends HTMLElement {
     this.currentIndex = 0;
     this.currentMask = null;
     this.originalImage = null;
+    this.backgroundImage = null;
     this.browseAllFrames = false;
     this.currentFrameIndex = 0;
     this.maskCanvas = document.createElement('canvas');
@@ -20,6 +21,7 @@ class WonkyMaskEditor extends HTMLElement {
     this.panX = 0;
     this.panY = 0;
     this.brushSize = 36;
+    this.brushShape = 'round';
     this.hardness = 0.75;
     this.opacity = 0.55;
     this.displayMode = 'overlay';
@@ -28,6 +30,10 @@ class WonkyMaskEditor extends HTMLElement {
     this.pointerMode = null;
     this.activeOperation = null;
     this.lastPoint = null;
+    this.hoverPoint = null;
+    this.brushPreviewVisible = false;
+    this.brushPreviewUntil = 0;
+    this.brushPreviewTimer = null;
     this.undoStack = [];
     this.redoStack = [];
     this.resizeObserver = new ResizeObserver(() => this.renderCanvas());
@@ -43,6 +49,7 @@ class WonkyMaskEditor extends HTMLElement {
 
   disconnectedCallback() {
     this.resizeObserver.disconnect();
+    if (this.brushPreviewTimer) window.clearTimeout(this.brushPreviewTimer);
   }
 
   async configure({scene, object, masks, currentIndex}) {
@@ -58,6 +65,7 @@ class WonkyMaskEditor extends HTMLElement {
     this.canvas = this.shadowRoot.querySelector('[data-editor-canvas]');
     this.canvasContext = this.canvas.getContext('2d');
     this.bindEvents();
+    this.emitFrameContext();
     await this.loadCurrentFrame();
   }
 
@@ -81,10 +89,16 @@ class WonkyMaskEditor extends HTMLElement {
     root.querySelector('[name="brushSize"]')?.addEventListener('input', event => {
       this.brushSize = Number(event.target.value);
       root.querySelector('[data-brush-size]').textContent = String(this.brushSize);
+      this.showBrushPreview();
+    });
+    root.querySelector('[name="brushShape"]')?.addEventListener('change', event => {
+      this.brushShape = event.target.value === 'square' ? 'square' : 'round';
+      this.showBrushPreview();
     });
     root.querySelector('[name="hardness"]')?.addEventListener('input', event => {
       this.hardness = Number(event.target.value) / 100;
       root.querySelector('[data-hardness]').textContent = `${event.target.value}%`;
+      this.showBrushPreview();
     });
     root.querySelector('[name="opacity"]')?.addEventListener('input', event => {
       this.opacity = Number(event.target.value) / 100;
@@ -111,8 +125,50 @@ class WonkyMaskEditor extends HTMLElement {
     this.canvas?.addEventListener('pointermove', event => this.onPointerMove(event));
     this.canvas?.addEventListener('pointerup', event => this.onPointerUp(event));
     this.canvas?.addEventListener('pointercancel', event => this.onPointerUp(event));
+    this.canvas?.addEventListener('pointerleave', () => this.onPointerLeave());
     this.canvas?.addEventListener('contextmenu', event => event.preventDefault());
     this.canvas?.addEventListener('wheel', event => this.onWheel(event), {passive: false});
+  }
+
+  adjustBrushSize(delta) {
+    const nextSize = Math.max(2, Math.min(180, this.brushSize + delta));
+    if (nextSize === this.brushSize) return;
+    this.brushSize = nextSize;
+    const input = this.shadowRoot.querySelector('[name="brushSize"]');
+    if (input) input.value = String(this.brushSize);
+    const label = this.shadowRoot.querySelector('[data-brush-size]');
+    if (label) label.textContent = String(this.brushSize);
+    this.showBrushPreview();
+  }
+
+  setDisplayMode(mode) {
+    if (!['overlay', 'scene_background', 'mask', 'masked'].includes(mode)) return;
+    this.displayMode = mode;
+    const select = this.shadowRoot.querySelector('[name="displayMode"]');
+    if (select) select.value = mode;
+    this.renderCanvas();
+  }
+
+  goToBoundaryFrame(position) {
+    if (this.browseAllFrames) {
+      const frameCount = this.scene?.images?.length ?? 0;
+      if (!frameCount) return;
+      this.setCurrentFrameIndex(position === 'start' ? 0 : frameCount - 1);
+      this.loadCurrentFrame();
+      return;
+    }
+    if (!this.masks.length) return;
+    this.currentIndex = position === 'start' ? 0 : this.masks.length - 1;
+    this.currentMask = this.masks[this.currentIndex] ?? null;
+    this.currentFrameIndex = this.findSceneFrameIndexForUploadedFileId(this.currentMask?.uploaded_file_id);
+    this.undoStack = [];
+    this.redoStack = [];
+    this.emitFrameContext();
+    this.render();
+    this.canvas = this.shadowRoot.querySelector('[data-editor-canvas]');
+    this.canvasContext = this.canvas.getContext('2d');
+    this.bindEvents();
+    this.loadCurrentFrame();
   }
 
   render() {
@@ -120,21 +176,10 @@ class WonkyMaskEditor extends HTMLElement {
     const maxFrameNumber = Array.isArray(this.scene?.images) && this.scene.images.length
       ? this.scene.images.length
       : Math.max(1, this.masks.length);
-    const currentSceneImage = this.currentSceneImage();
-    const frameLabel = this.currentMask
-      ? `Mask ${this.currentIndex + 1} / ${this.masks.length} · Scene frame ${currentFrameNumber} / ${maxFrameNumber} · ${this.currentMask.original_filename}`
-      : currentSceneImage
-        ? `No mask yet · Scene frame ${currentFrameNumber} / ${maxFrameNumber} · ${currentSceneImage.original_filename}`
-        : 'No mask selected';
     const isDefaultFrame = Boolean(
       this.currentMask
       && this.object
       && Number(this.object.default_uploaded_file_id) === Number(this.currentMask.uploaded_file_id)
-    );
-    const isPickupFrame = Boolean(
-      this.currentMask
-      && this.object
-      && Number(this.object.pickup_uploaded_file_id) === Number(this.currentMask.uploaded_file_id)
     );
     this.shadowRoot.innerHTML = `
       <style>
@@ -151,17 +196,56 @@ class WonkyMaskEditor extends HTMLElement {
           display: flex;
           flex-wrap: wrap;
           gap: 10px;
-          align-items: end;
+          align-items: stretch;
           border-bottom: 1px solid #2d3748;
           background: #ffffff;
         }
+        .toolbar-section {
+          min-width: 0;
+          display: grid;
+          gap: 8px;
+          align-content: start;
+          padding: 10px 12px;
+          border: 1px solid #d7ded6;
+          border-radius: 10px;
+          background: #f8faf8;
+        }
+        .toolbar-section--grow {
+          flex: 1 1 340px;
+        }
+        .toolbar-section__title {
+          margin: 0;
+          color: #516071;
+          font-size: 0.72rem;
+          font-weight: 800;
+          letter-spacing: 0.04em;
+          text-transform: uppercase;
+        }
         .toolbar-group {
           display: flex;
+          flex-wrap: wrap;
+          gap: 8px;
+          align-items: center;
+        }
+        .toolbar-group--stack {
+          display: grid;
+          grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+          align-items: start;
+        }
+        .toolbar-group--brush {
+          display: grid;
+          grid-template-columns: minmax(110px, 150px) repeat(3, minmax(0, 1fr));
+          gap: 10px;
+          align-items: end;
+        }
+        .toolbar-group--frame-jump {
+          display: flex;
+          flex-wrap: wrap;
           gap: 8px;
           align-items: center;
         }
         label {
-          min-width: 130px;
+          min-width: 0;
           display: grid;
           gap: 4px;
           color: #374151;
@@ -205,12 +289,6 @@ class WonkyMaskEditor extends HTMLElement {
           opacity: 0.45;
           cursor: default;
         }
-        .frame-label {
-          min-width: min(280px, 100%);
-          color: #1f2937;
-          font-weight: 700;
-          overflow-wrap: anywhere;
-        }
         .checkbox {
           min-width: 170px;
           display: flex;
@@ -237,61 +315,83 @@ class WonkyMaskEditor extends HTMLElement {
       </style>
       <div class="toolbar">
         <div class="toolbar-group">
-          <button type="button" data-action="previous" ${(this.browseAllFrames ? this.currentFrameIndex <= 0 : this.currentIndex <= 0) ? 'disabled' : ''}>Previous</button>
-          <button type="button" data-action="next" ${(this.browseAllFrames ? this.currentFrameIndex >= maxFrameNumber - 1 : this.currentIndex >= this.masks.length - 1) ? 'disabled' : ''}>Next</button>
-        </div>
-        <label>
-          Go to frame
-          <div class="toolbar-group">
-            <input name="frameNumber" type="number" min="1" max="${maxFrameNumber}" value="${currentFrameNumber}" />
-            <button type="button" data-action="go-to-frame">Go</button>
+          <div class="toolbar-section">
+            <p class="toolbar-section__title">Navigate</p>
+            <div class="toolbar-group">
+              <button type="button" data-action="previous" ${(this.browseAllFrames ? this.currentFrameIndex <= 0 : this.currentIndex <= 0) ? 'disabled' : ''}>Previous</button>
+              <button type="button" data-action="next" ${(this.browseAllFrames ? this.currentFrameIndex >= maxFrameNumber - 1 : this.currentIndex >= this.masks.length - 1) ? 'disabled' : ''}>Next</button>
+              <button type="button" data-action="go-to-pickup-frame" ${this.object?.pickup_uploaded_file_id ? '' : 'disabled'}>Go to pickup frame</button>
+            </div>
+            <label>
+              Go to frame
+              <div class="toolbar-group toolbar-group--frame-jump">
+                <input name="frameNumber" type="number" min="1" max="${maxFrameNumber}" value="${currentFrameNumber}" />
+                <button type="button" data-action="go-to-frame">Go</button>
+                <button type="button" data-action="undo" ${this.undoStack.length ? '' : 'disabled'}>Undo</button>
+                <button type="button" data-action="redo" ${this.redoStack.length ? '' : 'disabled'}>Redo</button>
+                <button type="button" data-action="fit">Fit</button>
+              </div>
+            </label>
           </div>
-        </label>
-        <div class="frame-label">${escapeHtml(frameLabel)}</div>
-        ${isPickupFrame ? '<div class="frame-label">Pickup frame linked to this object</div>' : ''}
-        <label>
-          Brush <span data-brush-size>${this.brushSize}</span>
-          <input name="brushSize" type="range" min="2" max="180" value="${this.brushSize}" />
-        </label>
-        <label>
-          Hardness <span data-hardness>${Math.round(this.hardness * 100)}%</span>
-          <input name="hardness" type="range" min="0" max="100" value="${Math.round(this.hardness * 100)}" />
-        </label>
-        <label>
-          Mask opacity <span data-opacity>${Math.round(this.opacity * 100)}%</span>
-          <input name="opacity" type="range" min="10" max="100" value="${Math.round(this.opacity * 100)}" />
-        </label>
-        <label>
-          Display
-          <select name="displayMode">
-            <option value="overlay" ${this.displayMode === 'overlay' ? 'selected' : ''}>Overlay</option>
-            <option value="mask" ${this.displayMode === 'mask' ? 'selected' : ''}>Mask only</option>
-            <option value="masked" ${this.displayMode === 'masked' ? 'selected' : ''}>Masked image</option>
-          </select>
-        </label>
-        <label class="checkbox">
-          <input name="applyAll" type="checkbox" ${this.applyAll ? 'checked' : ''} ${this.currentMask ? '' : 'disabled'} />
-          Apply to all frames
-        </label>
-        <label class="checkbox">
-          <input name="browseAllFrames" type="checkbox" ${this.browseAllFrames ? 'checked' : ''} />
-          Browse all scene frames
-        </label>
-        <div class="toolbar-group">
-          <button type="button" data-action="go-to-pickup-frame" ${this.object?.pickup_uploaded_file_id ? '' : 'disabled'}>Go to pickup frame</button>
-          <button type="button" data-action="undo" ${this.undoStack.length ? '' : 'disabled'}>Undo</button>
-          <button type="button" data-action="redo" ${this.redoStack.length ? '' : 'disabled'}>Redo</button>
-          <button type="button" data-action="fit">Fit</button>
         </div>
-        <div class="toolbar-group">
-          <button type="button" data-action="grow" ${this.currentMask ? '' : 'disabled'}>Grow mask</button>
-          <button type="button" data-action="fill-holes" ${this.currentMask ? '' : 'disabled'}>Fill holes</button>
-          <button type="button" data-action="combine" ${this.currentMask ? '' : 'disabled'}>Combine masks</button>
-          <button type="button" data-action="invert" ${this.currentMask ? '' : 'disabled'}>Invert mask</button>
-          <button type="button" data-action="solid" ${this.currentMask ? '' : 'disabled'}>Solid mask</button>
-          <button type="button" data-action="clear" ${this.currentMask ? '' : 'disabled'}>Clear mask</button>
-          <button class="${isDefaultFrame ? 'toggle-active' : ''}" type="button" data-action="set-default-frame" ${this.currentMask ? '' : 'disabled'}>${isDefaultFrame ? 'Default frame' : 'Use as default frame'}</button>
-          <button class="primary" type="button" data-action="save">Save</button>
+        <div class="toolbar-section toolbar-section--grow">
+          <p class="toolbar-section__title">Brush</p>
+          <div class="toolbar-group toolbar-group--brush">
+            <label>
+              Shape
+              <select name="brushShape">
+                <option value="round" ${this.brushShape === 'round' ? 'selected' : ''}>Round</option>
+                <option value="square" ${this.brushShape === 'square' ? 'selected' : ''}>Square</option>
+              </select>
+            </label>
+            <label>
+              Brush <span data-brush-size>${this.brushSize}</span>
+              <input name="brushSize" type="range" min="2" max="180" value="${this.brushSize}" />
+            </label>
+            <label>
+              Hardness <span data-hardness>${Math.round(this.hardness * 100)}%</span>
+              <input name="hardness" type="range" min="0" max="100" value="${Math.round(this.hardness * 100)}" />
+            </label>
+            <label>
+              Mask opacity <span data-opacity>${Math.round(this.opacity * 100)}%</span>
+              <input name="opacity" type="range" min="10" max="100" value="${Math.round(this.opacity * 100)}" />
+            </label>
+          </div>
+        </div>
+        <div class="toolbar-section">
+          <p class="toolbar-section__title">View</p>
+          <label>
+            Display
+            <select name="displayMode">
+              <option value="overlay" ${this.displayMode === 'overlay' ? 'selected' : ''}>Overlay</option>
+              <option value="scene_background" ${this.displayMode === 'scene_background' ? 'selected' : ''}>Scene background</option>
+              <option value="mask" ${this.displayMode === 'mask' ? 'selected' : ''}>Mask only</option>
+              <option value="masked" ${this.displayMode === 'masked' ? 'selected' : ''}>Masked image</option>
+            </select>
+          </label>
+          <label class="checkbox">
+            <input name="browseAllFrames" type="checkbox" ${this.browseAllFrames ? 'checked' : ''} />
+            Browse all scene frames
+          </label>
+          <label class="checkbox">
+            <input name="applyAll" type="checkbox" ${this.applyAll ? 'checked' : ''} ${this.currentMask ? '' : 'disabled'} />
+            Apply to all frames
+          </label>
+        </div>
+        <div class="toolbar-section toolbar-section--grow">
+          <p class="toolbar-section__title">Mask ops</p>
+          <div class="toolbar-group">
+            <button type="button" data-action="grow" ${this.currentMask ? '' : 'disabled'}>Grow mask</button>
+            <button type="button" data-action="fill-holes" ${this.currentMask ? '' : 'disabled'}>Fill holes</button>
+            <button type="button" data-action="combine" ${this.currentMask ? '' : 'disabled'}>Combine masks</button>
+            <button type="button" data-action="invert" ${this.currentMask ? '' : 'disabled'}>Invert mask</button>
+            <button type="button" data-action="solid" ${this.currentMask ? '' : 'disabled'}>Solid mask</button>
+            <button type="button" data-action="clear" ${this.currentMask ? '' : 'disabled'}>Clear mask</button>
+          </div>
+          <div class="toolbar-group">
+            <button class="${isDefaultFrame ? 'toggle-active' : ''}" type="button" data-action="set-default-frame" ${this.currentMask ? '' : 'disabled'}>${isDefaultFrame ? 'Default frame' : 'Use as default frame'}</button>
+            <button class="primary" type="button" data-action="save">Save</button>
+          </div>
         </div>
       </div>
       <div class="canvas-wrap">
@@ -304,8 +404,13 @@ class WonkyMaskEditor extends HTMLElement {
     const sceneImage = this.currentSceneImage();
     const originalUrl = sceneImage?.originalUrl || this.currentMask?.originalUrl;
     if (!originalUrl) return;
-    const originalImage = await loadImage(originalUrl);
+    const backgroundUrl = this.sceneBackgroundImage()?.originalUrl || '';
+    const [originalImage, backgroundImage] = await Promise.all([
+      loadImage(originalUrl),
+      backgroundUrl ? loadImage(backgroundUrl).catch(() => null) : Promise.resolve(null)
+    ]);
     this.originalImage = originalImage;
+    this.backgroundImage = backgroundImage;
     this.maskCanvas.width = originalImage.naturalWidth;
     this.maskCanvas.height = originalImage.naturalHeight;
     this.maskContext.clearRect(0, 0, this.maskCanvas.width, this.maskCanvas.height);
@@ -356,6 +461,7 @@ class WonkyMaskEditor extends HTMLElement {
     ctx.setTransform(this.zoom, 0, 0, this.zoom, this.panX, this.panY);
     ctx.imageSmoothingEnabled = true;
     ctx.drawImage(this.bufferCanvas, 0, 0);
+    this.renderBrushPreview(ctx);
   }
 
   renderBuffer() {
@@ -368,6 +474,15 @@ class WonkyMaskEditor extends HTMLElement {
     ctx.clearRect(0, 0, width, height);
     if (this.displayMode === 'mask') {
       ctx.drawImage(this.maskCanvas, 0, 0);
+      return;
+    }
+    if (this.displayMode === 'scene_background') {
+      if (this.backgroundImage) {
+        ctx.drawImage(this.backgroundImage, 0, 0, width, height);
+      } else {
+        ctx.drawImage(this.originalImage, 0, 0, width, height);
+      }
+      drawMaskedImage(ctx, this.originalImage, this.maskAlphaCanvas, width, height, 1);
       return;
     }
     ctx.drawImage(this.originalImage, 0, 0, width, height);
@@ -395,6 +510,7 @@ class WonkyMaskEditor extends HTMLElement {
     this.isPointerDown = true;
     this.pointerMode = event.button === 1 ? 'pan' : event.button === 2 ? 'erase' : 'draw';
     this.lastPoint = this.eventToImagePoint(event);
+    this.hoverPoint = this.lastPoint;
     if (this.pointerMode === 'pan') {
       this.lastPointer = {x: event.clientX, y: event.clientY};
       return;
@@ -402,6 +518,7 @@ class WonkyMaskEditor extends HTMLElement {
     this.activeOperation = {
       type: this.pointerMode,
       size: this.brushSize,
+      shape: this.brushShape,
       hardness: this.hardness,
       points: [this.lastPoint]
     };
@@ -412,7 +529,12 @@ class WonkyMaskEditor extends HTMLElement {
   }
 
   onPointerMove(event) {
-    if (!this.isPointerDown) return;
+    if (!this.originalImage) return;
+    this.hoverPoint = this.eventToImagePoint(event);
+    if (!this.isPointerDown) {
+      if (this.brushPreviewVisible) this.renderCanvas();
+      return;
+    }
     event.preventDefault();
     if (this.pointerMode === 'pan') {
       const dx = (event.clientX - this.lastPointer.x) * (window.devicePixelRatio || 1);
@@ -435,6 +557,7 @@ class WonkyMaskEditor extends HTMLElement {
     if (!this.isPointerDown) return;
     event.preventDefault();
     this.isPointerDown = false;
+    this.hoverPoint = this.eventToImagePoint(event);
     if (this.pointerMode !== 'pan' && this.beforeStroke) {
       const after = this.maskContext.getImageData(0, 0, this.maskCanvas.width, this.maskCanvas.height);
       this.undoStack.push({
@@ -452,10 +575,23 @@ class WonkyMaskEditor extends HTMLElement {
     this.pointerMode = null;
     this.activeOperation = null;
     this.beforeStroke = null;
+    if (this.brushPreviewVisible) this.renderCanvas();
+  }
+
+  onPointerLeave() {
+    this.hoverPoint = null;
+    if (this.brushPreviewVisible) this.renderCanvas();
   }
 
   onWheel(event) {
     if (!this.originalImage) return;
+    if (event.ctrlKey || event.metaKey) {
+      event.preventDefault();
+      const delta = event.deltaY < 0 ? 4 : -4;
+      this.hoverPoint = this.eventToImagePoint(event);
+      this.adjustBrushSize(delta);
+      return;
+    }
     event.preventDefault();
     const before = this.eventToImagePoint(event);
     const factor = event.deltaY < 0 ? 1.12 : 0.89;
@@ -497,6 +633,10 @@ class WonkyMaskEditor extends HTMLElement {
   }
 
   applyBrush(point, operation, context = this.maskContext) {
+    if (operation.shape === 'square') {
+      this.applySquareBrush(point, operation, context);
+      return;
+    }
     const radius = operation.size / 2;
     const hardStop = Math.max(0, Math.min(1, operation.hardness));
     const gradient = context.createRadialGradient(point.x, point.y, radius * hardStop, point.x, point.y, radius);
@@ -507,6 +647,104 @@ class WonkyMaskEditor extends HTMLElement {
     context.beginPath();
     context.arc(point.x, point.y, radius, 0, Math.PI * 2);
     context.fill();
+  }
+
+  applySquareBrush(point, operation, context = this.maskContext) {
+    const size = Math.max(1, operation.size);
+    const half = size / 2;
+    const hardStop = Math.max(0, Math.min(1, operation.hardness));
+    const color = operation.type === 'erase' ? 0 : 255;
+    const innerHalf = half * hardStop;
+    const outerLeft = point.x - half;
+    const outerTop = point.y - half;
+    if (hardStop >= 0.999 || innerHalf <= 0.5) {
+      context.fillStyle = `rgba(${color}, ${color}, ${color}, 1)`;
+      context.fillRect(outerLeft, outerTop, size, size);
+      return;
+    }
+    const offscreen = document.createElement('canvas');
+    offscreen.width = Math.max(1, Math.ceil(size));
+    offscreen.height = Math.max(1, Math.ceil(size));
+    const offscreenContext = offscreen.getContext('2d');
+    const imageData = offscreenContext.createImageData(offscreen.width, offscreen.height);
+    const data = imageData.data;
+    const localCenterX = offscreen.width / 2;
+    const localCenterY = offscreen.height / 2;
+    for (let y = 0; y < offscreen.height; y += 1) {
+      for (let x = 0; x < offscreen.width; x += 1) {
+        const dx = Math.abs((x + 0.5) - localCenterX);
+        const dy = Math.abs((y + 0.5) - localCenterY);
+        const outside = Math.max(dx, dy);
+        let alpha = 1;
+        if (outside > innerHalf) {
+          alpha = 1 - ((outside - innerHalf) / Math.max(0.0001, half - innerHalf));
+        }
+        alpha = Math.max(0, Math.min(1, alpha));
+        const index = (y * offscreen.width + x) * 4;
+        data[index] = color;
+        data[index + 1] = color;
+        data[index + 2] = color;
+        data[index + 3] = Math.round(alpha * 255);
+      }
+    }
+    offscreenContext.putImageData(imageData, 0, 0);
+    context.drawImage(offscreen, outerLeft, outerTop);
+  }
+
+  showBrushPreview(durationMs = 700) {
+    this.brushPreviewVisible = true;
+    this.brushPreviewUntil = Date.now() + durationMs;
+    if (this.brushPreviewTimer) window.clearTimeout(this.brushPreviewTimer);
+    this.brushPreviewTimer = window.setTimeout(() => {
+      this.brushPreviewVisible = false;
+      this.brushPreviewTimer = null;
+      this.renderCanvas();
+    }, durationMs);
+    this.renderCanvas();
+  }
+
+  renderBrushPreview(ctx) {
+    if (!this.brushPreviewVisible || !this.originalImage) return;
+    if (Date.now() > this.brushPreviewUntil) {
+      this.brushPreviewVisible = false;
+      return;
+    }
+    const point = this.hoverPoint ?? {
+      x: this.originalImage.naturalWidth / 2,
+      y: this.originalImage.naturalHeight / 2
+    };
+    const screenX = point.x * this.zoom + this.panX;
+    const screenY = point.y * this.zoom + this.panY;
+    const size = this.brushSize * this.zoom;
+    const half = size / 2;
+    const innerHalf = half * Math.max(0, Math.min(1, this.hardness));
+    ctx.save();
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    ctx.strokeStyle = 'rgba(255, 255, 255, 0.95)';
+    ctx.lineWidth = 2;
+    ctx.fillStyle = 'rgba(255, 255, 255, 0.12)';
+    if (this.brushShape === 'square') {
+      ctx.fillRect(screenX - innerHalf, screenY - innerHalf, innerHalf * 2, innerHalf * 2);
+      ctx.strokeRect(screenX - half, screenY - half, size, size);
+      if (innerHalf > 1 && innerHalf < half) {
+        ctx.strokeStyle = 'rgba(255, 255, 255, 0.45)';
+        ctx.strokeRect(screenX - innerHalf, screenY - innerHalf, innerHalf * 2, innerHalf * 2);
+      }
+    } else {
+      ctx.beginPath();
+      ctx.arc(screenX, screenY, innerHalf, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.beginPath();
+      ctx.arc(screenX, screenY, half, 0, Math.PI * 2);
+      ctx.stroke();
+      if (innerHalf > 1 && innerHalf < half) {
+        ctx.strokeStyle = 'rgba(255, 255, 255, 0.45)';
+        ctx.beginPath();
+        ctx.arc(screenX, screenY, innerHalf, 0, Math.PI * 2);
+        ctx.stroke();
+      }
+    }
+    ctx.restore();
   }
 
   undo() {
@@ -550,6 +788,7 @@ class WonkyMaskEditor extends HTMLElement {
     this.currentFrameIndex = this.findSceneFrameIndexForUploadedFileId(this.currentMask?.uploaded_file_id);
     this.undoStack = [];
     this.redoStack = [];
+    this.emitFrameContext();
     this.render();
     this.canvas = this.shadowRoot.querySelector('[data-editor-canvas]');
     this.canvasContext = this.canvas.getContext('2d');
@@ -642,6 +881,16 @@ class WonkyMaskEditor extends HTMLElement {
     return null;
   }
 
+  sceneBackgroundImage() {
+    const sceneImages = this.scene?.images ?? [];
+    if (!sceneImages.length) return null;
+    const backgroundIndex = Math.max(
+      0,
+      Math.min(Number(this.scene?.background_frame_index ?? 0), sceneImages.length - 1)
+    );
+    return sceneImages[backgroundIndex] ?? null;
+  }
+
   findSceneFrameIndexForUploadedFileId(uploadedFileId) {
     if (!uploadedFileId || !Array.isArray(this.scene?.images)) return 0;
     const index = this.scene.images.findIndex(
@@ -661,6 +910,7 @@ class WonkyMaskEditor extends HTMLElement {
     this.currentMask = this.currentIndex >= 0 ? this.masks[this.currentIndex] : null;
     this.undoStack = [];
     this.redoStack = [];
+    this.emitFrameContext();
     this.render();
     this.canvas = this.shadowRoot.querySelector('[data-editor-canvas]');
     this.canvasContext = this.canvas.getContext('2d');
@@ -676,6 +926,7 @@ class WonkyMaskEditor extends HTMLElement {
     }
     this.undoStack = [];
     this.redoStack = [];
+    this.emitFrameContext();
     this.render();
     this.canvas = this.shadowRoot.querySelector('[data-editor-canvas]');
     this.canvasContext = this.canvas.getContext('2d');
@@ -747,6 +998,25 @@ class WonkyMaskEditor extends HTMLElement {
     }
     this.maskAlphaContext.putImageData(source, 0, 0);
   }
+
+  emitFrameContext() {
+    const currentSceneImage = this.currentSceneImage();
+    const sceneFrameTotal = Math.max(1, this.scene?.images?.length ?? this.masks.length ?? 1);
+    const sceneFrameNumber = this.currentFrameNumber();
+    const meta = this.currentMask
+      ? `Mask ${this.currentIndex + 1} / ${Math.max(1, this.masks.length)} · Scene frame ${sceneFrameNumber} / ${sceneFrameTotal}`
+      : `No mask yet · Scene frame ${sceneFrameNumber} / ${sceneFrameTotal}`;
+    const filename = this.currentMask?.original_filename ?? currentSceneImage?.original_filename ?? '';
+    const note = this.currentMask
+      && this.object
+      && Number(this.object.pickup_uploaded_file_id) === Number(this.currentMask.uploaded_file_id)
+      ? 'Pickup frame linked to this object'
+      : '';
+    this.dispatchEvent(new CustomEvent('frame-context-change', {
+      bubbles: true,
+      detail: {meta, filename, note}
+    }));
+  }
 }
 
 function loadImage(src) {
@@ -761,6 +1031,20 @@ function loadImage(src) {
 
 function canvasToPngBlob(canvas) {
   return new Promise(resolve => canvas.toBlob(resolve, 'image/png'));
+}
+
+function drawMaskedImage(ctx, image, maskImage, width, height, opacity) {
+  const temp = document.createElement('canvas');
+  temp.width = width;
+  temp.height = height;
+  const tempCtx = temp.getContext('2d');
+  tempCtx.drawImage(image, 0, 0, width, height);
+  tempCtx.globalCompositeOperation = 'destination-in';
+  tempCtx.drawImage(maskImage, 0, 0, width, height);
+  tempCtx.globalCompositeOperation = 'source-over';
+  ctx.globalAlpha = opacity;
+  ctx.drawImage(temp, 0, 0);
+  ctx.globalAlpha = 1;
 }
 
 function scaleOperation(operation, scaleX, scaleY) {

@@ -5,10 +5,12 @@
       <div class="app-topbar__links">
         <a class="app-topbar__link" href="/"><span class="ui-icon" data-icon="clapperboard"></span><span>Scenes</span></a>
         <a class="app-topbar__link" href="/images"><span class="ui-icon" data-icon="images"></span><span>Images</span></a>
+        <a class="app-topbar__link" href="/variables"><span class="ui-icon" data-icon="sliders-horizontal"></span><span>Variables</span></a>
         <a class="app-topbar__link" href="/script-review"><span class="ui-icon" data-icon="captions"></span><span>Transcript library</span></a>
         <a class="app-topbar__link" href="/audio-library"><span class="ui-icon" data-icon="audio-lines"></span><span>Audio library</span></a>
         <a class="app-topbar__link" href="/global-settings"><span class="ui-icon" data-icon="settings-2"></span><span>Global settings</span></a>
-        <a class="app-topbar__link" href="/system-health"><span class="ui-icon" data-icon="activity"></span><span>Health</span></a>
+        <a class="app-topbar__link" href="/artist-guide"><span class="ui-icon" data-icon="book-open"></span><span>Guide</span></a>
+      <a class="app-topbar__link" href="/system-health"><span class="ui-icon" data-icon="activity"></span><span>Health</span></a>
         <button class="app-topbar__link app-topbar__link--primary" type="button" data-action="open-game-preview"><span class="ui-icon" data-icon="play"></span><span>Preview game</span></button>
       </div>
     </nav>
@@ -52,6 +54,14 @@
             <strong>{{workspaceSummary.missing_approved_audio}}</strong>
             <span>Missing approved audio</span>
           </article>
+          <article class="workspace-summary-card {{#if workspaceSummary.referenced_missing_selected_audio}}is-warning{{/if}}">
+            <strong>{{workspaceSummary.referenced_missing_selected_audio}}</strong>
+            <span>Referenced lines missing selected audio</span>
+          </article>
+          <article class="workspace-summary-card {{#if workspaceSummary.referenced_unverified_translations}}is-warning{{/if}}">
+            <strong>{{workspaceSummary.referenced_unverified_translations}}</strong>
+            <span>Referenced lines with unverified translations</span>
+          </article>
           <article class="workspace-summary-card {{#if workspaceSummary.failed_jobs}}is-danger{{/if}}">
             <strong>{{workspaceSummary.failed_jobs}}</strong>
             <span>Failed jobs</span>
@@ -66,6 +76,7 @@
         <div>
           <p class="eyebrow">Scenes</p>
           <h2 id="scenes-title">Draft scenes</h2>
+          {{#if hydratingScenes}}<p class="panel-intro">Loading scene details…</p>{{/if}}
         </div>
         {{#if hasScenes}}
           <div class="scene-grid">
@@ -97,11 +108,11 @@
                         ><span class="ui-icon" data-icon="arrow-down"></span></button>
                       </div>
                     </div>
-                    <p>{{scene.images.length}} images · {{scene.objects.length}} objects · {{scene.objectMaskCount}} masks · {{scene.status}}</p>
+                    <p>{{scene.imageCount}} images · {{scene.objectCount}} objects · {{scene.objectMaskCount}} masks · {{scene.status}}</p>
                     <p>{{scene.description}}</p>
                   </div>
 
-                  {{#if scene.hasObjects}}
+                  {{#if scene.hasLoadedObjectList}}
                     <div class="object-list" aria-label="Scene objects">
                       {{#each scene.objects as object}}
                         <span>{{object.name}}</span>
@@ -144,40 +155,6 @@
           </div>
           <button class="button secondary" type="button" data-action="logout">Sign out</button>
         {{/if}}
-      </div>
-    </section>
-
-    {{#if hasUploadBatches}}
-      <section class="uploads-list" aria-labelledby="recent-uploads-title">
-        <div class="panel-stack">
-          <div>
-            <p class="eyebrow">Recent</p>
-            <h2 id="recent-uploads-title">Upload batches</h2>
-          </div>
-          <div class="batch-list">
-            {{#each uploadBatches as batch}}
-              <article class="batch-row">
-                <div>
-                  <strong>Batch {{batch.id}}</strong>
-                  <p>{{batch.file_count}} files · {{formatBytes batch.total_bytes}} · {{batch.status}}</p>
-                </div>
-              </article>
-            {{/each}}
-          </div>
-        </div>
-      </section>
-    {{/if}}
-
-    <section class="upload-panel" aria-labelledby="upload-title" data-upload-dropzone>
-      <div class="panel-stack">
-        <div>
-          <p class="eyebrow">Batch intake</p>
-          <h2 id="upload-title">Drop files anywhere</h2>
-          <p>Upload scene photos, masks, audio, or text fragments. Images stay unassigned until you move them into a scene.</p>
-        </div>
-        <input class="file-input" type="file" multiple data-file-input />
-        <button class="button primary" type="button" data-action="browse-files">Select files</button>
-        <p class="upload-status" data-upload-status aria-live="polite"></p>
       </div>
     </section>
 
@@ -247,6 +224,18 @@
               <button class="button secondary" type="button" data-action="browse-import-project">Import project zip</button>
             </div>
             <p class="form-status" data-project-archive-status aria-live="polite"></p>
+          </div>
+          <div class="danger-zone">
+            <div>
+              <p class="eyebrow">Quick backup</p>
+              <strong>Database JSON backup</strong>
+              <p>Write or restore <code>/mnt/d/wonky-studio/backup.json</code>. Useful if you are zipping the full <code>wonky-studio</code> folder yourself.</p>
+            </div>
+            <div class="tool-links">
+              <button class="button secondary" type="button" data-action="export-database-backup">Write backup.json</button>
+              <button class="button secondary" type="button" data-action="import-database-backup">Import backup.json</button>
+            </div>
+            <p class="form-status" data-database-backup-status aria-live="polite"></p>
           </div>
           <div class="danger-zone">
             <div>

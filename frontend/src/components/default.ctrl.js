@@ -1,6 +1,6 @@
 import {apiFetch} from '../api.js';
 import {applyStatus} from '../status.js';
-import {loadScenes, scenes} from '../state/scenes.js';
+import {hydrateSceneDetails, loadSceneSummaries, scenes} from '../state/scenes.js';
 import {logoutUser, user} from '../state/user.js';
 
 const DefaultCtrl = app => async () => {
@@ -15,6 +15,8 @@ const DefaultCtrl = app => async () => {
     hasScenes: false,
     workspaceSummary: null,
     hasWorkspaceSummary: false,
+    hydratingScenes: false,
+    sceneHydrationToken: 0,
     uploadStatus: '',
     sceneCreateStatus: '',
     unloadHandlers: [],
@@ -65,6 +67,18 @@ const DefaultCtrl = app => async () => {
       const exportProjectButton = event.target.closest('[data-action="export-project"]');
       if (exportProjectButton) {
         this.exportProject(exportProjectButton);
+        return;
+      }
+
+      const exportDatabaseBackupButton = event.target.closest('[data-action="export-database-backup"]');
+      if (exportDatabaseBackupButton) {
+        await this.exportDatabaseBackup(exportDatabaseBackupButton);
+        return;
+      }
+
+      const importDatabaseBackupButton = event.target.closest('[data-action="import-database-backup"]');
+      if (importDatabaseBackupButton) {
+        await this.importDatabaseBackup(importDatabaseBackupButton);
         return;
       }
 
@@ -232,6 +246,21 @@ const DefaultCtrl = app => async () => {
       }, 800);
     },
 
+    async exportDatabaseBackup(button) {
+      const status = document.querySelector('[data-database-backup-status]');
+      button.disabled = true;
+      applyStatus(status, 'Writing backup.json...');
+      try {
+        const result = await apiFetch('/api/admin/export-database-backup', {method: 'POST'});
+        const sceneCount = Number(result.archive?.table_counts?.scenes ?? 0);
+        applyStatus(status, `Wrote ${result.backup_path}. Included ${sceneCount} scene${sceneCount === 1 ? '' : 's'}.`);
+      } catch (error) {
+        applyStatus(status, error?.message || 'Could not write backup.json.');
+      } finally {
+        button.disabled = false;
+      }
+    },
+
     async generateInvite(form) {
       const result = document.querySelector('[data-invite-result]');
       applyStatus(result, 'Generating invite...');
@@ -314,8 +343,37 @@ const DefaultCtrl = app => async () => {
       }
     },
 
+    async importDatabaseBackup(button) {
+      const confirmed = window.confirm(
+        'Import /mnt/d/wonky-studio/backup.json into this workspace? Import only works on an empty workspace.'
+      );
+      if (!confirmed) return;
+      const status = document.querySelector('[data-database-backup-status]');
+      button.disabled = true;
+      applyStatus(status, 'Importing backup.json...');
+      try {
+        const result = await apiFetch('/api/admin/import-database-backup', {method: 'POST'});
+        this.uploadBatches = [];
+        this.hasUploadBatches = false;
+        await this.reloadScenes();
+        await this.reloadWorkspaceSummary();
+        app.refresh();
+        const sceneCount = Number(result.archive?.table_counts?.scenes ?? 0);
+        applyStatus(status, `Imported backup.json. Restored ${sceneCount} scene${sceneCount === 1 ? '' : 's'}.`);
+      } catch (error) {
+        applyStatus(status, error?.message || 'Could not import backup.json.');
+      } finally {
+        button.disabled = false;
+      }
+    },
+
     async reloadScenes() {
-      await loadScenes();
+      await loadSceneSummaries();
+      this.applySceneList();
+      this.hydrateScenesInBackground();
+    },
+
+    applySceneList() {
       this.hasScenes = scenes.length > 0;
       this.scenes = scenes.map((scene, index) => ({
         ...scene,
@@ -324,6 +382,18 @@ const DefaultCtrl = app => async () => {
         disableMoveUp: index === 0,
         disableMoveDown: index === scenes.length - 1
       }));
+    },
+
+    async hydrateScenesInBackground() {
+      const token = Date.now();
+      this.sceneHydrationToken = token;
+      this.hydratingScenes = true;
+      app.refresh();
+      await hydrateSceneDetails();
+      if (this.sceneHydrationToken !== token) return;
+      this.applySceneList();
+      this.hydratingScenes = false;
+      app.refresh();
     },
 
     async moveScene(button) {

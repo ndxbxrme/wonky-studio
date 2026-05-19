@@ -2,29 +2,38 @@
   {{#if editorReady}}
     <header class="mask-editor-header">
       <div>
-        <a class="back-link" href="/scene/{{scene.id}}">Scene {{scene.id}}</a>
-        <p class="eyebrow">Animation editor</p>
         <h1>{{object.name}}</h1>
         <p>{{object.maskCount}} mask frames · {{animations.length}} animations</p>
       </div>
-      <p class="form-status" data-animation-status aria-live="polite"></p>
+      <div class="mask-editor-header__actions">
+        <a class="back-link" href="/scene/{{scene.id}}">Scene {{scene.id}}</a>
+        <a class="button secondary compact" href="/mask-editor/{{scene.id}}/{{object.id}}/{{object.firstMaskId}}">Open mask editor</a>
+        <p class="form-status" data-animation-status aria-live="polite"></p>
+      </div>
     </header>
 
     <section class="animation-editor-grid">
       <div class="animation-preview-panel">
-        <wonky-animation-preview></wonky-animation-preview>
+        {{#if hasAnimations}}
+          <wonky-animation-preview></wonky-animation-preview>
+        {{/if}}
+        {{#if hasNoAnimations}}
+          <div class="editor-empty-state editor-empty-state--large animation-preview-empty-state">
+            <strong>No animations yet.</strong>
+            <p>Create an animation in the sidebar to start previewing this object.</p>
+            <p>{{object.maskCount}} mask frames are available.</p>
+          </div>
+        {{/if}}
       </div>
 
       <aside class="animation-sidebar">
         <div class="animation-sidebar__section">
           <p class="eyebrow">Preview</p>
           <label>
-            Background object
+            Background
             <select name="backgroundObjectId">
+              <option value="scene">Scene background</option>
               <option value="">Scene plate only</option>
-              {{#each backgroundObjects as backgroundObject}}
-                <option value="{{backgroundObject.id}}">{{backgroundObject.name}}</option>
-              {{/each}}
             </select>
           </label>
         </div>

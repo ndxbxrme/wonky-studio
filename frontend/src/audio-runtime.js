@@ -6,6 +6,7 @@ class PreviewAudioRuntime {
     this.sfxBaseVolume = 0.5;
     this.duckFactor = 1;
     this.activeSfx = new Set();
+    this.pendingBgmRequest = null;
   }
 
   setVolumes({bgmVolume, sfxVolume}) {
@@ -32,7 +33,19 @@ class PreviewAudioRuntime {
     nextAudio.loop = true;
     nextAudio.preload = 'auto';
     nextAudio.volume = 0;
-    await nextAudio.play().catch(() => {});
+    const playStarted = await nextAudio.play()
+      .then(() => true)
+      .catch(() => false);
+    if (!playStarted) {
+      this.pendingBgmRequest = {
+        audioAssetId: nextAssetId,
+        audioUrl,
+        volume: this.bgmBaseVolume,
+        durationSeconds
+      };
+      return;
+    }
+    this.pendingBgmRequest = null;
 
     const previousAudio = this.bgmAudio;
     const previousVolume = previousAudio?.volume ?? 0;
@@ -48,6 +61,13 @@ class PreviewAudioRuntime {
       previousAudio.src = '';
     }
     this.applyVolumes();
+  }
+
+  async resumePendingBgm() {
+    if (!this.pendingBgmRequest) return;
+    const request = this.pendingBgmRequest;
+    this.pendingBgmRequest = null;
+    await this.crossfadeBgm(request);
   }
 
   async playSfx({audioUrl, volume}) {
@@ -87,6 +107,7 @@ class PreviewAudioRuntime {
       audio.src = '';
     }
     this.activeSfx.clear();
+    this.pendingBgmRequest = null;
   }
 }
 

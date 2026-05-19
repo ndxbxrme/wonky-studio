@@ -9,6 +9,29 @@ const KEY_CODE_OPTIONS = [
   'KeyA', 'KeyD', 'KeyW', 'Digit1', 'Digit2', 'Digit3'
 ].map(value => ({value, label: value}));
 
+const CURSOR_STATE_OPTIONS = [
+  {
+    key: 'default',
+    label: 'Default cursor',
+    description: 'Shown over empty preview space when nothing special is happening.'
+  },
+  {
+    key: 'hover_interactive',
+    label: 'Hover interactive',
+    description: 'Shown when the pointer is over a clickable or usable runtime target.'
+  },
+  {
+    key: 'busy',
+    label: 'Busy',
+    description: 'Shown while the preview is actively loading or refreshing.'
+  },
+  {
+    key: 'blocked',
+    label: 'Blocked',
+    description: 'Shown when the pointer is over a target that cannot be used in the current context.'
+  }
+];
+
 const GlobalSettingsCtrl = app => async () => {
   const controller = {
     appName: 'Wonky Studio',
@@ -29,6 +52,7 @@ const GlobalSettingsCtrl = app => async () => {
     hasInventoryBackground: false,
     verbTagBackgroundUrl: '',
     inventoryBackgroundUrl: '',
+    cursorStates: [],
     unloadHandlers: [],
 
     async postLoad() {
@@ -86,6 +110,19 @@ const GlobalSettingsCtrl = app => async () => {
       this.inventoryBackgroundUrl = this.hasInventoryBackground
         ? `${globalSettingsAssetUrl('inventory_background')}?v=${encodeURIComponent(this.globalSettings.updated_at || '')}`
         : '';
+      this.cursorStates = CURSOR_STATE_OPTIONS.map(stateOption => {
+        const state = this.globalSettings?.cursor_states?.[stateOption.key] ?? {};
+        const hasAsset = Boolean(state.relative_path);
+        return {
+          ...stateOption,
+          hasAsset,
+          hotspotX: Number(state.hotspot_x ?? 0),
+          hotspotY: Number(state.hotspot_y ?? 0),
+          previewUrl: hasAsset
+            ? `${globalSettingsAssetUrl(`cursor_${stateOption.key}`)}?v=${encodeURIComponent(this.globalSettings.updated_at || '')}`
+            : ''
+        };
+      });
     },
 
     setControlValues() {
@@ -101,6 +138,15 @@ const GlobalSettingsCtrl = app => async () => {
       const inventoryForm = this.root?.querySelector('[data-inventory-layout-form]');
       if (inventoryForm && this.globalSettings) {
         inventoryForm.elements.inventory_slots_json.value = JSON.stringify(this.globalSettings.inventory_slots ?? [], null, 2);
+      }
+      const cursorForm = this.root?.querySelector('[data-cursor-settings-form]');
+      if (cursorForm) {
+        for (const state of this.cursorStates) {
+          const xControl = cursorForm.elements[`${state.key}_hotspot_x`];
+          const yControl = cursorForm.elements[`${state.key}_hotspot_y`];
+          if (xControl) xControl.value = String(state.hotspotX ?? 0);
+          if (yControl) yControl.value = String(state.hotspotY ?? 0);
+        }
       }
       const verbForm = this.root?.querySelector('[data-verb-form]');
       if (verbForm) {
@@ -126,6 +172,12 @@ const GlobalSettingsCtrl = app => async () => {
         this.selectedVerbId = null;
         await this.refreshData();
         this.refreshView();
+        return;
+      }
+      const saveCursorSettingsButton = event.target.closest('[data-action="save-cursor-settings"]');
+      if (saveCursorSettingsButton) {
+        const cursorForm = this.root?.querySelector('[data-cursor-settings-form]');
+        if (cursorForm) await this.saveCursorSettings(cursorForm);
         return;
       }
       const deleteButton = event.target.closest('[data-action="delete-overlay-binding"]');
@@ -211,6 +263,28 @@ const GlobalSettingsCtrl = app => async () => {
         this.setStatus('Inventory layout saved.');
       } catch {
         this.setStatus('Could not save inventory layout.');
+      }
+    },
+
+    async saveCursorSettings(form) {
+      this.setStatus('Saving cursor settings...');
+      try {
+        const cursor_states = Object.fromEntries(this.cursorStates.map(state => [
+          state.key,
+          {
+            hotspot_x: Number(form.elements[`${state.key}_hotspot_x`]?.value || 0),
+            hotspot_y: Number(form.elements[`${state.key}_hotspot_y`]?.value || 0)
+          }
+        ]));
+        this.globalSettings = await apiFetch('/api/global-settings', {
+          method: 'PATCH',
+          body: JSON.stringify({cursor_states})
+        });
+        await this.refreshData();
+        this.refreshView();
+        this.setStatus('Cursor settings saved.');
+      } catch {
+        this.setStatus('Could not save cursor settings.');
       }
     },
 

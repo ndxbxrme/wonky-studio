@@ -52,6 +52,7 @@ from .database import (
     delete_scene_object,
     delete_scene_interaction,
     delete_session,
+    ensure_system_game_variables,
     fail_processing_job,
     get_available_invite,
     get_database_path,
@@ -145,7 +146,14 @@ from .scene_processing import fingerprint_image, process_upload_batch_into_scene
 from .security import sign_state, verify_state
 from .segmentation import SegmentationProvider, build_segmentation_provider
 from .script_import import import_script_audio_data
-from .project_archive import export_project_archive, import_project_archive, workspace_is_empty
+from .project_archive import (
+    database_backup_path,
+    export_project_archive,
+    export_project_database_json,
+    import_project_archive,
+    import_project_database_json,
+    workspace_is_empty,
+)
 from .script_localization import (
     ScriptLocalizationProvider,
     build_script_localization_provider,
@@ -390,6 +398,7 @@ class SceneSummary(BaseModel):
     updated_at: str
     image_count: int
     object_count: int
+    object_mask_count: int = 0
 
 
 class SceneCreate(BaseModel):
@@ -561,6 +570,12 @@ class ProjectArchiveSummary(BaseModel):
 class ProjectImportResult(BaseModel):
     ok: bool
     cleared_tables: list[str]
+    archive: ProjectArchiveSummary
+
+
+class DatabaseBackupResult(BaseModel):
+    ok: bool
+    backup_path: str
     archive: ProjectArchiveSummary
 
 
@@ -744,6 +759,8 @@ class WorkspaceSummary(BaseModel):
     missing_inventory_art: int
     missing_translations: int
     missing_approved_audio: int
+    referenced_missing_selected_audio: int
+    referenced_unverified_translations: int
     failed_jobs: int
 
 
@@ -809,6 +826,7 @@ class GlobalSettingsUpdate(BaseModel):
     inventory_key_code: str | None = Field(default=None, min_length=1, max_length=32)
     verb_menu_timeout_seconds: float | None = Field(default=None, gt=0.25, le=30)
     inventory_slots: list[InventorySlot] | None = None
+    cursor_states: dict[str, dict[str, int | None | str | None]] | None = None
 
 
 class GlobalSettings(GlobalSettingsUpdate):
@@ -823,6 +841,7 @@ class GlobalSettings(GlobalSettingsUpdate):
     inventory_slots: list[InventorySlot] = []
     inventory_background_relative_path: str | None = None
     verb_tag_background_relative_path: str | None = None
+    cursor_states: dict[str, dict[str, int | None | str | None]] = Field(default_factory=dict)
     created_at: str
     updated_at: str
 
@@ -897,6 +916,7 @@ class PreviewObjectState(BaseModel):
     name: str
     sort_order: int = 0
     keyboard_target_enabled: bool = False
+    pickup_uploaded_file_id: int | None = None
     visible: bool = True
     enabled: bool = True
     label: str = ""
@@ -1184,12 +1204,14 @@ def create_app(
             organization_id=admin["organization_id"],
             preserve_audio_assets=True,
         )
+        cleared_tables = reset_workspace_tables(
+            database_path,
+            preserve_audio_assets=True,
+        )
+        ensure_system_game_variables(database_path, admin["organization_id"])
         return {
             "ok": True,
-            "cleared_tables": reset_workspace_tables(
-                database_path,
-                preserve_audio_assets=True,
-            ),
+            "cleared_tables": cleared_tables,
         }
 
     @app.get("/api/admin/export-project")
@@ -1211,6 +1233,24 @@ def create_app(
             filename=f"wonky-project-{admin['organization_id']}.zip",
             background=BackgroundTask(lambda: temp_path.unlink(missing_ok=True)),
         )
+
+    @app.post("/api/admin/export-database-backup", response_model=DatabaseBackupResult)
+    def post_export_database_backup(
+        admin: dict[str, Any] = Depends(current_admin),
+    ) -> dict[str, Any]:
+        backup_summary = export_project_database_json(
+            db_path=database_path,
+            storage_root=app_settings.storage_root,
+            organization_id=admin["organization_id"],
+        )
+        return {
+            "ok": True,
+            "backup_path": backup_summary["output_path"],
+            "archive": {
+                "format_version": backup_summary["format_version"],
+                "table_counts": backup_summary["table_counts"],
+            },
+        }
 
     @app.post("/api/admin/import-project", response_model=ProjectImportResult)
     async def post_import_project(
@@ -1253,6 +1293,7 @@ def create_app(
                 imported_by_user_id=int(admin["id"]),
                 archive_path=temp_path,
             )
+            ensure_system_game_variables(database_path, admin["organization_id"])
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         finally:
@@ -1260,6 +1301,33 @@ def create_app(
         return {
             "ok": True,
             "cleared_tables": cleared_tables,
+            "archive": archive_summary,
+        }
+
+    @app.post("/api/admin/import-database-backup", response_model=ProjectImportResult)
+    def post_import_database_backup(
+        admin: dict[str, Any] = Depends(current_admin),
+    ) -> dict[str, Any]:
+        if not workspace_is_empty(database_path, admin["organization_id"]):
+            raise HTTPException(
+                status_code=400,
+                detail="Database backup import requires an empty workspace. Reset the workspace first.",
+            )
+        backup_path = database_backup_path(app_settings.storage_root)
+        try:
+            archive_summary = import_project_database_json(
+                db_path=database_path,
+                storage_root=app_settings.storage_root,
+                organization_id=admin["organization_id"],
+                imported_by_user_id=int(admin["id"]),
+                input_path=backup_path,
+            )
+            ensure_system_game_variables(database_path, admin["organization_id"])
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        return {
+            "ok": True,
+            "cleared_tables": [],
             "archive": archive_summary,
         }
 
@@ -1763,6 +1831,7 @@ def create_app(
 
     @app.get("/api/variables", response_model=list[GameVariable])
     def get_variables(user: dict[str, Any] = Depends(current_user)) -> list[dict[str, Any]]:
+        ensure_system_game_variables(database_path, user["organization_id"])
         return list_game_variables(database_path, user["organization_id"])
 
     @app.post("/api/variables", response_model=GameVariable, status_code=201)
@@ -1901,6 +1970,9 @@ def create_app(
                 slot.model_dump()
                 for slot in (settings_update.inventory_slots or [])
             ] if "inventory_slots" in settings_update.model_fields_set else None,
+            cursor_states=settings_update.cursor_states
+            if "cursor_states" in settings_update.model_fields_set
+            else None,
             update_start_scene_id=update_start_scene_id,
         )
 
@@ -1910,7 +1982,13 @@ def create_app(
         file: UploadFile = File(...),
         user: dict[str, Any] = Depends(current_user),
     ) -> dict[str, Any]:
-        if asset_kind not in {"inventory_background", "verb_tag_background"}:
+        cursor_asset_kind_map = {
+            "cursor_default": "default",
+            "cursor_hover_interactive": "hover_interactive",
+            "cursor_busy": "busy",
+            "cursor_blocked": "blocked",
+        }
+        if asset_kind not in {"inventory_background", "verb_tag_background", *cursor_asset_kind_map.keys()}:
             raise HTTPException(status_code=404, detail="Global settings asset not found")
         original_name = _safe_filename(file.filename or f"{asset_kind}.png")
         suffix = Path(original_name).suffix.lower() or ".png"
@@ -1924,6 +2002,22 @@ def create_app(
         output_path = app_settings.storage_root / relative_path
         output_path.parent.mkdir(parents=True, exist_ok=True)
         await _write_upload(file, output_path)
+        if asset_kind in cursor_asset_kind_map:
+            current_settings = get_global_settings(database_path, user["organization_id"])
+            cursor_states = {
+                key: dict(value)
+                for key, value in (current_settings.get("cursor_states") or {}).items()
+                if isinstance(value, dict)
+            }
+            state_key = cursor_asset_kind_map[asset_kind]
+            cursor_state = dict(cursor_states.get(state_key) or {})
+            cursor_state["relative_path"] = relative_path
+            cursor_states[state_key] = cursor_state
+            return update_global_settings(
+                database_path,
+                organization_id=user["organization_id"],
+                cursor_states=cursor_states,
+            )
         return update_global_settings(
             database_path,
             organization_id=user["organization_id"],
@@ -1938,14 +2032,22 @@ def create_app(
         asset_kind: str,
         user: dict[str, Any] = Depends(current_user),
     ) -> FileResponse:
-        if asset_kind not in {"inventory_background", "verb_tag_background"}:
+        cursor_asset_kind_map = {
+            "cursor_default": "default",
+            "cursor_hover_interactive": "hover_interactive",
+            "cursor_busy": "busy",
+            "cursor_blocked": "blocked",
+        }
+        if asset_kind not in {"inventory_background", "verb_tag_background", *cursor_asset_kind_map.keys()}:
             raise HTTPException(status_code=404, detail="Global settings asset not found")
         settings_row = get_global_settings(database_path, user["organization_id"])
-        relative_path = (
-            settings_row.get("inventory_background_relative_path")
-            if asset_kind == "inventory_background"
-            else settings_row.get("verb_tag_background_relative_path")
-        )
+        if asset_kind == "inventory_background":
+            relative_path = settings_row.get("inventory_background_relative_path")
+        elif asset_kind == "verb_tag_background":
+            relative_path = settings_row.get("verb_tag_background_relative_path")
+        else:
+            state_key = cursor_asset_kind_map[asset_kind]
+            relative_path = (settings_row.get("cursor_states") or {}).get(state_key, {}).get("relative_path")
         if not relative_path:
             raise HTTPException(status_code=404, detail="Global settings asset not found")
         file_path = app_settings.storage_root / relative_path
@@ -2703,6 +2805,13 @@ def create_app(
             uploaded_by_user_id=int(user["id"]),
             removal_provider=scene_removal_image_provider,
         )
+        if result.get("status") == "failed":
+            set_scene_object_pickup_frame_failed(
+                database_path,
+                scene_id=scene_id,
+                object_id=object_id,
+                failed=True,
+            )
         updated_scene = get_scene_with_images(database_path, scene_id)
         if updated_scene is None:
             raise RuntimeError("Updated scene could not be loaded")
@@ -3468,6 +3577,7 @@ def create_app(
     @app.get("/api/scene-objects/{object_id}/thumbnail")
     def get_scene_object_thumbnail(
         object_id: int,
+        size: int = 256,
         user: dict[str, Any] = Depends(current_user),
     ) -> FileResponse:
         scene_object = get_scene_object_for_organization(
@@ -3481,8 +3591,26 @@ def create_app(
         if inventory_image_relative_path:
             inventory_image_path = app_settings.storage_root / inventory_image_relative_path
             if _is_valid_inventory_image_file(inventory_image_path):
+                normalized_size = max(32, min(int(size or 256), 1024))
+                inventory_thumbnail_path = (
+                    app_settings.storage_root
+                    / _safe_path_segment(user["organization_id"])
+                    / "derived"
+                    / "scenes"
+                    / str(scene_object["scene_id"])
+                    / "objects"
+                    / str(object_id)
+                    / "inventory-thumbnails"
+                    / f"{normalized_size}.png"
+                )
+                if _derived_file_is_stale(inventory_thumbnail_path, [inventory_image_path]):
+                    inventory_thumbnail_path.parent.mkdir(parents=True, exist_ok=True)
+                    with Image.open(inventory_image_path) as image:
+                        rendered = image.convert("RGBA")
+                        rendered.thumbnail((normalized_size, normalized_size), Image.Resampling.LANCZOS)
+                        rendered.save(inventory_thumbnail_path, format="PNG")
                 return FileResponse(
-                    inventory_image_path,
+                    inventory_thumbnail_path if inventory_thumbnail_path.exists() else inventory_image_path,
                     media_type="image/png",
                     headers={"Cache-Control": "no-store, max-age=0"},
                 )
@@ -3501,6 +3629,7 @@ def create_app(
             mask_path = app_settings.storage_root / mask_relative_path
             if not original_path.exists() or not mask_path.exists():
                 continue
+            normalized_size = max(32, min(int(size or 256), 1024))
             thumbnail_path = (
                 app_settings.storage_root
                 / _safe_path_segment(user["organization_id"])
@@ -3510,14 +3639,14 @@ def create_app(
                 / "objects"
                 / str(object_id)
                 / "thumbnails"
-                / f"{object_mask['id']}.png"
+                / f"{object_mask['id']}-{normalized_size}.png"
             )
             if _derived_file_is_stale(thumbnail_path, [original_path, mask_path]):
                 rendered = render_masked_object_crop(
                     original_path=original_path,
                     mask_path=mask_path,
                     output_path=thumbnail_path,
-                    max_size=256,
+                    max_size=normalized_size,
                 )
                 if rendered is None:
                     continue
@@ -4863,7 +4992,7 @@ def _combine_object_mask_images(
             combined_image = mask_image.copy()
             continue
         if mask_image.size != expected_size:
-            raise HTTPException(status_code=400, detail="Masks must have matching dimensions to combine")
+            mask_image = mask_image.resize(expected_size, Image.Resampling.LANCZOS)
         combined_image = ImageChops.lighter(combined_image, mask_image)
     return combined_image
 
@@ -5023,7 +5152,12 @@ def _build_scene_preview_manifest(
             scene_object_id=scene_object["id"],
             organization_id=organization_id,
         )
-        referenced_frame_indices = go_to_frame_refs.get(int(scene_object["id"]), set())
+        referenced_frame_indices = set(go_to_frame_refs.get(int(scene_object["id"]), set()))
+        pickup_uploaded_file_id = scene_object.get("pickup_uploaded_file_id")
+        if pickup_uploaded_file_id is not None:
+            pickup_frame_index = frame_index_by_uploaded_file_id.get(int(pickup_uploaded_file_id))
+            if pickup_frame_index is not None:
+                referenced_frame_indices.add(pickup_frame_index)
         default_render = None
         for object_mask in _preferred_object_masks(scene_object, object_masks):
             default_render = _preview_render_payload_for_mask(
@@ -5104,6 +5238,7 @@ def _build_scene_preview_manifest(
                 "name": scene_object["name"],
                 "sort_order": int(scene_object.get("sort_order", 0) or 0),
                 "keyboard_target_enabled": bool(scene_object.get("keyboard_target_enabled")),
+                "pickup_uploaded_file_id": scene_object.get("pickup_uploaded_file_id"),
                 "visible": True,
                 "enabled": True,
                 "label": scene_object["name"],

@@ -1,4 +1,5 @@
 import {apiFetch} from '../api.js';
+import {uploadedFileUrl} from '../api.js';
 import {applyStatus} from '../status.js';
 import {
   findScene,
@@ -9,7 +10,7 @@ import {notifyScenePreview} from '../preview-sync.js';
 import {user} from '../state/user.js';
 import './animation-preview-element.js';
 
-const DEFAULT_FRAME_DURATION = 1 / 15;
+const DEFAULT_FRAME_DURATION = 0.066;
 
 const AnimationsCtrl = app => async params => {
   const sceneId = Number(params[0]);
@@ -24,9 +25,7 @@ const AnimationsCtrl = app => async params => {
     animations: [],
     selectedAnimationId: null,
     selectedAnimation: null,
-    backgroundObjectId: '',
-    backgroundObject: null,
-    backgroundObjects: [],
+    backgroundObjectId: 'scene',
     frameRows: [],
     previewFrames: [],
     editorReady: false,
@@ -41,6 +40,7 @@ const AnimationsCtrl = app => async params => {
       this.preview = this.root?.querySelector('wonky-animation-preview');
       this.bind(this.root, 'click', event => this.onClick(event));
       this.bind(this.root, 'submit', event => this.onSubmit(event));
+      this.bind(this.root, 'input', event => this.onInput(event));
       this.bind(this.root, 'change', event => this.onChange(event));
       this.bind(this.preview, 'preview-error', event => this.onPreviewError(event));
       this.bind(window, 'keydown', event => this.onKeyDown(event));
@@ -78,15 +78,6 @@ const AnimationsCtrl = app => async params => {
     },
 
     prepareState() {
-      this.backgroundObjects = (this.scene?.objects ?? [])
-        .filter(sceneObject => sceneObject.id !== this.objectId && sceneObject.hasMasks)
-        .map(sceneObject => ({
-          ...sceneObject,
-          isBackgroundSelected: String(sceneObject.id) === String(this.backgroundObjectId)
-        }));
-      this.backgroundObject = this.backgroundObjects.find(
-        sceneObject => String(sceneObject.id) === String(this.backgroundObjectId)
-      ) ?? null;
       this.animations = this.animations.map(animation => ({
         ...animation,
         isSelected: animation.id === this.selectedAnimationId,
@@ -100,7 +91,7 @@ const AnimationsCtrl = app => async params => {
       this.hasNoAnimations = !this.hasAnimations;
       this.hasSelectedAnimation = Boolean(this.selectedAnimation);
       this.frameRows = this.selectedAnimation
-        ? buildFrameRows(this.selectedAnimation, this.scene, this.object, this.backgroundObject)
+        ? buildFrameRows(this.selectedAnimation, this.scene, this.object)
         : [];
       this.previewFrames = this.frameRows
         .filter(frame => frame.available)
@@ -110,7 +101,8 @@ const AnimationsCtrl = app => async params => {
           durationSeconds: frame.durationSeconds,
           originalUrl: frame.mask.originalUrl,
           maskUrl: frame.mask.softUrl || frame.mask.rawUrl,
-          backgroundMaskUrl: frame.backgroundMask?.softUrl || frame.backgroundMask?.rawUrl || ''
+          backgroundUrl: sceneBackgroundUrl(this.scene),
+          backgroundMode: this.backgroundObjectId === 'scene' ? 'scene' : 'plate'
         }));
       this.editorReady = Boolean(this.object);
       this.editorMissing = !this.editorReady;
@@ -131,7 +123,7 @@ const AnimationsCtrl = app => async params => {
       await this.preview.configure({
         frames: this.previewFrames,
         objectName: this.object?.name ?? '',
-        backgroundName: this.backgroundObject?.name ?? ''
+        backgroundName: this.backgroundObjectId === 'scene' ? 'Scene background' : 'Scene plate only'
       });
     },
 
@@ -206,8 +198,27 @@ const AnimationsCtrl = app => async params => {
 
     async onChange(event) {
       const backgroundSelect = event.target.closest('[name="backgroundObjectId"]');
-      if (!backgroundSelect) return;
-      this.backgroundObjectId = backgroundSelect.value;
+      if (backgroundSelect) {
+        this.backgroundObjectId = backgroundSelect.value;
+        this.prepareState();
+        await this.refreshView();
+        return;
+      }
+
+      const editField = event.target.closest('[data-animation-edit-form] input');
+      if (!editField) return;
+      await this.refreshDraftAnimationView();
+    },
+
+    async onInput(event) {
+      const editField = event.target.closest('[data-animation-edit-form] input');
+      if (!editField) return;
+      await this.refreshDraftAnimationView();
+    },
+
+    async refreshDraftAnimationView() {
+      if (!this.selectedAnimation) return;
+      this.syncSelectedAnimationFromForm();
       this.prepareState();
       await this.refreshView();
     },
@@ -219,22 +230,49 @@ const AnimationsCtrl = app => async params => {
     },
 
     async onKeyDown(event) {
-      if (shouldIgnoreShortcut(event)) return;
-      if (event.key === 'ArrowLeft' || event.key.toLowerCase() === 'a') {
-        event.preventDefault();
-        await this.preview?.previous();
-        return;
-      }
-      if (event.key === 'ArrowRight' || event.key.toLowerCase() === 'd') {
-        event.preventDefault();
-        await this.preview?.next();
-        return;
-      }
-      if (event.key.toLowerCase() === 's') {
+      if (event.defaultPrevented || event.altKey) return;
+      const key = event.key;
+      const lowerKey = key.toLowerCase();
+      const editable = isEditableTarget(event.target);
+
+      if ((event.ctrlKey || event.metaKey) && lowerKey === 's') {
         const form = this.root?.querySelector('[data-animation-edit-form]');
         if (!form || !this.selectedAnimation) return;
         event.preventDefault();
         await this.saveAnimation(form);
+        return;
+      }
+
+      if (editable || event.ctrlKey || event.metaKey) return;
+
+      if (key === 'ArrowLeft') {
+        event.preventDefault();
+        await this.preview?.previous();
+        return;
+      }
+      if (key === 'ArrowRight') {
+        event.preventDefault();
+        await this.preview?.next();
+        return;
+      }
+      if (key === 'Home') {
+        event.preventDefault();
+        await this.preview?.first();
+        return;
+      }
+      if (key === 'End') {
+        event.preventDefault();
+        await this.preview?.last();
+        return;
+      }
+      if (lowerKey === 'f') {
+        event.preventDefault();
+        this.preview?.fitToView();
+        return;
+      }
+      if (key === ' ') {
+        event.preventDefault();
+        this.preview?.togglePlayback();
       }
     },
 
@@ -364,7 +402,7 @@ function readAnimationForm(form) {
   };
 }
 
-function buildFrameRows(animation, scene, object, backgroundObject) {
+function buildFrameRows(animation, scene, object) {
   const rows = [];
   for (const segment of animation.segments ?? []) {
     const start = Number(segment.start_frame);
@@ -373,7 +411,6 @@ function buildFrameRows(animation, scene, object, backgroundObject) {
     for (let frameIndex = start; step > 0 ? frameIndex <= end : frameIndex >= end; frameIndex += step) {
       const sceneImage = scene.images[frameIndex] ?? null;
       const mask = sceneImage ? selectMaskForSceneImage(object, sceneImage) : null;
-      const backgroundMask = sceneImage ? selectMaskForSceneImage(backgroundObject, sceneImage) : null;
       rows.push({
         frameIndex,
         durationSeconds: Number(segment.frame_duration_seconds),
@@ -381,8 +418,7 @@ function buildFrameRows(animation, scene, object, backgroundObject) {
         filename: sceneImage?.original_filename ?? 'missing frame',
         available: Boolean(mask),
         missing: !mask,
-        mask,
-        backgroundMask
+        mask
       });
     }
   }
@@ -415,16 +451,22 @@ function summarizeAnimation(animation) {
 
 function formatDuration(value) {
   const seconds = Number(value);
-  if (Math.abs(seconds - 1 / 15) < 0.001) return '1/15s';
+  if (Math.abs(seconds - DEFAULT_FRAME_DURATION) < 0.001) return '1/15s';
   if (Math.abs(seconds - 1 / 24) < 0.001) return '1/24s';
   if (Math.abs(seconds - 1 / 30) < 0.001) return '1/30s';
   if (Number.isInteger(seconds)) return `${seconds}s`;
   return `${seconds.toFixed(3)}s`;
 }
 
-function shouldIgnoreShortcut(event) {
-  if (event.defaultPrevented || event.metaKey || event.ctrlKey || event.altKey) return true;
-  const target = event.target;
+function sceneBackgroundUrl(scene) {
+  const images = scene?.images ?? [];
+  if (!images.length) return '';
+  const backgroundIndex = Math.max(0, Math.min(Number(scene?.background_frame_index ?? 0), images.length - 1));
+  const backgroundImage = images[backgroundIndex];
+  return backgroundImage ? uploadedFileUrl(backgroundImage.uploaded_file_id) : '';
+}
+
+function isEditableTarget(target) {
   if (!(target instanceof HTMLElement)) return false;
   if (target.isContentEditable) return true;
   return Boolean(target.closest('input, textarea, select, [contenteditable="true"]'));

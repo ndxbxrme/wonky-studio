@@ -23,30 +23,36 @@
         <p>{{previewData.images.length}} frames · {{previewObjects.length}} objects · click the scene to trigger actions</p>
       </div>
       <div class="scene-header__actions">
-        <div class="scene-switcher">
-          {{#if previousSceneId}}<a class="button secondary compact" href="/preview/{{previousSceneId}}">Prev scene</a>{{/if}}
-          <form class="scene-switcher__form" data-scene-jump-form>
-            <select name="scene_id">
-              {{#each sceneOptions as sceneOption}}
-                <option value="{{sceneOption.id}}" {{#if sceneOption.isCurrent}}selected{{/if}}>Scene {{sceneOption.id}}</option>
-              {{/each}}
-            </select>
-            <button class="button secondary compact" type="submit">Go</button>
-          </form>
-          {{#if nextSceneId}}<a class="button secondary compact" href="/preview/{{nextSceneId}}">Next scene</a>{{/if}}
+        <div class="scene-header__action-row">
+          <div class="scene-switcher">
+            {{#if previousSceneId}}<a class="button secondary compact" href="/preview/{{previousSceneId}}">Prev scene</a>{{/if}}
+            <form class="scene-switcher__form" data-scene-jump-form>
+              <select name="scene_id">
+                {{#each sceneOptions as sceneOption}}
+                  <option value="{{sceneOption.id}}" {{#if sceneOption.isCurrent}}selected{{/if}}>Scene {{sceneOption.id}}</option>
+                {{/each}}
+              </select>
+              <button class="button secondary compact" type="submit">Go</button>
+            </form>
+            {{#if nextSceneId}}<a class="button secondary compact" href="/preview/{{nextSceneId}}">Next scene</a>{{/if}}
+          </div>
         </div>
-        <button class="button secondary compact" type="button" data-action="refresh-preview">Refresh</button>
-        <button class="button secondary compact" type="button" data-action="toggle-background">
-          {{#if showBackground}}Hide background{{/if}}
-          {{#if not showBackground}}Show background{{/if}}
-        </button>
-        <button class="button secondary compact" type="button" data-action="reset-preview-variables">Reset variables</button>
-        <button class="button secondary compact" type="button" data-action="reset-preview">Reset pose</button>
+        <div class="scene-header__action-row">
+          <div class="scene-header__button-group">
+            <button class="button secondary compact" type="button" data-action="refresh-preview">Refresh</button>
+            <button class="button secondary compact" type="button" data-action="toggle-background">
+              {{#if showBackground}}Hide background{{/if}}
+              {{#if not showBackground}}Show background{{/if}}
+            </button>
+            <button class="button secondary compact" type="button" data-action="reset-preview-variables">Reset variables</button>
+            <button class="button secondary compact" type="button" data-action="reset-preview">Reset pose</button>
+          </div>
+        </div>
       </div>
     </header>
 
     <section class="scene-runtime-grid">
-      <section class="scene-runtime-stage">
+      <section class="scene-runtime-stage" data-preview-stage>
         <wonky-scene-preview data-preview-layer="base"></wonky-scene-preview>
         <div class="scene-runtime-fade" data-preview-fade="base"></div>
         <div class="scene-runtime-loading-overlay {{#if not loadingVisible}}is-hidden{{/if}}" data-preview-loading-overlay>
@@ -58,6 +64,16 @@
               <div class="scene-runtime-loading-bar__fill" data-preview-loading-bar style="width: {{loadingPercent}}%;"></div>
             </div>
             <p class="scene-runtime-loading-meta" data-preview-loading-meta>{{loadingMeta}}</p>
+          </div>
+        </div>
+        <div class="scene-runtime-start-overlay {{#if not startPromptVisible}}is-hidden{{/if}}" data-preview-start-overlay>
+          <div class="scene-runtime-loading-card">
+            <p class="eyebrow">Preview</p>
+            <h2>Ready to start</h2>
+            <p class="muted">Click once to begin scene audio and run the opening actions.</p>
+            <div class="form-actions">
+              <button class="button primary" type="button" data-action="start-preview">Start preview</button>
+            </div>
           </div>
         </div>
         <div class="scene-runtime-verb-menu is-hidden" data-verb-menu-root></div>
@@ -75,6 +91,7 @@
           </div>
         </div>
         <div class="scene-runtime-held-item is-hidden" data-held-inventory-item></div>
+        <div class="scene-runtime-cursor is-hidden" data-preview-cursor></div>
       </section>
 
       <aside class="scene-runtime-sidebar">
@@ -86,6 +103,23 @@
             </div>
           </div>
           <p class="muted">Editor changes in this browser refresh the preview automatically.</p>
+          <div class="preview-audio-sliders">
+            <label class="preview-audio-slider">
+              <span>Master volume</span>
+              <div class="preview-audio-slider__control">
+                <input data-preview-master-volume type="range" min="0" max="10" step="1" />
+                <strong data-preview-master-volume-value>5</strong>
+              </div>
+            </label>
+            <label class="preview-audio-slider">
+              <span>Music volume</span>
+              <div class="preview-audio-slider__control">
+                <input data-preview-music-volume type="range" min="0" max="10" step="1" />
+                <strong data-preview-music-volume-value>5</strong>
+              </div>
+            </label>
+          </div>
+          <p class="muted">These sliders only affect this browser’s preview.</p>
           <p class="form-status" data-preview-status aria-live="polite">{{status}}</p>
         </div>
 

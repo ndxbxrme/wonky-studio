@@ -35,6 +35,16 @@ const KEY_CODE_OPTIONS = [
   'KeyA', 'KeyD', 'KeyW', 'Digit1', 'Digit2', 'Digit3'
 ].map(value => ({value, label: value}));
 
+const SYSTEM_VARIABLE_NAMES = new Set([
+  'primary_language',
+  'secondary_language',
+  'translation_mode',
+  'master_volume',
+  'narrator_volume',
+  'music_volume',
+  'sfx_volume'
+]);
+
 const ActionsCtrl = app => async params => {
   const sceneId = Number(params[0]);
   const routeOptions = readRouteOptions();
@@ -44,8 +54,8 @@ const ActionsCtrl = app => async params => {
     sceneId,
     scene: findScene(sceneId),
     variables: [],
-    selectedVariableId: null,
     interactions: [],
+    visibleInteractions: [],
     selectedInteractionId: routeOptions.interactionId,
     preselectedObjectId: routeOptions.objectId,
     selectedInteraction: null,
@@ -66,15 +76,21 @@ const ActionsCtrl = app => async params => {
     actionTypes: ACTION_TYPES,
     branchOptions: [],
     actionRows: [],
+    scriptLineSummaryById: {},
     scriptSearchResults: [],
     scriptSearchLanguage: 'en',
+    interactionTriggerFilter: 'all',
+    interactionObjectFilter: 'all',
+    interactionFilterOptions: [],
+    interactionObjectFilterOptions: [],
     status: '',
     hasInteractions: false,
+    hasVisibleInteractions: false,
     hasSelectedInteraction: false,
-    hasVariables: false,
+    variableCount: 0,
+    systemVariableCount: 0,
+    gameVariableCount: 0,
     hasScriptSearchResults: false,
-    isEditingVariable: false,
-    variableSubmitLabel: 'Add variable',
     editorReady: false,
     editorMissing: false,
     editorLoadError: '',
@@ -120,6 +136,7 @@ const ActionsCtrl = app => async params => {
         this.prepareSceneNavigation();
         await this.loadAnimations();
         this.interactions = await apiFetch(`/api/scenes/${this.sceneId}/interactions`);
+        await this.loadReferencedScriptLineSummaries();
         if (!this.selectedInteractionId && this.interactions.length) {
           this.selectedInteractionId = this.interactions[0].id;
         }
@@ -158,19 +175,58 @@ const ActionsCtrl = app => async params => {
       this.animationOptions = animationGroups.flat();
     },
 
-    prepareState() {
-      this.variables = this.variables.map(variable => ({
-        ...variable,
-        defaultValueText: String(variable.default_value ?? ''),
-        isSelected: variable.id === this.selectedVariableId
-      }));
-      if (!this.variables.some(variable => variable.id === this.selectedVariableId)) {
-        this.selectedVariableId = null;
-        this.variables = this.variables.map(variable => ({...variable, isSelected: false}));
+    async loadReferencedScriptLineSummaries() {
+      const lineIds = [...collectScriptLineIds(this.interactions)];
+      if (!lineIds.length) {
+        this.scriptLineSummaryById = {};
+        return;
       }
-      this.hasVariables = Boolean(this.variables.length);
-      this.isEditingVariable = Boolean(this.selectedVariableId);
-      this.variableSubmitLabel = this.isEditingVariable ? 'Update variable' : 'Add variable';
+      const entries = await Promise.all(
+        lineIds.map(async lineId => {
+          try {
+            const detail = await apiFetch(`/api/script-lines/${lineId}`);
+            return [lineId, summarizeScriptLine(detail)];
+          } catch {
+            return [lineId, `Line ${lineId}`];
+          }
+        })
+      );
+      this.scriptLineSummaryById = Object.fromEntries(entries);
+    },
+
+    prepareInteractionFilters() {
+      const triggerTypes = [...new Set(
+        this.interactions.map(interaction => String(interaction.trigger?.type ?? 'scene_enter'))
+      )].sort((left, right) => left.localeCompare(right));
+      this.interactionFilterOptions = [
+        {value: 'all', label: 'All triggers'},
+        ...triggerTypes.map(type => ({
+          value: type,
+          label: String(type).replace(/_/g, ' ')
+        }))
+      ];
+      const objects = this.scene?.objects ?? [];
+      this.interactionObjectFilterOptions = [
+        {value: 'all', label: 'All objects'},
+        {value: 'none', label: 'Scene / global only'},
+        ...objects.map(object => ({
+          value: String(object.id),
+          label: object.name
+        }))
+      ];
+    },
+
+    prepareState() {
+      this.variables = this.variables
+        .map(variable => ({
+          ...variable,
+          defaultValueText: String(variable.default_value ?? ''),
+          isSystem: SYSTEM_VARIABLE_NAMES.has(variable.name)
+        }))
+        .sort((left, right) => left.name.localeCompare(right.name));
+      this.variableCount = this.variables.length;
+      this.systemVariableCount = this.variables.filter(variable => variable.isSystem).length;
+      this.gameVariableCount = this.variables.filter(variable => !variable.isSystem).length;
       this.overlayBindings = this.overlayBindings.map(binding => ({
         ...binding,
         overlaySceneLabel: this.overlaySceneOptions.find(scene => scene.id === binding.overlay_scene_id)?.title
@@ -187,13 +243,19 @@ const ActionsCtrl = app => async params => {
         stepCount: countSteps(interaction.action_tree ?? []),
         isSelected: interaction.id === this.selectedInteractionId
       }));
+      this.prepareInteractionFilters();
+      this.visibleInteractions = this.interactions.filter(interaction => interactionMatchesFilters(interaction, {
+        triggerType: this.interactionTriggerFilter,
+        objectId: this.interactionObjectFilter
+      }));
       this.selectedInteraction = this.interactions.find(
         interaction => interaction.id === this.selectedInteractionId
       ) ?? null;
       this.hasInteractions = Boolean(this.interactions.length);
+      this.hasVisibleInteractions = Boolean(this.visibleInteractions.length);
       this.hasSelectedInteraction = Boolean(this.selectedInteraction);
-      this.branchOptions = buildBranchOptions(this.selectedInteraction?.action_tree ?? []);
-      this.actionRows = flattenActionRows(this.selectedInteraction?.action_tree ?? []);
+      this.branchOptions = buildBranchOptions(this.selectedInteraction?.action_tree ?? [], this);
+      this.actionRows = flattenActionRows(this.selectedInteraction?.action_tree ?? [], this);
       this.editorReady = Boolean(this.scene);
       this.editorMissing = !this.editorReady;
     },
@@ -202,22 +264,6 @@ const ActionsCtrl = app => async params => {
       const selectButton = event.target.closest('[data-action="select-interaction"]');
       if (selectButton) {
         this.selectedInteractionId = Number(selectButton.dataset.interactionId);
-        this.prepareState();
-        this.refreshView();
-        return;
-      }
-
-      const selectVariableButton = event.target.closest('[data-action="select-variable"]');
-      if (selectVariableButton) {
-        this.selectedVariableId = Number(selectVariableButton.dataset.variableId);
-        this.prepareState();
-        this.refreshView();
-        return;
-      }
-
-      const cancelVariableEditButton = event.target.closest('[data-action="cancel-variable-edit"]');
-      if (cancelVariableEditButton) {
-        this.selectedVariableId = null;
         this.prepareState();
         this.refreshView();
         return;
@@ -260,13 +306,6 @@ const ActionsCtrl = app => async params => {
     },
 
     async onSubmit(event) {
-      const variableForm = event.target.closest('[data-variable-form]');
-      if (variableForm) {
-        event.preventDefault();
-        await this.createVariable(variableForm);
-        return;
-      }
-
       const interactionForm = event.target.closest('[data-interaction-create-form]');
       if (interactionForm) {
         event.preventDefault();
@@ -310,55 +349,19 @@ const ActionsCtrl = app => async params => {
     },
 
     async onChange(event) {
+      if (event.target.matches('[data-interaction-filter-trigger], [data-interaction-filter-object]')) {
+        this.interactionTriggerFilter = this.root?.querySelector('[data-interaction-filter-trigger]')?.value ?? 'all';
+        this.interactionObjectFilter = this.root?.querySelector('[data-interaction-filter-object]')?.value ?? 'all';
+        this.prepareState();
+        this.refreshView();
+        return;
+      }
       if (event.target.matches('[name="action_type"], [name="target_scope"]')) {
         this.updateActionFormVisibility(event.target.closest('[data-action-step-form]'));
         return;
       }
       if (event.target.matches('[name="property"]')) {
         this.updateActionFormVisibility(event.target.closest('[data-action-step-form]'));
-      }
-    },
-
-    async createVariable(form) {
-      const variableId = Number(form.elements.variable_id?.value);
-      if (variableId) {
-        await this.saveVariable(form);
-        return;
-      }
-      const payload = readVariableForm(form);
-      if (!payload.name) return;
-      this.setStatus('Creating variable...');
-      try {
-        await apiFetch('/api/variables', {method: 'POST', body: JSON.stringify(payload)});
-        form.reset();
-        this.selectedVariableId = null;
-        await this.refreshData();
-        this.refreshView();
-        notifyScenePreview(this.sceneId, 'variable-updated');
-        this.setStatus('Variable created.');
-      } catch {
-        this.setStatus('Could not create variable.');
-      }
-    },
-
-    async saveVariable(form) {
-      const variableId = Number(form.elements.variable_id?.value);
-      if (!variableId) return;
-      const payload = readVariableForm(form);
-      if (!payload.name) return;
-      this.setStatus('Saving variable...');
-      try {
-        await apiFetch(`/api/variables/${variableId}`, {
-          method: 'PATCH',
-          body: JSON.stringify(payload)
-        });
-        this.selectedVariableId = null;
-        await this.refreshData();
-        this.refreshView();
-        notifyScenePreview(this.sceneId, 'variable-updated');
-        this.setStatus('Variable saved.');
-      } catch {
-        this.setStatus('Could not save variable.');
       }
     },
 
@@ -540,15 +543,10 @@ const ActionsCtrl = app => async params => {
     },
 
     setControlValues() {
-      const variableForm = this.root?.querySelector('[data-variable-form]');
-      if (variableForm) {
-        const selectedVariable = this.variables.find(item => item.id === this.selectedVariableId) ?? null;
-        variableForm.elements.variable_id.value = selectedVariable?.id ?? '';
-        variableForm.elements.name.value = selectedVariable?.name ?? '';
-        variableForm.elements.value_type.value = selectedVariable?.value_type ?? 'bool';
-        variableForm.elements.default_value.value = selectedVariable?.defaultValueText ?? 'false';
-        variableForm.elements.description.value = selectedVariable?.description ?? '';
-      }
+      const triggerFilter = this.root?.querySelector('[data-interaction-filter-trigger]');
+      if (triggerFilter) triggerFilter.value = this.interactionTriggerFilter;
+      const objectFilter = this.root?.querySelector('[data-interaction-filter-object]');
+      if (objectFilter) objectFilter.value = this.interactionObjectFilter;
       const createForm = this.root?.querySelector('[data-interaction-create-form]');
       if (createForm && this.preselectedObjectId) {
         createForm.elements.trigger_type.value = 'object_click';
@@ -633,20 +631,6 @@ function readRouteOptions() {
 function numericSearchParam(searchParams, name) {
   const value = Number(searchParams.get(name));
   return Number.isFinite(value) && value > 0 ? value : null;
-}
-
-function readVariableForm(form) {
-  const formData = new FormData(form);
-  const valueType = String(formData.get('value_type') ?? 'bool');
-  return {
-    name: String(formData.get('name') ?? '').trim(),
-    value_type: valueType,
-    default_value: parseTypedValue(
-      valueType,
-      String(formData.get('default_value') ?? '')
-    ),
-    description: String(formData.get('description') ?? '')
-  };
 }
 
 function readInteractionForm(form, currentInteraction) {
@@ -925,9 +909,9 @@ function mutateStep(tree, stepId, fn) {
   return false;
 }
 
-function buildBranchOptions(tree) {
+function buildBranchOptions(tree, context) {
   const options = [{value: 'root', label: 'Root sequence'}];
-  flattenActionRows(tree)
+  flattenActionRows(tree, context)
     .filter(row => row.type === 'if_variable')
     .forEach(row => {
       options.push({value: `${row.id}:then`, label: `${row.label} / then`});
@@ -936,7 +920,16 @@ function buildBranchOptions(tree) {
   return options;
 }
 
-function flattenActionRows(tree, depth = 0, branch = '') {
+function interactionMatchesFilters(interaction, filters) {
+  const triggerType = String(interaction.trigger?.type ?? 'scene_enter');
+  const objectId = interaction.trigger?.object_id == null ? null : String(interaction.trigger.object_id);
+  if ((filters?.triggerType ?? 'all') !== 'all' && triggerType !== filters.triggerType) return false;
+  if ((filters?.objectId ?? 'all') === 'all') return true;
+  if (filters.objectId === 'none') return objectId == null;
+  return objectId === String(filters.objectId);
+}
+
+function flattenActionRows(tree, context, depth = 0, branch = '') {
   return tree.flatMap((step, index) => {
     const row = {
       ...step,
@@ -944,13 +937,13 @@ function flattenActionRows(tree, depth = 0, branch = '') {
       index: index + 1,
       branch,
       label: actionLabel(step),
-      meta: actionMeta(step),
+      meta: actionMeta(step, context),
       indent: `${depth * 18}px`
     };
     return [
       row,
-      ...flattenActionRows(step.then_steps ?? [], depth + 1, 'then'),
-      ...flattenActionRows(step.else_steps ?? [], depth + 1, 'else')
+      ...flattenActionRows(step.then_steps ?? [], context, depth + 1, 'then'),
+      ...flattenActionRows(step.else_steps ?? [], context, depth + 1, 'else')
     ];
   });
 }
@@ -992,33 +985,34 @@ function actionLabel(step) {
   return String(step.type ?? 'action').replace(/_/g, ' ');
 }
 
-function actionMeta(step) {
-  if (step.type === 'play_audio') return `audio lines ${step.script_line_ids?.join(', ')}`;
-  if (step.type === 'show_subtitle') return `subtitle lines ${step.script_line_ids?.join(', ')}`;
+function actionMeta(step, context) {
+  if (step.type === 'play_audio') return `audio ${formatScriptLineIds(step.script_line_ids, context)}`;
+  if (step.type === 'show_subtitle') return `subtitle ${formatScriptLineIds(step.script_line_ids, context)}`;
   if (step.type === 'go_to_frame') {
     if (step.target_scope === 'background') {
       return `background · frame ${step.frame_index}`;
     }
     if (step.target_scope === 'pickup_background') {
-      return `pickup background · object ${step.target_object_id}`;
+      return `${findObjectName(context, step.target_object_id)} · pickup frame`;
     }
-    return `object ${step.target_object_id} · frame ${step.frame_index}`;
+    return `${findObjectName(context, step.target_object_id)} · frame ${step.frame_index}`;
   }
   if (step.type === 'set_object_property') return `${step.property} = ${step.value}`;
-  if (step.type === 'set_variable') return `variable ${step.variable_id} = ${step.value}`;
-  if (step.type === 'increment_variable') return `variable ${step.variable_id} += ${step.amount}`;
-  if (step.type === 'toggle_variable') return `toggle variable ${step.variable_id}`;
-  if (step.type === 'add_inventory_item') return `add inventory item ${step.scene_object_id}`;
-  if (step.type === 'remove_inventory_item') return `remove inventory item ${step.scene_object_id}`;
+  if (step.type === 'set_variable') return `${findVariableName(context, step.variable_id)} = ${step.value}`;
+  if (step.type === 'increment_variable') return `${findVariableName(context, step.variable_id)} += ${step.amount}`;
+  if (step.type === 'toggle_variable') return `toggle ${findVariableName(context, step.variable_id)}`;
+  if (step.type === 'add_inventory_item') return `add ${findInventoryObjectName(context, step.scene_object_id)}`;
+  if (step.type === 'remove_inventory_item') return `remove ${findInventoryObjectName(context, step.scene_object_id)}`;
   if (step.type === 'clear_held_inventory_item') return 'clear held inventory item';
-  if (step.type === 'if_variable') return `if variable ${step.variable_id} ${step.operator} ${step.value}`;
+  if (step.type === 'if_variable') return `if ${findVariableName(context, step.variable_id)} ${step.operator} ${step.value}`;
   if (step.type === 'fade_out' || step.type === 'fade_in') return `${step.color} · ${step.duration_seconds}s${step.affect_audio ? ' · audio' : ''}`;
-  if (step.type === 'crossfade_bgm') return `audio ${step.audio_asset_id} · ${step.duration_seconds}s`;
-  if (step.type === 'play_sfx') return `audio ${step.audio_asset_id}`;
-  if (step.type === 'change_scene') return `scene ${step.scene_id}`;
-  if (step.type === 'open_overlay_scene') return `open overlay ${step.scene_id}`;
+  if (step.type === 'crossfade_bgm') return `${findAudioAssetName(context, step.audio_asset_id)} · ${step.duration_seconds}s`;
+  if (step.type === 'play_sfx') return findAudioAssetName(context, step.audio_asset_id);
+  if (step.type === 'change_scene') return findSceneName(context, step.scene_id);
+  if (step.type === 'open_overlay_scene') return `open overlay ${findSceneName(context, step.scene_id)}`;
   if (step.type === 'close_overlay_scene') return 'close overlay';
-  if (step.type === 'change_overlay_scene') return `change overlay ${step.scene_id}`;
+  if (step.type === 'change_overlay_scene') return `change overlay ${findSceneName(context, step.scene_id)}`;
+  if (step.type === 'play_animation') return `${findAnimationName(context, step.animation_id)}${step.mode ? ` · ${step.mode}` : ''}`;
   if (step.type === 'delay') return `${step.duration_seconds}s`;
   return step.wait ? `${step.wait}` : '';
 }
@@ -1026,7 +1020,7 @@ function actionMeta(step) {
 function actionTypeHelp(type) {
   return {
     play_animation: 'Uses the animation picker. Mode controls queued vs immediate playback.',
-    go_to_frame: 'Object/background use a raw frame index. Pickup background jumps to the linked removal frame for the selected object.',
+    go_to_frame: 'Object/background use a raw frame index. Pickup frame swaps the selected object to its linked removal frame render.',
     set_object_property: 'Uses target object, property, and value fields.',
     show_subtitle: 'Uses script line IDs and duration. Search below and add matching lines.',
     play_audio: 'Uses script line IDs. Search below and add matching lines.',
@@ -1047,6 +1041,65 @@ function actionTypeHelp(type) {
     change_overlay_scene: 'Switches from the current overlay scene to another overlay scene.',
     delay: 'Uses duration only.'
   }[type] ?? '';
+}
+
+function collectScriptLineIds(interactions) {
+  const lineIds = new Set();
+  for (const interaction of interactions ?? []) {
+    collectScriptLineIdsFromSteps(interaction.action_tree ?? [], lineIds);
+  }
+  return lineIds;
+}
+
+function collectScriptLineIdsFromSteps(steps, lineIds) {
+  for (const step of steps ?? []) {
+    if (step.type === 'play_audio' || step.type === 'show_subtitle') {
+      for (const lineId of step.script_line_ids ?? []) {
+        lineIds.add(Number(lineId));
+      }
+    }
+    collectScriptLineIdsFromSteps(step.then_steps ?? [], lineIds);
+    collectScriptLineIdsFromSteps(step.else_steps ?? [], lineIds);
+  }
+}
+
+function summarizeScriptLine(detail) {
+  const sourceText = String(detail?.source_text ?? '').trim();
+  if (!sourceText) return `Line ${detail?.line_id ?? ''}`.trim();
+  return sourceText.length > 48 ? `${sourceText.slice(0, 45)}...` : sourceText;
+}
+
+function formatScriptLineIds(scriptLineIds, context) {
+  const labels = (scriptLineIds ?? []).map(lineId => (
+    context?.scriptLineSummaryById?.[Number(lineId)] ?? `Line ${lineId}`
+  ));
+  return labels.join(', ');
+}
+
+function findVariableName(context, variableId) {
+  return context?.variables?.find(variable => Number(variable.id) === Number(variableId))?.name ?? `variable ${variableId}`;
+}
+
+function findObjectName(context, objectId) {
+  return context?.scene?.objects?.find(object => Number(object.id) === Number(objectId))?.name ?? `object ${objectId}`;
+}
+
+function findInventoryObjectName(context, objectId) {
+  const object = context?.inventoryObjectOptions?.find(item => Number(item.id) === Number(objectId));
+  return object ? `inventory ${object.name}` : `inventory item ${objectId}`;
+}
+
+function findAudioAssetName(context, audioAssetId) {
+  return context?.audioAssetOptions?.find(asset => Number(asset.id) === Number(audioAssetId))?.name ?? `audio ${audioAssetId}`;
+}
+
+function findSceneName(context, sceneId) {
+  const scene = context?.sceneOptions?.find(item => Number(item.id) === Number(sceneId));
+  return scene ? `scene ${scene.id} · ${scene.title}` : `scene ${sceneId}`;
+}
+
+function findAnimationName(context, animationId) {
+  return context?.animationOptions?.find(animation => Number(animation.animationId) === Number(animationId))?.label ?? `animation ${animationId}`;
 }
 
 export {ActionsCtrl};

@@ -1,0 +1,149 @@
+<main class="scene-layout artist-guide-page" data-artist-guide-page>
+  <nav class="app-topbar" aria-label="Primary">
+    <a class="app-topbar__brand" href="/">Wonky Studio</a>
+    <div class="app-topbar__links">
+      <a class="app-topbar__link" href="/"><span class="ui-icon" data-icon="clapperboard"></span><span>Scenes</span></a>
+      <a class="app-topbar__link" href="/images"><span class="ui-icon" data-icon="images"></span><span>Images</span></a>
+      <a class="app-topbar__link" href="/variables"><span class="ui-icon" data-icon="sliders-horizontal"></span><span>Variables</span></a>
+      <a class="app-topbar__link" href="/script-review"><span class="ui-icon" data-icon="captions"></span><span>Transcript library</span></a>
+      <a class="app-topbar__link" href="/audio-library"><span class="ui-icon" data-icon="audio-lines"></span><span>Audio library</span></a>
+      <a class="app-topbar__link" href="/global-settings"><span class="ui-icon" data-icon="settings-2"></span><span>Global settings</span></a>
+      <a class="app-topbar__link" href="/artist-guide"><span class="ui-icon" data-icon="book-open"></span><span>Guide</span></a>
+      <a class="app-topbar__link" href="/system-health"><span class="ui-icon" data-icon="activity"></span><span>Health</span></a>
+      <button class="app-topbar__link app-topbar__link--primary" type="button" data-action="open-game-preview"><span class="ui-icon" data-icon="play"></span><span>Preview game</span></button>
+    </div>
+  </nav>
+
+  <header class="scene-header">
+    <div>
+      <a class="back-link" href="/">Back to workspace</a>
+      <p class="eyebrow">Guide</p>
+      <h1>Artist guide</h1>
+      <p>Use this as the default workflow for building and checking scenes in Wonky Studio.</p>
+    </div>
+  </header>
+
+  <section class="artist-guide-grid">
+    <section class="actions-panel">
+      <div>
+        <p class="eyebrow">Start here</p>
+        <h2>Recommended order</h2>
+      </div>
+      <ol class="guide-list guide-list--numbered">
+        <li>Create or open a scene on `Scenes`.</li>
+        <li>Add images to the scene from the scene page or from `Images`.</li>
+        <li>In the scene page, click `Analyze with VLM` to generate the initial object list.</li>
+        <li>Create extra objects where needed and set or refine prompts.</li>
+        <li>Run `Extract masks`.</li>
+        <li>Clean masks manually in the mask editor where needed.</li>
+        <li>Create animations for moving objects if needed.</li>
+        <li>Author interactions in `Edit actions`.</li>
+        <li>Add or review dialog in `Transcript library`.</li>
+        <li>Generate inventory art and pickup frames for keyboard items if needed.</li>
+        <li>Use `Preview game` to test the flow.</li>
+      </ol>
+    </section>
+
+    <section class="actions-panel">
+      <div>
+        <p class="eyebrow">Pages</p>
+        <h2>What each page is for</h2>
+      </div>
+      <div class="guide-card-list">
+        <article class="guide-card">
+          <strong>Scenes</strong>
+          <p>Create scenes, edit objects, run mask extraction, generate inventory art and pickup frames, and open preview.</p>
+        </article>
+        <article class="guide-card">
+          <strong>Images</strong>
+          <p>Move, filter, and reorder scene images. Use this when photos were assigned to the wrong scene or frame order needs fixing.</p>
+        </article>
+        <article class="guide-card">
+          <strong>Variables</strong>
+          <p>Edit built-in system variables and add shared gameplay variables for counters, toggles, and puzzle state.</p>
+        </article>
+        <article class="guide-card">
+          <strong>Transcript library</strong>
+          <p>Create script lines, review translations, generate TTS, upload reviewed takes, and choose which audio will actually play.</p>
+        </article>
+        <article class="guide-card">
+          <strong>Audio library</strong>
+          <p>Manage standalone BGM and SFX assets used by actions.</p>
+        </article>
+        <article class="guide-card">
+          <strong>Global settings</strong>
+          <p>Set the start scene, overlay settings, verbs, and inventory layout.</p>
+        </article>
+        <article class="guide-card">
+          <strong>Health</strong>
+          <p>Check whether local services like segmentation, translation, TTS, and image generation are available.</p>
+        </article>
+      </div>
+    </section>
+
+    <section class="actions-panel">
+      <div>
+        <p class="eyebrow">Masking</p>
+        <h2>Mask and animation tips</h2>
+      </div>
+      <ul class="guide-list">
+        <li>Use `Browse all scene frames` in the mask editor if you need to paint masks on frames that do not already have one.</li>
+        <li>Use `Scene background` display mode in the mask editor and animation editor to check whether tightly cropped masks reveal unwanted background motion.</li>
+        <li>Use `Combine masks` when an animation needs one consistent mask shape across all frames.</li>
+        <li>Set a `Default frame` for an object when segmentation confuses similar objects. That frame is used for thumbnails, inventory art, and pickup generation.</li>
+        <li>Use the square brush for sharp corners and the round brush for softer organic shapes.</li>
+      </ul>
+    </section>
+
+    <section class="actions-panel">
+      <div>
+        <p class="eyebrow">Interactions</p>
+        <h2>Action authoring tips</h2>
+      </div>
+      <ul class="guide-list">
+        <li>Use the interaction filters by object and trigger type to keep large scenes manageable.</li>
+        <li>Read the step summaries in the action list: they use object names, variable names, and script text instead of raw IDs.</li>
+        <li>Keep scene-level actions for broad setup and per-object actions for direct interactions.</li>
+        <li>Use variables for shared state like “has key”, “drawer opened”, or “current language mode”.</li>
+      </ul>
+    </section>
+
+    <section class="actions-panel">
+      <div>
+        <p class="eyebrow">Audio and text</p>
+        <h2>What will play in preview</h2>
+      </div>
+      <ul class="guide-list">
+        <li>Reviewed audio takes priority over TTS when available.</li>
+        <li>If reviewed audio exists but no take is selected, preview may not play what you expect. Use the script-review page to confirm the selected take.</li>
+        <li>Approved translations are safer than draft ones. The home dashboard highlights referenced lines with unverified translations.</li>
+        <li>The home dashboard also highlights referenced lines that do not yet have selected audio.</li>
+      </ul>
+    </section>
+
+    <section class="actions-panel">
+      <div>
+        <p class="eyebrow">If something looks wrong</p>
+        <h2>Quick checks</h2>
+      </div>
+      <ul class="guide-list">
+        <li>If AI tools fail or feel unresponsive, check `Health` first.</li>
+        <li>If preview looks out of date, use `Refresh` in the preview window.</li>
+        <li>If an inventory art or pickup frame generation fails, the object will be flagged in the scene object list.</li>
+        <li>If images are in the wrong scene or order, fix them in `Images` before spending time on masks or animations.</li>
+        <li>If a scene background seems wrong, check the scene’s `Background frame` setting.</li>
+      </ul>
+    </section>
+
+    <section class="actions-panel">
+      <div>
+        <p class="eyebrow">Safety</p>
+        <h2>Backup habit</h2>
+      </div>
+      <ul class="guide-list">
+        <li>Export the project before major AI generation passes or at the end of each work session.</li>
+        <li>If you are unsure whether a warning matters, stop and ask rather than trying to work around it blindly.</li>
+      </ul>
+    </section>
+  </section>
+</main>

@@ -15,6 +15,7 @@ class WonkyScenePreviewElement extends HTMLElement {
     this.objectPlaybackState = new Map();
     this.hoveredObjectId = null;
     this.focusedObjectId = null;
+    this.useExternalCursor = false;
     this.longPressTimer = null;
     this.longPressTriggered = false;
     this.pendingImageUrls = new Set();
@@ -142,6 +143,11 @@ class WonkyScenePreviewElement extends HTMLElement {
         <div class="empty">Preview unavailable.</div>
       </div>
     `;
+  }
+
+  setUseExternalCursor(active) {
+    this.useExternalCursor = Boolean(active);
+    this.setCanvasCursor(Boolean(this.hoveredObjectId));
   }
 
   connectedCallback() {
@@ -474,6 +480,10 @@ class WonkyScenePreviewElement extends HTMLElement {
 
   setCanvasCursor(active) {
     if (!this.canvas) return;
+    if (this.useExternalCursor) {
+      this.canvas.style.cursor = 'none';
+      return;
+    }
     this.canvas.style.cursor = active ? 'pointer' : 'default';
   }
 

@@ -136,10 +136,21 @@ PATH_FIELDS = {
     "scene_objects": {"inventory_image_relative_path"},
     "object_masks": {"relative_path", "soft_relative_path"},
     "mask_candidates": {"raw_relative_path", "soft_relative_path"},
-    "global_settings": {"inventory_background_relative_path", "verb_tag_background_relative_path"},
+    "global_settings": {
+        "inventory_background_relative_path",
+        "verb_tag_background_relative_path",
+        "cursor_default_relative_path",
+        "cursor_hover_interactive_relative_path",
+        "cursor_busy_relative_path",
+        "cursor_blocked_relative_path",
+    },
 }
 
 WORKSPACE_TABLES = tuple(EXPORT_TABLE_ORDER)
+
+
+def database_backup_path(storage_root: Path) -> Path:
+    return storage_root.parent / "backup.json"
 
 
 def workspace_is_empty(db_path: Path, organization_id: str) -> bool:
@@ -166,11 +177,7 @@ def export_project_archive(
     organization_id: str,
     output_path: Path,
 ) -> dict[str, Any]:
-    export_data: dict[str, list[dict[str, Any]]] = {}
-    with connect(db_path) as connection:
-        for table in EXPORT_TABLE_ORDER:
-            rows = connection.execute(TABLE_SELECTS[table], (organization_id,)).fetchall()
-            export_data[table] = [dict(row) for row in rows]
+    export_data = _export_project_tables(db_path=db_path, organization_id=organization_id)
 
     org_root = storage_root / organization_id
     file_count = 0
@@ -207,6 +214,33 @@ def export_project_archive(
     }
 
 
+def export_project_database_json(
+    *,
+    db_path: Path,
+    storage_root: Path,
+    organization_id: str,
+    output_path: Path | None = None,
+) -> dict[str, Any]:
+    export_data = _export_project_tables(db_path=db_path, organization_id=organization_id)
+    target_path = output_path or database_backup_path(storage_root)
+    target_path.parent.mkdir(parents=True, exist_ok=True)
+    project_json = {
+        "format_version": PROJECT_ARCHIVE_FORMAT_VERSION,
+        "organization_id": organization_id,
+        "exported_at": datetime.now(UTC).isoformat(),
+        "tables": export_data,
+    }
+    target_path.write_text(
+        json.dumps(project_json, ensure_ascii=True, indent=2) + "\n",
+        encoding="utf-8",
+    )
+    return {
+        "format_version": PROJECT_ARCHIVE_FORMAT_VERSION,
+        "table_counts": {table: len(rows) for table, rows in export_data.items()},
+        "output_path": str(target_path),
+    }
+
+
 def import_project_archive(
     *,
     db_path: Path,
@@ -220,16 +254,6 @@ def import_project_archive(
             project_data = json.loads(archive.read("project.json").decode("utf-8"))
         except KeyError as exc:
             raise ValueError("Project archive is missing project.json") from exc
-        format_version = int(project_data.get("format_version") or 0)
-        if format_version != PROJECT_ARCHIVE_FORMAT_VERSION:
-            raise ValueError(f"Unsupported project archive format version: {format_version}")
-        source_organization_id = str(project_data.get("organization_id") or "").strip()
-        if not source_organization_id:
-            raise ValueError("Project archive is missing an organization_id")
-        tables = project_data.get("tables")
-        if not isinstance(tables, dict):
-            raise ValueError("Project archive tables payload is invalid")
-
         org_root = storage_root / organization_id
         org_root.mkdir(parents=True, exist_ok=True)
         restored_file_count = 0
@@ -243,6 +267,69 @@ def import_project_archive(
             with archive.open(member) as source, destination.open("wb") as target:
                 shutil.copyfileobj(source, target)
             restored_file_count += 1
+    return _import_project_tables(
+        db_path=db_path,
+        organization_id=organization_id,
+        imported_by_user_id=imported_by_user_id,
+        project_data=project_data,
+        restored_file_count=restored_file_count,
+    )
+
+
+def import_project_database_json(
+    *,
+    db_path: Path,
+    storage_root: Path,
+    organization_id: str,
+    imported_by_user_id: int,
+    input_path: Path | None = None,
+) -> dict[str, Any]:
+    source_path = input_path or database_backup_path(storage_root)
+    if not source_path.exists():
+        raise ValueError(f"Database backup file not found: {source_path}")
+    try:
+        project_data = json.loads(source_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise ValueError(f"Could not read database backup: {source_path}") from exc
+    return _import_project_tables(
+        db_path=db_path,
+        organization_id=organization_id,
+        imported_by_user_id=imported_by_user_id,
+        project_data=project_data,
+        restored_file_count=None,
+    )
+
+
+def _export_project_tables(
+    *,
+    db_path: Path,
+    organization_id: str,
+) -> dict[str, list[dict[str, Any]]]:
+    export_data: dict[str, list[dict[str, Any]]] = {}
+    with connect(db_path) as connection:
+        for table in EXPORT_TABLE_ORDER:
+            rows = connection.execute(TABLE_SELECTS[table], (organization_id,)).fetchall()
+            export_data[table] = [dict(row) for row in rows]
+    return export_data
+
+
+def _import_project_tables(
+    *,
+    db_path: Path,
+    organization_id: str,
+    imported_by_user_id: int,
+    project_data: dict[str, Any],
+    restored_file_count: int | None,
+) -> dict[str, Any]:
+    format_version = int(project_data.get("format_version") or 0)
+    if format_version != PROJECT_ARCHIVE_FORMAT_VERSION:
+        raise ValueError(f"Unsupported project archive format version: {format_version}")
+    source_organization_id = str(project_data.get("organization_id") or "").strip()
+    if not source_organization_id:
+        raise ValueError("Project archive is missing an organization_id")
+    tables = project_data.get("tables")
+    if not isinstance(tables, dict):
+        raise ValueError("Project archive tables payload is invalid")
 
     with connect(db_path) as connection:
         for table in EXPORT_TABLE_ORDER:

@@ -11,6 +11,7 @@ class WonkyAnimationPreview extends HTMLElement {
     this.imageWidth = 0;
     this.imageHeight = 0;
     this.originalImage = null;
+    this.backgroundImage = null;
     this.maskImage = null;
     this.backgroundMaskImage = null;
     this.bufferCanvas = document.createElement('canvas');
@@ -52,6 +53,7 @@ class WonkyAnimationPreview extends HTMLElement {
     root.querySelector('[data-action="next"]')?.addEventListener('click', () => this.next());
     root.querySelector('[data-action="play"]')?.addEventListener('click', () => this.play());
     root.querySelector('[data-action="pause"]')?.addEventListener('click', () => this.pause());
+    root.querySelector('[data-action="stop"]')?.addEventListener('click', () => this.stop());
     root.querySelector('[data-action="fit"]')?.addEventListener('click', () => this.fitToView());
     this.canvas?.addEventListener('pointerdown', event => this.onPointerDown(event));
     this.canvas?.addEventListener('pointermove', event => this.onPointerMove(event));
@@ -87,6 +89,7 @@ class WonkyAnimationPreview extends HTMLElement {
         }
         .toolbar-group {
           display: flex;
+          flex-wrap: wrap;
           gap: 8px;
           align-items: center;
         }
@@ -100,6 +103,11 @@ class WonkyAnimationPreview extends HTMLElement {
           font: inherit;
           font-weight: 700;
           cursor: pointer;
+        }
+        button > span {
+          display: inline-flex;
+          align-items: center;
+          gap: 6px;
         }
         button.primary {
           border-color: #1f6f5b;
@@ -116,6 +124,19 @@ class WonkyAnimationPreview extends HTMLElement {
           color: #1f2937;
           font-weight: 700;
           overflow-wrap: anywhere;
+          text-align: right;
+        }
+        .toolbar-icon {
+          width: 16px;
+          height: 16px;
+          display: inline-flex;
+          align-items: center;
+          justify-content: center;
+          flex: 0 0 auto;
+        }
+        .toolbar-icon svg {
+          width: 16px;
+          height: 16px;
         }
         .canvas-wrap {
           min-height: 0;
@@ -134,8 +155,9 @@ class WonkyAnimationPreview extends HTMLElement {
         <div class="toolbar-group">
           <button type="button" data-action="previous" ${this.currentIndex <= 0 ? 'disabled' : ''}>Previous</button>
           <button type="button" data-action="next" ${this.currentIndex >= this.frames.length - 1 ? 'disabled' : ''}>Next</button>
-          <button class="primary" type="button" data-action="play" ${this.frames.length ? '' : 'disabled'}>Play</button>
-          <button type="button" data-action="pause" ${this.playing ? '' : 'disabled'}>Pause</button>
+          <button class="primary" type="button" data-action="play" ${this.frames.length ? '' : 'disabled'}><span>${playIcon()}Play</span></button>
+          <button type="button" data-action="pause" ${this.playing ? '' : 'disabled'}><span>${pauseIcon()}Pause</span></button>
+          <button type="button" data-action="stop" ${this.frames.length ? '' : 'disabled'}><span>${stopIcon()}Stop</span></button>
           <button type="button" data-action="fit" ${this.frames.length ? '' : 'disabled'}>Fit</button>
         </div>
         <div class="frame-label" data-frame-label>${escapeHtml(frameLabel)}</div>
@@ -158,11 +180,13 @@ class WonkyAnimationPreview extends HTMLElement {
       return false;
     }
     let originalImage;
+    let backgroundImage;
     let maskImage;
     let backgroundMaskImage;
     try {
-      [originalImage, maskImage, backgroundMaskImage] = await Promise.all([
+      [originalImage, backgroundImage, maskImage, backgroundMaskImage] = await Promise.all([
         loadImage(frame.originalUrl),
+        frame.backgroundUrl ? loadImage(frame.backgroundUrl) : Promise.resolve(null),
         loadImage(frame.maskUrl),
         frame.backgroundMaskUrl ? loadImage(frame.backgroundMaskUrl) : Promise.resolve(null)
       ]);
@@ -177,6 +201,7 @@ class WonkyAnimationPreview extends HTMLElement {
     }
     if (token !== this.loadToken) return;
     this.originalImage = originalImage;
+    this.backgroundImage = backgroundImage;
     this.maskImage = maskImage;
     this.backgroundMaskImage = backgroundMaskImage;
     this.imageWidth = originalImage.naturalWidth;
@@ -195,6 +220,13 @@ class WonkyAnimationPreview extends HTMLElement {
     await this.loadCurrentFrame();
   }
 
+  async first() {
+    if (!this.frames.length || this.currentIndex <= 0) return;
+    this.currentIndex = 0;
+    this.updateToolbarState();
+    await this.loadCurrentFrame();
+  }
+
   async next({loop = false} = {}) {
     if (!this.frames.length) return false;
     if (this.currentIndex >= this.frames.length - 1) {
@@ -205,6 +237,13 @@ class WonkyAnimationPreview extends HTMLElement {
     }
     this.updateToolbarState();
     return this.loadCurrentFrame();
+  }
+
+  async last() {
+    if (!this.frames.length || this.currentIndex >= this.frames.length - 1) return;
+    this.currentIndex = this.frames.length - 1;
+    this.updateToolbarState();
+    await this.loadCurrentFrame();
   }
 
   play() {
@@ -220,6 +259,19 @@ class WonkyAnimationPreview extends HTMLElement {
     this.playTimer = null;
     this.updateToolbarState();
     this.renderCanvas();
+  }
+
+  async stop() {
+    this.pause();
+    if (!this.frames.length || this.currentIndex === 0) return;
+    this.currentIndex = 0;
+    this.updateToolbarState();
+    await this.loadCurrentFrame();
+  }
+
+  togglePlayback() {
+    if (this.playing) this.pause();
+    else this.play();
   }
 
   scheduleNextFrame() {
@@ -245,11 +297,13 @@ class WonkyAnimationPreview extends HTMLElement {
     const next = this.shadowRoot.querySelector('[data-action="next"]');
     const play = this.shadowRoot.querySelector('[data-action="play"]');
     const pause = this.shadowRoot.querySelector('[data-action="pause"]');
+    const stop = this.shadowRoot.querySelector('[data-action="stop"]');
     const fit = this.shadowRoot.querySelector('[data-action="fit"]');
     if (previous) previous.disabled = this.currentIndex <= 0;
     if (next) next.disabled = this.currentIndex >= this.frames.length - 1;
     if (play) play.disabled = !this.frames.length || this.playing;
     if (pause) pause.disabled = !this.playing;
+    if (stop) stop.disabled = !this.frames.length;
     if (fit) fit.disabled = !this.frames.length;
   }
 
@@ -310,11 +364,24 @@ class WonkyAnimationPreview extends HTMLElement {
     const ctx = this.bufferContext;
     ctx.setTransform(1, 0, 0, 1, 0, 0);
     ctx.clearRect(0, 0, width, height);
-    ctx.globalAlpha = 0.18;
-    ctx.drawImage(this.originalImage, 0, 0, width, height);
-    ctx.globalAlpha = 1;
-    if (this.backgroundMaskImage) {
+    if ((this.frames[this.currentIndex]?.backgroundMode ?? 'plate') === 'scene') {
+      if (this.backgroundImage) {
+        ctx.globalAlpha = 1;
+        ctx.drawImage(this.backgroundImage, 0, 0, width, height);
+      } else {
+        ctx.globalAlpha = 0.18;
+        ctx.drawImage(this.originalImage, 0, 0, width, height);
+        ctx.globalAlpha = 1;
+      }
+    } else if (this.backgroundMaskImage) {
+      ctx.globalAlpha = 0.18;
+      ctx.drawImage(this.originalImage, 0, 0, width, height);
+      ctx.globalAlpha = 1;
       drawMaskedImage(ctx, this.originalImage, this.backgroundMaskImage, width, height, 0.62);
+    } else {
+      ctx.globalAlpha = 0.18;
+      ctx.drawImage(this.originalImage, 0, 0, width, height);
+      ctx.globalAlpha = 1;
     }
     drawMaskedImage(ctx, this.originalImage, this.maskImage, width, height, 1);
   }
@@ -460,6 +527,18 @@ function escapeHtml(value) {
     .replace(/>/g, '&gt;')
     .replace(/"/g, '&quot;')
     .replace(/'/g, '&#39;');
+}
+
+function playIcon() {
+  return `<span class="toolbar-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="currentColor"><polygon points="8,5 19,12 8,19"></polygon></svg></span>`;
+}
+
+function pauseIcon() {
+  return `<span class="toolbar-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="currentColor"><rect x="7" y="5" width="4" height="14" rx="1"></rect><rect x="13" y="5" width="4" height="14" rx="1"></rect></svg></span>`;
+}
+
+function stopIcon() {
+  return `<span class="toolbar-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="6" width="12" height="12" rx="1.5"></rect></svg></span>`;
 }
 
 if (!customElements.get('wonky-animation-preview')) {

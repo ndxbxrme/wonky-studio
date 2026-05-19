@@ -82,8 +82,9 @@ function openGamePreview() {
 function notifyScenePreview(sceneId, type = 'scene-updated') {
   if (typeof window === 'undefined' || typeof window.BroadcastChannel === 'undefined') return;
   const channel = new BroadcastChannel(PREVIEW_CHANNEL_NAME);
+  const normalizedSceneId = sceneId == null ? null : Number(sceneId);
   channel.postMessage({
-    sceneId: Number(sceneId),
+    sceneId: normalizedSceneId,
     type,
     sentAt: Date.now()
   });
@@ -97,7 +98,7 @@ function listenScenePreview(sceneId, handler) {
   const channel = new BroadcastChannel(PREVIEW_CHANNEL_NAME);
   const onMessage = event => {
     const message = event.data ?? {};
-    if (Number(message.sceneId) !== Number(sceneId)) return;
+    if (message.sceneId != null && Number(message.sceneId) !== Number(sceneId)) return;
     handler(message);
   };
   channel.addEventListener('message', onMessage);

@@ -2,12 +2,16 @@
   {{#if editorReady}}
     <header class="mask-editor-header">
       <div>
-        <a class="back-link" href="/scene/{{scene.id}}">Scene {{scene.id}}</a>
-        <p class="eyebrow">Mask editor</p>
         <h1>{{object.name}}</h1>
-        <p>{{currentMask.original_filename}}</p>
+        <p class="mask-editor-header__meta" data-mask-editor-frame-meta></p>
+        <p class="mask-editor-header__file" data-mask-editor-frame-file>{{currentMask.original_filename}}</p>
+        <p class="mask-editor-header__note" data-mask-editor-frame-note hidden></p>
       </div>
-      <p class="form-status" data-editor-status aria-live="polite"></p>
+      <div class="mask-editor-header__actions">
+        <a class="back-link" href="/scene/{{scene.id}}">Scene {{scene.id}}</a>
+        <a class="button secondary compact" href="/animations/{{scene.id}}/{{object.id}}">Open animation editor</a>
+        <p class="form-status" data-editor-status aria-live="polite"></p>
+      </div>
     </header>
     <wonky-mask-editor></wonky-mask-editor>
   {{/if}}

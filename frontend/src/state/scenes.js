@@ -1,25 +1,36 @@
-import {apiFetch, objectMaskUrl, objectThumbnailUrl, uploadedFileUrl} from '../api.js';
+import {apiFetch, objectMaskUrl, objectThumbnailUrl, uploadedFileThumbnailUrl, uploadedFileUrl} from '../api.js';
 
 const scenes = [];
 
 async function loadScenes() {
+  const sceneSummaries = await loadSceneSummaries();
+  await hydrateSceneDetails(sceneSummaries.map(scene => scene.id));
+  return scenes;
+}
+
+async function loadSceneSummaries() {
   const sceneSummaries = await apiFetch('/api/scenes');
-  const loadedScenes = await Promise.all(
-    sceneSummaries.map(async scene => {
-      try {
-        return await loadScene(scene.id);
-      } catch {
-        return scene;
-      }
-    })
-  );
-  replaceScenes(loadedScenes.map(prepareScene));
+  replaceScenes(sceneSummaries.map(prepareScene));
   return scenes;
 }
 
 async function loadScene(sceneId) {
   const scene = await apiFetch(`/api/scenes/${sceneId}`);
   return prepareScene(scene);
+}
+
+async function hydrateSceneDetails(sceneIds = []) {
+  const ids = sceneIds.length
+    ? sceneIds.map(Number)
+    : scenes.filter(scene => !scene.hasLoadedDetails).map(scene => Number(scene.id));
+  for (const sceneId of ids) {
+    try {
+      replaceScene(await loadScene(sceneId));
+    } catch {
+      // Keep lightweight summary data if detail hydration fails.
+    }
+  }
+  return scenes;
 }
 
 function replaceScenes(nextScenes) {
@@ -39,6 +50,10 @@ function findScene(sceneId) {
 }
 
 function prepareScene(scene) {
+  const images = (scene.images ?? []).map(image => ({
+    ...image,
+    originalUrl: uploadedFileUrl(image.uploaded_file_id)
+  }));
   const objects = (scene.objects ?? []).map(object => {
     const masks = (object.masks ?? []).map(mask => ({
       ...mask,
@@ -62,24 +77,42 @@ function prepareScene(scene) {
       hasMasks: Boolean(masks.length),
       hasNoMasks: !masks.length,
       firstMaskId: masks[0]?.id ?? '',
-      thumbnailUrl: masks.length ? objectThumbnailUrl(object.id, thumbnailCacheKey) : '',
+      thumbnailUrl: masks.length ? objectThumbnailUrl(object.id, 160, thumbnailCacheKey) : '',
       masks
     };
   });
-  const objectMaskCount = objects.reduce((total, object) => total + object.maskCount, 0);
+  const hasLoadedDetails = Array.isArray(scene.images) || Array.isArray(scene.objects);
+  const imageCount = images.length || Number(scene.image_count ?? 0);
+  const objectCount = objects.length || Number(scene.object_count ?? 0);
+  const objectMaskCount = hasLoadedDetails
+    ? objects.reduce((total, object) => total + object.maskCount, 0)
+    : Number(scene.object_mask_count ?? 0);
 
   return {
     ...scene,
     presentation_mode: scene.presentation_mode ?? 'base',
     background_frame_index: Number(scene.background_frame_index ?? 0),
-    images: scene.images ?? [],
+    images,
+    imageCount,
     objects,
+    objectCount,
     thumbnailUrl: scene.representative_uploaded_file_id
-      ? uploadedFileUrl(scene.representative_uploaded_file_id)
+      ? uploadedFileThumbnailUrl(
+        scene.representative_uploaded_file_id,
+        640,
+        shortCacheKey([
+          String(scene.representative_uploaded_file_id ?? ''),
+          String(scene.representative_hash ?? ''),
+          String(scene.background_frame_index ?? 0),
+          String(scene.updated_at ?? '')
+        ].join('|'))
+      )
       : '',
-    hasObjects: Boolean(objects.length),
+    hasLoadedDetails,
+    hasObjects: Boolean(objectCount),
+    hasLoadedObjectList: Boolean(objects.length),
     objectMaskCount,
-    backgroundFrameMax: Math.max(0, (scene.images ?? []).length - 1)
+    backgroundFrameMax: Math.max(0, images.length - 1)
   };
 }
 
@@ -104,7 +137,9 @@ function shortCacheKey(value) {
 
 export {
   findScene,
+  hydrateSceneDetails,
   loadScene,
+  loadSceneSummaries,
   loadScenes,
   prepareScene,
   replaceScene,

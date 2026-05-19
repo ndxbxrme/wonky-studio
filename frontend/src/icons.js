@@ -2,6 +2,7 @@ import activityIcon from 'lucide-static/icons/activity.svg?raw';
 import arrowDownIcon from 'lucide-static/icons/arrow-down.svg?raw';
 import arrowUpIcon from 'lucide-static/icons/arrow-up.svg?raw';
 import audioLinesIcon from 'lucide-static/icons/audio-lines.svg?raw';
+import bookOpenIcon from 'lucide-static/icons/book-open.svg?raw';
 import captionsIcon from 'lucide-static/icons/captions.svg?raw';
 import clapperboardIcon from 'lucide-static/icons/clapperboard.svg?raw';
 import externalLinkIcon from 'lucide-static/icons/external-link.svg?raw';
@@ -12,6 +13,7 @@ import packageIcon from 'lucide-static/icons/package.svg?raw';
 import playIcon from 'lucide-static/icons/play.svg?raw';
 import scanSearchIcon from 'lucide-static/icons/scan-search.svg?raw';
 import settings2Icon from 'lucide-static/icons/settings-2.svg?raw';
+import slidersHorizontalIcon from 'lucide-static/icons/sliders-horizontal.svg?raw';
 import sparklesIcon from 'lucide-static/icons/sparkles.svg?raw';
 import trash2Icon from 'lucide-static/icons/trash-2.svg?raw';
 import uploadIcon from 'lucide-static/icons/upload.svg?raw';
@@ -22,6 +24,7 @@ const ICONS = {
   'arrow-down': arrowDownIcon,
   'arrow-up': arrowUpIcon,
   'audio-lines': audioLinesIcon,
+  'book-open': bookOpenIcon,
   captions: captionsIcon,
   clapperboard: clapperboardIcon,
   'external-link': externalLinkIcon,
@@ -32,6 +35,7 @@ const ICONS = {
   play: playIcon,
   'scan-search': scanSearchIcon,
   'settings-2': settings2Icon,
+  'sliders-horizontal': slidersHorizontalIcon,
   sparkles: sparklesIcon,
   'trash-2': trash2Icon,
   upload: uploadIcon,

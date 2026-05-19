@@ -39,8 +39,9 @@ function objectMaskUrl(maskId, variant, cacheKey = '') {
   return url.toString();
 }
 
-function objectThumbnailUrl(objectId, cacheKey = '') {
+function objectThumbnailUrl(objectId, size = 256, cacheKey = '') {
   const url = new URL(resolveApiPath(`/api/scene-objects/${objectId}/thumbnail`), window.location.origin);
+  url.searchParams.set('size', String(size));
   if (cacheKey) url.searchParams.set('v', cacheKey);
   return url.toString();
 }

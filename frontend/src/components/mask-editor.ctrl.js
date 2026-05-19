@@ -33,10 +33,12 @@ const MaskEditorCtrl = app => async params => {
       this.root = document.querySelector('[data-mask-editor-page]');
       this.editor = this.root?.querySelector('wonky-mask-editor');
       this.bind(this.editor, 'editor-message', event => this.setStatus(event.detail.message ?? ''));
+      this.bind(this.editor, 'frame-context-change', event => this.updateFrameContext(event.detail));
       this.bind(this.editor, 'save-mask', event => this.saveMask(event));
       this.bind(this.editor, 'process-mask', event => this.processMask(event));
       this.bind(this.editor, 'set-default-frame', event => this.setDefaultFrame(event));
       this.bind(window, 'keydown', event => this.onKeyDown(event));
+      this.updateFrameContext(buildFrameContext(this.scene, this.object, this.masks, this.currentIndex));
       await this.configureEditor();
     },
 
@@ -77,21 +79,98 @@ const MaskEditorCtrl = app => async params => {
       applyStatus(status, message);
     },
 
+    updateFrameContext(detail) {
+      const meta = this.root?.querySelector('[data-mask-editor-frame-meta]');
+      const file = this.root?.querySelector('[data-mask-editor-frame-file]');
+      const note = this.root?.querySelector('[data-mask-editor-frame-note]');
+      if (meta) meta.textContent = detail?.meta ?? '';
+      if (file) file.textContent = detail?.filename ?? '';
+      if (note) {
+        note.textContent = detail?.note ?? '';
+        note.hidden = !detail?.note;
+      }
+    },
+
     onKeyDown(event) {
-      if (shouldIgnoreShortcut(event)) return;
-      if (event.key === 'ArrowLeft' || event.key.toLowerCase() === 'a') {
+      if (event.defaultPrevented || event.altKey) return;
+      const key = event.key;
+      const lowerKey = key.toLowerCase();
+      const editable = isEditableTarget(event.target);
+
+      if ((event.ctrlKey || event.metaKey) && lowerKey === 's') {
+        event.preventDefault();
+        this.editor?.dispatchSave();
+        return;
+      }
+
+      if (!editable && (event.ctrlKey || event.metaKey) && lowerKey === 'z') {
+        event.preventDefault();
+        if (event.shiftKey) this.editor?.redo();
+        else this.editor?.undo();
+        return;
+      }
+
+      if (!editable && (event.ctrlKey || event.metaKey) && lowerKey === 'y') {
+        event.preventDefault();
+        this.editor?.redo();
+        return;
+      }
+
+      if (editable || event.ctrlKey || event.metaKey) return;
+
+      if (key === 'ArrowLeft') {
         event.preventDefault();
         this.editor?.navigate(-1);
         return;
       }
-      if (event.key === 'ArrowRight' || event.key.toLowerCase() === 'd') {
+      if (key === 'ArrowRight') {
         event.preventDefault();
         this.editor?.navigate(1);
         return;
       }
-      if (event.key.toLowerCase() === 's') {
+      if (key === 'Home') {
         event.preventDefault();
-        this.editor?.dispatchSave();
+        this.editor?.goToBoundaryFrame('start');
+        return;
+      }
+      if (key === 'End') {
+        event.preventDefault();
+        this.editor?.goToBoundaryFrame('end');
+        return;
+      }
+      if (key === '[') {
+        event.preventDefault();
+        this.editor?.adjustBrushSize(-4);
+        return;
+      }
+      if (key === ']') {
+        event.preventDefault();
+        this.editor?.adjustBrushSize(4);
+        return;
+      }
+      if (lowerKey === 'f') {
+        event.preventDefault();
+        this.editor?.fitToView();
+        return;
+      }
+      if (key === '1') {
+        event.preventDefault();
+        this.editor?.setDisplayMode('overlay');
+        return;
+      }
+      if (key === '2') {
+        event.preventDefault();
+        this.editor?.setDisplayMode('scene_background');
+        return;
+      }
+      if (key === '3') {
+        event.preventDefault();
+        this.editor?.setDisplayMode('mask');
+        return;
+      }
+      if (key === '4') {
+        event.preventDefault();
+        this.editor?.setDisplayMode('masked');
       }
     },
 
@@ -202,12 +281,32 @@ async function uploadMaskBlob(maskId, blob) {
   });
 }
 
-function shouldIgnoreShortcut(event) {
-  if (event.defaultPrevented || event.metaKey || event.ctrlKey || event.altKey) return true;
-  const target = event.target;
+function isEditableTarget(target) {
   if (!(target instanceof HTMLElement)) return false;
   if (target.isContentEditable) return true;
   return Boolean(target.closest('input, textarea, select, [contenteditable="true"]'));
 }
 
 export {MaskEditorCtrl};
+
+function buildFrameContext(scene, object, masks, currentIndex) {
+  const safeMasks = masks ?? [];
+  const currentMask = safeMasks[currentIndex] ?? null;
+  const sceneImages = scene?.images ?? [];
+  const currentSceneImage = currentMask
+    ? sceneImages.find(image => Number(image.uploaded_file_id) === Number(currentMask.uploaded_file_id)) ?? null
+    : null;
+  const sceneFrameIndex = currentSceneImage
+    ? sceneImages.findIndex(image => Number(image.uploaded_file_id) === Number(currentSceneImage.uploaded_file_id))
+    : 0;
+  const sceneFrameNumber = sceneImages.length ? sceneFrameIndex + 1 : 1;
+  const maskNumber = currentMask ? currentIndex + 1 : 0;
+  const meta = currentMask
+    ? `Mask ${maskNumber} / ${safeMasks.length} · Scene frame ${sceneFrameNumber} / ${Math.max(1, sceneImages.length)}`
+    : `Scene frame ${sceneFrameNumber} / ${Math.max(1, sceneImages.length)}`;
+  const filename = currentMask?.original_filename ?? currentSceneImage?.original_filename ?? '';
+  const note = currentMask && Number(object?.pickup_uploaded_file_id) === Number(currentMask.uploaded_file_id)
+    ? 'Pickup frame linked to this object'
+    : '';
+  return {meta, filename, note};
+}

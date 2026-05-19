@@ -4,9 +4,11 @@
     <div class="app-topbar__links">
       <a class="app-topbar__link" href="/"><span class="ui-icon" data-icon="clapperboard"></span><span>Scenes</span></a>
       <a class="app-topbar__link" href="/images"><span class="ui-icon" data-icon="images"></span><span>Images</span></a>
+      <a class="app-topbar__link" href="/variables"><span class="ui-icon" data-icon="sliders-horizontal"></span><span>Variables</span></a>
       <a class="app-topbar__link" href="/script-review"><span class="ui-icon" data-icon="captions"></span><span>Transcript library</span></a>
       <a class="app-topbar__link" href="/audio-library"><span class="ui-icon" data-icon="audio-lines"></span><span>Audio library</span></a>
       <a class="app-topbar__link" href="/global-settings"><span class="ui-icon" data-icon="settings-2"></span><span>Global settings</span></a>
+      <a class="app-topbar__link" href="/artist-guide"><span class="ui-icon" data-icon="book-open"></span><span>Guide</span></a>
       <a class="app-topbar__link" href="/system-health"><span class="ui-icon" data-icon="activity"></span><span>Health</span></a>
       <button class="app-topbar__link app-topbar__link--primary" type="button" data-action="open-game-preview"><span class="ui-icon" data-icon="play"></span><span>Preview game</span></button>
     </div>
@@ -169,6 +171,54 @@
             </form>
           </article>
         </div>
+      </section>
+
+      <section class="actions-panel">
+        <div>
+          <p class="eyebrow">Preview cursor</p>
+          <h2>Runtime cursors</h2>
+        </div>
+        <section class="stack-form" data-cursor-settings-form>
+          <div class="cursor-state-grid">
+            {{#each cursorStates as cursorState}}
+              <article class="cursor-state-card">
+                <div>
+                  <strong>{{cursorState.label}}</strong>
+                  <p>{{cursorState.description}}</p>
+                </div>
+                <div class="cursor-preview-box">
+                  <span class="cursor-preview-box__crosshair" aria-hidden="true"></span>
+                  {{#if cursorState.hasAsset}}
+                    <img
+                      class="cursor-preview-box__image"
+                      src="{{cursorState.previewUrl}}"
+                      alt="{{cursorState.label}} preview"
+                      style="--cursor-hotspot-x: {{cursorState.hotspotX}}px; --cursor-hotspot-y: {{cursorState.hotspotY}}px;"
+                    />
+                  {{/if}}
+                  {{#if not cursorState.hasAsset}}
+                    <span class="cursor-preview-box__empty">System cursor fallback</span>
+                  {{/if}}
+                </div>
+                <div class="cursor-state-card__controls">
+                  <label>
+                    Hotspot X
+                    <input name="{{cursorState.key}}_hotspot_x" type="number" min="0" max="2048" step="1" />
+                  </label>
+                  <label>
+                    Hotspot Y
+                    <input name="{{cursorState.key}}_hotspot_y" type="number" min="0" max="2048" step="1" />
+                  </label>
+                </div>
+                <form data-global-asset-form="cursor_{{cursorState.key}}">
+                  <input name="file" type="file" accept="image/png,image/jpeg,image/webp" required />
+                  <button class="button secondary compact" type="submit">Upload</button>
+                </form>
+              </article>
+            {{/each}}
+          </div>
+          <button class="button secondary compact" type="button" data-action="save-cursor-settings">Save cursor hotspots</button>
+        </section>
       </section>
 
       <section class="actions-panel">
