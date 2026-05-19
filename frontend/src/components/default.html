@@ -83,12 +83,14 @@
             {{#each scenes as scene}}
               <article class="scene-card" data-scene-card data-scene-id="{{scene.id}}">
                 {{#if scene.thumbnailUrl}}
-                  <img class="scene-card__thumb" src="{{scene.thumbnailUrl}}" alt="{{scene.title}}" />
+                  <a class="scene-card__thumb-link" href="/scene/{{scene.id}}" aria-label="Open {{scene.title}}">
+                    <img class="scene-card__thumb" src="{{scene.thumbnailUrl}}" alt="{{scene.title}}" />
+                  </a>
                 {{/if}}
                 <div class="scene-card__body">
                   <div>
                     <div class="scene-card__title-row">
-                      <strong>{{scene.title}}</strong>
+                      <a class="scene-card__title-link" href="/scene/{{scene.id}}"><strong>{{scene.title}}</strong></a>
                       <div class="scene-card__order-controls">
                         <button
                           class="button secondary compact icon-button"
@@ -120,7 +122,17 @@
                     </div>
                   {{/if}}
 
-                  <a class="button secondary compact" href="/scene/{{scene.id}}">Open scene</a>
+                  <div class="scene-card__actions">
+                    <a class="button secondary compact" href="/scene/{{scene.id}}">Open scene</a>
+                    <a class="button secondary compact" href="/actions/{{scene.id}}">Edit actions</a>
+                    <button
+                      class="button danger compact"
+                      type="button"
+                      data-action="remove-scene"
+                      data-scene-id="{{scene.id}}"
+                      data-scene-title="{{scene.title}}"
+                    >Remove scene</button>
+                  </div>
                 </div>
               </article>
             {{/each}}

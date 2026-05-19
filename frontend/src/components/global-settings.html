@@ -75,11 +75,41 @@
           <h2>Layout</h2>
         </div>
         <form class="stack-form" data-inventory-layout-form>
-          <label>
-            Slot layout JSON
-            <textarea name="inventory_slots_json" rows="14" spellcheck="false" placeholder='[{"x":512,"y":128,"size":96,"origin":"center"}]'></textarea>
-          </label>
-          <button class="button secondary compact" type="submit">Save layout</button>
+          <p class="editor-inline-note">Slots use the inventory background image’s own pixel space. `x` and `y` are the centre of the slot, and `size` is the slot square in image pixels.</p>
+          {{#if hasInventoryBackground}}
+            <div class="inventory-layout-editor" data-inventory-layout-editor>
+              <div class="inventory-layout-editor__canvas" data-inventory-layout-canvas>
+                <img
+                  class="inventory-layout-editor__image"
+                  src="{{inventoryBackgroundUrl}}"
+                  alt="Inventory layout preview"
+                  data-inventory-layout-preview-image
+                />
+                <div class="inventory-layout-editor__overlay" data-inventory-layout-overlay></div>
+              </div>
+              <p class="muted">Click a slot row to select it, then drag the numbered box on the preview to place it.</p>
+            </div>
+          {{/if}}
+          {{#if not hasInventoryBackground}}
+            <p class="editor-inline-note">Upload an inventory background first to place slots visually.</p>
+          {{/if}}
+          <div class="settings-table-wrap field-span-full">
+            <table class="settings-table" data-inventory-slots-table>
+              <thead>
+                <tr>
+                  <th scope="col">X</th>
+                  <th scope="col">Y</th>
+                  <th scope="col">Size</th>
+                  <th scope="col" class="settings-table__actions">Actions</th>
+                </tr>
+              </thead>
+              <tbody data-inventory-slots-body></tbody>
+            </table>
+          </div>
+          <div class="form-actions field-span-full">
+            <button class="button secondary compact" type="button" data-action="add-inventory-slot">Add slot</button>
+            <button class="button secondary compact" type="submit">Save layout</button>
+          </div>
         </form>
       </section>
     </aside>
@@ -96,10 +126,33 @@
             Key
             <input name="key" type="text" placeholder="look" required />
           </label>
-          <label>
-            Labels JSON
-            <textarea name="labels_json" rows="5" spellcheck="false" placeholder='{"en":"look","fr":"regarder"}'></textarea>
-          </label>
+          <div class="field-span-full">
+            <div class="settings-table-wrap">
+              <table class="settings-table settings-table--compact">
+                <thead>
+                  <tr>
+                    <th scope="col">Language</th>
+                    <th scope="col">Label</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {{#each languageOptions as language}}
+                    <tr>
+                      <td><strong>{{language.label}}</strong></td>
+                      <td>
+                        <input
+                          name="label_{{language.code}}"
+                          type="text"
+                          placeholder="{{language.placeholder}}"
+                          autocomplete="off"
+                        />
+                      </td>
+                    </tr>
+                  {{/each}}
+                </tbody>
+              </table>
+            </div>
+          </div>
           <label>
             Sort order
             <input name="sort_order" type="number" min="0" step="1" value="0" />

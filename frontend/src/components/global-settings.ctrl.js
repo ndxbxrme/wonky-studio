@@ -32,6 +32,21 @@ const CURSOR_STATE_OPTIONS = [
   }
 ];
 
+const LANGUAGE_OPTIONS = [
+  {code: 'en', label: 'English', placeholder: 'look'},
+  {code: 'de', label: 'German', placeholder: 'schauen'},
+  {code: 'es', label: 'Spanish', placeholder: 'mirar'},
+  {code: 'fr', label: 'French', placeholder: 'regarder'},
+  {code: 'it', label: 'Italian', placeholder: 'guardare'},
+  {code: 'pt', label: 'Portuguese', placeholder: 'olhar'}
+];
+
+const DEFAULT_INVENTORY_SLOT = {x: 512, y: 128, size: 96, origin: 'center'};
+
+function clampNumber(value, min, max) {
+  return Math.min(max, Math.max(min, Number(value) || 0));
+}
+
 const GlobalSettingsCtrl = app => async () => {
   const controller = {
     appName: 'Wonky Studio',
@@ -43,6 +58,7 @@ const GlobalSettingsCtrl = app => async () => {
     overlaySceneOptions: [],
     baseSceneOptions: [],
     keyCodeOptions: KEY_CODE_OPTIONS,
+    languageOptions: LANGUAGE_OPTIONS,
     status: '',
     isEditingVerb: false,
     verbSubmitLabel: 'Add verb',
@@ -53,6 +69,8 @@ const GlobalSettingsCtrl = app => async () => {
     verbTagBackgroundUrl: '',
     inventoryBackgroundUrl: '',
     cursorStates: [],
+    selectedInventorySlotIndex: 0,
+    draggingInventorySlotIndex: null,
     unloadHandlers: [],
 
     async postLoad() {
@@ -60,6 +78,10 @@ const GlobalSettingsCtrl = app => async () => {
       this.bind(this.root, 'click', event => this.onClick(event));
       this.bind(this.root, 'submit', event => this.onSubmit(event));
       this.bind(this.root, 'change', event => this.onChange(event));
+      this.bind(this.root, 'input', event => this.onInput(event));
+      this.bind(this.root, 'pointerdown', event => this.onPointerDown(event));
+      this.bind(window, 'pointermove', event => this.onPointerMove(event));
+      this.bind(window, 'pointerup', () => this.onPointerUp());
       this.setControlValues();
     },
 
@@ -137,15 +159,19 @@ const GlobalSettingsCtrl = app => async () => {
       }
       const inventoryForm = this.root?.querySelector('[data-inventory-layout-form]');
       if (inventoryForm && this.globalSettings) {
-        inventoryForm.elements.inventory_slots_json.value = JSON.stringify(this.globalSettings.inventory_slots ?? [], null, 2);
+        this.renderInventorySlotRows(this.globalSettings.inventory_slots ?? []);
+      }
+      const inventoryPreviewImage = this.root?.querySelector('[data-inventory-layout-preview-image]');
+      if (inventoryPreviewImage instanceof HTMLImageElement) {
+        inventoryPreviewImage.onload = () => this.syncInventoryLayoutPreview();
       }
       const cursorForm = this.root?.querySelector('[data-cursor-settings-form]');
       if (cursorForm) {
         for (const state of this.cursorStates) {
-          const xControl = cursorForm.elements[`${state.key}_hotspot_x`];
-          const yControl = cursorForm.elements[`${state.key}_hotspot_y`];
-          if (xControl) xControl.value = String(state.hotspotX ?? 0);
-          if (yControl) yControl.value = String(state.hotspotY ?? 0);
+          const xControl = cursorForm.querySelector(`[name="${state.key}_hotspot_x"]`);
+          const yControl = cursorForm.querySelector(`[name="${state.key}_hotspot_y"]`);
+          if (xControl instanceof HTMLInputElement) xControl.value = String(state.hotspotX ?? 0);
+          if (yControl instanceof HTMLInputElement) yControl.value = String(state.hotspotY ?? 0);
         }
       }
       const verbForm = this.root?.querySelector('[data-verb-form]');
@@ -153,13 +179,44 @@ const GlobalSettingsCtrl = app => async () => {
         const selectedVerb = this.verbs.find(verb => Number(verb.id) === Number(this.selectedVerbId)) ?? null;
         verbForm.elements.verb_id.value = selectedVerb?.id ?? '';
         verbForm.elements.key.value = selectedVerb?.key ?? '';
-        verbForm.elements.labels_json.value = JSON.stringify(selectedVerb?.labels ?? {}, null, 2);
         verbForm.elements.sort_order.value = String(selectedVerb?.sort_order ?? 0);
         verbForm.elements.enabled.checked = selectedVerb ? Boolean(selectedVerb.enabled) : true;
+        for (const language of this.languageOptions) {
+          const control = verbForm.elements[`label_${language.code}`];
+          if (control) control.value = selectedVerb?.labels?.[language.code] ?? '';
+        }
       }
+      this.syncInventoryLayoutPreview();
     },
 
     async onClick(event) {
+      const slotMarker = event.target.closest('[data-action="select-inventory-slot-marker"]');
+      if (slotMarker) {
+        this.selectInventorySlot(Number(slotMarker.dataset.slotIndex));
+        return;
+      }
+      const slotRow = event.target.closest('[data-inventory-slot-row]');
+      if (slotRow && !event.target.closest('[data-action="remove-inventory-slot"]')) {
+        this.selectInventorySlot(Number(slotRow.dataset.slotIndex));
+      }
+      const addInventorySlotButton = event.target.closest('[data-action="add-inventory-slot"]');
+      if (addInventorySlotButton) {
+        const slots = this.readInventorySlotRows(this.root?.querySelector('[data-inventory-layout-form]')) ?? [];
+        slots.push({...DEFAULT_INVENTORY_SLOT});
+        this.selectedInventorySlotIndex = slots.length - 1;
+        this.renderInventorySlotRows(slots);
+        return;
+      }
+      const removeInventorySlotButton = event.target.closest('[data-action="remove-inventory-slot"]');
+      if (removeInventorySlotButton) {
+        const row = removeInventorySlotButton.closest('[data-inventory-slot-row]');
+        const removeIndex = Number(row?.dataset.slotIndex);
+        const slots = this.readInventorySlotRows(this.root?.querySelector('[data-inventory-layout-form]')) ?? [];
+        slots.splice(removeIndex, 1);
+        this.selectedInventorySlotIndex = Math.max(0, Math.min(this.selectedInventorySlotIndex, slots.length - 1));
+        this.renderInventorySlotRows(slots);
+        return;
+      }
       const selectVerbButton = event.target.closest('[data-action="select-verb"]');
       if (selectVerbButton) {
         this.selectedVerbId = Number(selectVerbButton.dataset.verbId);
@@ -225,6 +282,45 @@ const GlobalSettingsCtrl = app => async () => {
           note.hidden = String(event.target.value) !== 'Escape';
         }
       }
+      if (event.target.closest('[data-inventory-layout-form]')) {
+        const row = event.target.closest('[data-inventory-slot-row]');
+        if (row) this.selectInventorySlot(Number(row.dataset.slotIndex));
+        this.syncInventoryLayoutPreview();
+      }
+    },
+
+    onInput(event) {
+      if (!event.target.closest('[data-inventory-layout-form]')) return;
+      const row = event.target.closest('[data-inventory-slot-row]');
+      if (row) this.selectInventorySlot(Number(row.dataset.slotIndex), {syncPreview: false});
+      this.syncInventoryLayoutPreview();
+    },
+
+    onPointerDown(event) {
+      const marker = event.target.closest('[data-action="select-inventory-slot-marker"]');
+      if (!marker) return;
+      event.preventDefault();
+      this.selectedInventorySlotIndex = Number(marker.dataset.slotIndex);
+      this.draggingInventorySlotIndex = this.selectedInventorySlotIndex;
+      this.refreshInventorySlotSelection();
+    },
+
+    onPointerMove(event) {
+      if (this.draggingInventorySlotIndex == null) return;
+      const image = this.root?.querySelector('[data-inventory-layout-preview-image]');
+      if (!(image instanceof HTMLImageElement) || !image.naturalWidth || !image.naturalHeight) return;
+      const rect = image.getBoundingClientRect();
+      if (!rect.width || !rect.height) return;
+      const scaleX = rect.width / image.naturalWidth;
+      const scaleY = rect.height / image.naturalHeight;
+      const x = clampNumber((event.clientX - rect.left) / scaleX, 0, image.naturalWidth);
+      const y = clampNumber((event.clientY - rect.top) / scaleY, 0, image.naturalHeight);
+      this.updateInventorySlotRow(this.draggingInventorySlotIndex, {x, y});
+      this.syncInventoryLayoutPreview();
+    },
+
+    onPointerUp() {
+      this.draggingInventorySlotIndex = null;
     },
 
     async saveGlobalSettings(form) {
@@ -253,7 +349,7 @@ const GlobalSettingsCtrl = app => async () => {
     async saveInventoryLayout(form) {
       this.setStatus('Saving inventory layout...');
       try {
-        const inventorySlots = JSON.parse(String(form.elements.inventory_slots_json.value || '[]'));
+        const inventorySlots = this.readInventorySlotRows(form);
         this.globalSettings = await apiFetch('/api/global-settings', {
           method: 'PATCH',
           body: JSON.stringify({inventory_slots: inventorySlots})
@@ -272,8 +368,8 @@ const GlobalSettingsCtrl = app => async () => {
         const cursor_states = Object.fromEntries(this.cursorStates.map(state => [
           state.key,
           {
-            hotspot_x: Number(form.elements[`${state.key}_hotspot_x`]?.value || 0),
-            hotspot_y: Number(form.elements[`${state.key}_hotspot_y`]?.value || 0)
+            hotspot_x: Number(form.querySelector(`[name="${state.key}_hotspot_x"]`)?.value || 0),
+            hotspot_y: Number(form.querySelector(`[name="${state.key}_hotspot_y"]`)?.value || 0)
           }
         ]));
         this.globalSettings = await apiFetch('/api/global-settings', {
@@ -293,7 +389,7 @@ const GlobalSettingsCtrl = app => async () => {
       const verbId = Number(formData.get('verb_id'));
       const payload = {
         key: String(formData.get('key') ?? '').trim(),
-        labels: JSON.parse(String(formData.get('labels_json') ?? '{}')),
+        labels: this.readVerbLabels(form),
         enabled: formData.get('enabled') === 'on',
         sort_order: Number(formData.get('sort_order') || 0)
       };
@@ -371,6 +467,116 @@ const GlobalSettingsCtrl = app => async () => {
     refreshView() {
       app.refresh();
       requestAnimationFrame(() => this.setControlValues());
+    },
+
+    inventorySlotsBody() {
+      return this.root?.querySelector('[data-inventory-slots-body]') ?? null;
+    },
+
+    renderInventorySlotRows(slots) {
+      const body = this.inventorySlotsBody();
+      if (!body) return;
+      const rows = Array.isArray(slots) && slots.length ? slots : [];
+      if (!rows.length) {
+        this.selectedInventorySlotIndex = 0;
+        body.innerHTML = this.inventorySlotRowMarkup(DEFAULT_INVENTORY_SLOT, 0);
+      } else {
+        this.selectedInventorySlotIndex = Math.max(0, Math.min(this.selectedInventorySlotIndex, rows.length - 1));
+        body.innerHTML = rows.map((slot, index) => this.inventorySlotRowMarkup(slot, index)).join('');
+      }
+      this.syncInventoryLayoutPreview();
+    },
+
+    inventorySlotRowMarkup(slot = null, index = 0) {
+      const normalized = {
+        x: Number(slot?.x ?? DEFAULT_INVENTORY_SLOT.x),
+        y: Number(slot?.y ?? DEFAULT_INVENTORY_SLOT.y),
+        size: Math.max(1, Number(slot?.size ?? DEFAULT_INVENTORY_SLOT.size) || DEFAULT_INVENTORY_SLOT.size),
+        origin: 'center'
+      };
+      return `
+        <tr data-inventory-slot-row data-slot-index="${index}" data-slot-origin="${normalized.origin}" class="${index === this.selectedInventorySlotIndex ? 'is-selected' : ''}">
+          <td><input name="slot_x" type="number" step="1" value="${Math.round(normalized.x)}" /></td>
+          <td><input name="slot_y" type="number" step="1" value="${Math.round(normalized.y)}" /></td>
+          <td><input name="slot_size" type="number" min="1" step="1" value="${Math.round(normalized.size)}" /></td>
+          <td class="settings-table__actions">
+            <button class="button danger compact" type="button" data-action="remove-inventory-slot">X</button>
+          </td>
+        </tr>
+      `;
+    },
+
+    readInventorySlotRows(form) {
+      if (!form) return [];
+      return [...form.querySelectorAll('[data-inventory-slots-body] [data-inventory-slot-row]')].map(row => ({
+        x: Number(row.querySelector('[name="slot_x"]')?.value || DEFAULT_INVENTORY_SLOT.x),
+        y: Number(row.querySelector('[name="slot_y"]')?.value || DEFAULT_INVENTORY_SLOT.y),
+        size: Math.max(1, Number(row.querySelector('[name="slot_size"]')?.value || DEFAULT_INVENTORY_SLOT.size)),
+        origin: 'center'
+      }));
+    },
+
+    selectInventorySlot(index, options = {}) {
+      if (!Number.isFinite(index)) return;
+      this.selectedInventorySlotIndex = Math.max(0, Number(index));
+      this.refreshInventorySlotSelection();
+      if (options.syncPreview !== false) this.syncInventoryLayoutPreview();
+    },
+
+    refreshInventorySlotSelection() {
+      for (const row of this.root?.querySelectorAll('[data-inventory-slot-row]') ?? []) {
+        row.classList.toggle('is-selected', Number(row.dataset.slotIndex) === Number(this.selectedInventorySlotIndex));
+      }
+      for (const marker of this.root?.querySelectorAll('[data-inventory-slot-marker]') ?? []) {
+        marker.classList.toggle('is-selected', Number(marker.dataset.slotIndex) === Number(this.selectedInventorySlotIndex));
+      }
+    },
+
+    updateInventorySlotRow(index, values) {
+      const row = this.root?.querySelector(`[data-inventory-slot-row][data-slot-index="${index}"]`);
+      if (!row) return;
+      if (values.x != null) row.querySelector('[name="slot_x"]').value = String(Math.round(values.x));
+      if (values.y != null) row.querySelector('[name="slot_y"]').value = String(Math.round(values.y));
+      if (values.size != null) row.querySelector('[name="slot_size"]').value = String(Math.max(1, Math.round(values.size)));
+    },
+
+    syncInventoryLayoutPreview() {
+      const overlay = this.root?.querySelector('[data-inventory-layout-overlay]');
+      const image = this.root?.querySelector('[data-inventory-layout-preview-image]');
+      const form = this.root?.querySelector('[data-inventory-layout-form]');
+      if (!(overlay instanceof HTMLElement) || !(image instanceof HTMLImageElement) || !form) return;
+      const slots = this.readInventorySlotRows(form);
+      if (!image.complete || !image.naturalWidth || !image.naturalHeight) {
+        overlay.innerHTML = '';
+        return;
+      }
+      const scaleX = image.clientWidth / image.naturalWidth;
+      const scaleY = image.clientHeight / image.naturalHeight;
+      overlay.innerHTML = slots.map((slot, index) => {
+        const left = slot.x * scaleX;
+        const top = slot.y * scaleY;
+        const size = slot.size * scaleX;
+        return `
+          <button
+            class="inventory-layout-editor__slot ${index === this.selectedInventorySlotIndex ? 'is-selected' : ''}"
+            type="button"
+            data-action="select-inventory-slot-marker"
+            data-slot-index="${index}"
+            style="left:${left}px; top:${top}px; width:${size}px; height:${size}px;"
+          >
+            <span>${index + 1}</span>
+          </button>
+        `;
+      }).join('');
+    },
+
+    readVerbLabels(form) {
+      const labels = {};
+      for (const language of this.languageOptions) {
+        const value = String(form.elements[`label_${language.code}`]?.value ?? '').trim();
+        if (value) labels[language.code] = value;
+      }
+      return labels;
     },
 
     setStatus(message) {

@@ -25,6 +25,7 @@ const PREVIEW_LOCAL_AUDIO_SETTINGS_KEY = 'wonky-preview-local-audio-settings';
 let previewSceneCarryover = null;
 let previewRouteTransitionInFlight = false;
 const previewDataCache = new Map();
+const inventoryBackgroundMetricsCache = new Map();
 
 const PreviewCtrl = app => async params => {
   const sceneId = Number(params[0]);
@@ -99,6 +100,7 @@ const PreviewCtrl = app => async params => {
     stageRoot: null,
     cursorRoot: null,
     feedbackLayerRoot: null,
+    inventoryLayoutVersion: 0,
     loadingScreen: null,
     loadingOverlay: null,
     loadingVisible: true,
@@ -131,6 +133,9 @@ const PreviewCtrl = app => async params => {
       this.bind(window, 'pointermove', event => {
         this.syncHeldInventoryItem({clientX: event.clientX, clientY: event.clientY});
         this.updatePreviewPointer(event);
+      });
+      this.bind(window, 'resize', () => {
+        this.syncInventoryOverlay();
       });
       this.bind(window, 'blur', () => this.clearPreviewPointer());
       this.previewSyncCleanup = listenScenePreview(this.sceneId, async () => {
@@ -698,6 +703,8 @@ const PreviewCtrl = app => async params => {
 
     syncInventoryOverlay() {
       const active = Boolean(this.runtimeState?.inventoryOverlayOpen);
+      this.inventoryLayoutVersion += 1;
+      const layoutVersion = this.inventoryLayoutVersion;
       if (this.inventoryOverlayShell) {
         this.inventoryOverlayShell.classList.toggle('is-hidden', !active);
       }
@@ -708,23 +715,40 @@ const PreviewCtrl = app => async params => {
       }
       const config = this.getInventoryConfig();
       this.inventoryStage.style.backgroundImage = config.backgroundUrl ? `url("${config.backgroundUrl}")` : 'none';
-      this.inventoryStage.innerHTML = renderInventoryOverlay({
-        slots: config.slots,
-        items: this.runtimeState?.inventory ?? [],
-        motion: this.inventoryMotion
-      });
+      const render = surface => {
+        if (!this.runtimeState?.inventoryOverlayOpen) return;
+        if (layoutVersion !== this.inventoryLayoutVersion) return;
+        this.inventoryStage.innerHTML = renderInventoryOverlay({
+          slots: config.slots,
+          items: this.runtimeState?.inventory ?? [],
+          motion: this.inventoryMotion,
+          surface
+        });
+      };
+      render(null);
+      if (!config.backgroundUrl) return;
+      const stageRect = this.inventoryStage.getBoundingClientRect();
+      loadInventoryBackgroundMetrics(config.backgroundUrl).then(metrics => {
+        if (!metrics) return;
+        render(computeContainedSurfaceLayout(stageRect.width, stageRect.height, metrics.width, metrics.height));
+      }).catch(() => {});
     },
 
     syncHeldInventoryItem(pointerPosition = null) {
       if (!this.heldInventoryItemRoot) return;
       const heldItem = this.getHeldInventoryItem();
+      const resolvedPointer = pointerPosition ?? (
+        this.pointerClientX != null && this.pointerClientY != null
+          ? {clientX: this.pointerClientX, clientY: this.pointerClientY}
+          : null
+      );
       this.heldInventoryItemRoot.classList.toggle('is-hidden', !heldItem);
       if (!heldItem) {
         this.heldInventoryItemRoot.innerHTML = '';
       } else {
-        if (pointerPosition) {
-          this.heldInventoryItemRoot.style.left = `${pointerPosition.clientX}px`;
-          this.heldInventoryItemRoot.style.top = `${pointerPosition.clientY}px`;
+        if (resolvedPointer) {
+          this.heldInventoryItemRoot.style.left = `${resolvedPointer.clientX}px`;
+          this.heldInventoryItemRoot.style.top = `${resolvedPointer.clientY}px`;
         }
         this.heldInventoryItemRoot.innerHTML = renderHeldInventoryItem(heldItem, this.heldItemMotion);
       }
@@ -944,12 +968,11 @@ const PreviewCtrl = app => async params => {
       this.executionVersion += 1;
       this.stopMediaPlayback();
       const persistedInventory = structuredClone(this.runtimeState?.inventory ?? []);
-      const persistedHeldInventoryObjectId = this.runtimeState?.heldInventoryObjectId ?? null;
       invalidatePreviewDataCache(this.sceneId);
       await this.refreshData();
       if (this.runtimeState) {
         this.runtimeState.inventory = persistedInventory;
-        this.runtimeState.heldInventoryObjectId = persistedHeldInventoryObjectId;
+        this.runtimeState.heldInventoryObjectId = null;
       }
       await this.refreshView();
       this.setLoadingState({visible: false});
@@ -2474,9 +2497,58 @@ function roundMenuValue(value) {
   return Math.round((Number(value) || 0) * 100) / 100;
 }
 
-function renderInventoryOverlay({slots, items, motion}) {
+async function loadInventoryBackgroundMetrics(url) {
+  if (!url) return null;
+  if (!inventoryBackgroundMetricsCache.has(url)) {
+    inventoryBackgroundMetricsCache.set(url, new Promise((resolve, reject) => {
+      const image = new Image();
+      image.onload = () => resolve({
+        width: image.naturalWidth || 0,
+        height: image.naturalHeight || 0
+      });
+      image.onerror = reject;
+      image.src = url;
+    }));
+  }
+  try {
+    return await inventoryBackgroundMetricsCache.get(url);
+  } catch {
+    return null;
+  }
+}
+
+function computeContainedSurfaceLayout(stageWidth, stageHeight, sourceWidth, sourceHeight) {
+  const availableWidth = Math.max(0, Number(stageWidth) || 0);
+  const availableHeight = Math.max(0, Number(stageHeight) || 0);
+  const naturalWidth = Math.max(1, Number(sourceWidth) || 1);
+  const naturalHeight = Math.max(1, Number(sourceHeight) || 1);
+  if (!availableWidth || !availableHeight) {
+    return {
+      left: 0,
+      top: 0,
+      width: naturalWidth,
+      height: naturalHeight,
+      scale: 1
+    };
+  }
+  const scale = Math.min(availableWidth / naturalWidth, availableHeight / naturalHeight);
+  const renderedWidth = naturalWidth * scale;
+  const renderedHeight = naturalHeight * scale;
+  return {
+    left: (availableWidth - renderedWidth) / 2,
+    top: (availableHeight - renderedHeight) / 2,
+    width: naturalWidth,
+    height: naturalHeight,
+    scale
+  };
+}
+
+function renderInventoryOverlay({slots, items, motion, surface = null}) {
+  const surfaceStyle = surface
+    ? `left:${Number(surface.left || 0).toFixed(2)}px; top:${Number(surface.top || 0).toFixed(2)}px; width:${Number(surface.width || 0).toFixed(2)}px; height:${Number(surface.height || 0).toFixed(2)}px; transform:scale(${Number(surface.scale || 1).toFixed(6)}); transform-origin: top left;`
+    : 'left:0; top:0; width:100%; height:100%;';
   return `
-    <div class="scene-runtime-inventory-surface">
+    <div class="scene-runtime-inventory-surface" style="${surfaceStyle}">
       ${(slots ?? []).map((slot, index) => {
         const item = items?.[index] ?? null;
         const animated = item && shouldAnimateInventoryItem(item.scene_object_id, motion);

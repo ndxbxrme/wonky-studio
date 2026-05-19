@@ -91,6 +91,12 @@ const DefaultCtrl = app => async () => {
       const moveSceneButton = event.target.closest('[data-action="move-scene-up"], [data-action="move-scene-down"]');
       if (moveSceneButton) {
         await this.moveScene(moveSceneButton);
+        return;
+      }
+
+      const removeSceneButton = event.target.closest('[data-action="remove-scene"]');
+      if (removeSceneButton) {
+        await this.removeScene(removeSceneButton);
       }
     },
 
@@ -408,6 +414,57 @@ const DefaultCtrl = app => async () => {
         });
         await this.reloadScenes();
         app.refresh();
+      } finally {
+        button.disabled = false;
+      }
+    },
+
+    async removeScene(button) {
+      const sceneId = Number(button.dataset.sceneId || 0);
+      const sceneTitle = String(button.dataset.sceneTitle || `Scene ${sceneId}`).trim();
+      if (!sceneId) return;
+      const confirmed = window.confirm(
+        `Remove scene "${sceneTitle}"?\n\nThis will delete the scene record, its uploaded images, generated images, masks, animations, and related data. Any scene-change actions targeting it will be unhooked automatically.`
+      );
+      if (!confirmed) return;
+      const typed = window.prompt(
+        `Type the scene title exactly to confirm removal:\n\n${sceneTitle}`,
+        ''
+      );
+      if (typed !== sceneTitle) {
+        this.sceneCreateStatus = 'Scene removal cancelled.';
+        app.refresh();
+        requestAnimationFrame(() => this.syncStaticStatuses());
+        return;
+      }
+      button.disabled = true;
+      this.sceneCreateStatus = `Removing scene "${sceneTitle}"...`;
+      app.refresh();
+      requestAnimationFrame(() => this.syncStaticStatuses());
+      try {
+        const result = await apiFetch(`/api/scenes/${sceneId}`, {method: 'DELETE'});
+        await this.reloadScenes();
+        await this.reloadWorkspaceSummary();
+        const references = Number(result.removed_scene_reference_count ?? 0);
+        const updatedInteractions = Number(result.updated_interaction_count ?? 0);
+        const images = Number(result.deleted_image_count ?? 0);
+        const objects = Number(result.deleted_object_count ?? 0);
+        const extraNotes = [
+          references > 0
+            ? `Unhooked ${references} scene-change step${references === 1 ? '' : 's'} in ${updatedInteractions} interaction${updatedInteractions === 1 ? '' : 's'}.`
+            : 'No scene-change actions needed unhooking.',
+          Number(result.removed_overlay_binding_count ?? 0) > 0
+            ? `Removed ${Number(result.removed_overlay_binding_count)} overlay binding${Number(result.removed_overlay_binding_count) === 1 ? '' : 's'}.`
+            : '',
+          result.cleared_start_scene ? 'Cleared this scene as the global start scene.' : ''
+        ].filter(Boolean).join(' ');
+        this.sceneCreateStatus = `Removed "${sceneTitle}" with ${images} image${images === 1 ? '' : 's'} and ${objects} object${objects === 1 ? '' : 's'} cleared. ${extraNotes}`.trim();
+        app.refresh();
+        requestAnimationFrame(() => this.syncStaticStatuses());
+      } catch (error) {
+        this.sceneCreateStatus = error?.message || `Could not remove "${sceneTitle}".`;
+        app.refresh();
+        requestAnimationFrame(() => this.syncStaticStatuses());
       } finally {
         button.disabled = false;
       }

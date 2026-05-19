@@ -49,6 +49,7 @@ from .database import (
     delete_verb,
     delete_script_line,
     delete_scene_mask_prompt,
+    delete_scene_and_unhook_references,
     delete_scene_object,
     delete_scene_interaction,
     delete_session,
@@ -577,6 +578,21 @@ class DatabaseBackupResult(BaseModel):
     ok: bool
     backup_path: str
     archive: ProjectArchiveSummary
+
+
+class SceneDeleteResult(BaseModel):
+    ok: bool
+    scene_id: int
+    scene_title: str
+    deleted_image_count: int
+    deleted_object_count: int
+    deleted_interaction_count: int
+    deleted_processing_job_count: int
+    removed_scene_reference_count: int
+    updated_interaction_count: int
+    removed_overlay_binding_count: int
+    cleared_start_scene: bool
+    touched_scene_ids: list[int] = []
 
 
 class ScriptImportRequest(BaseModel):
@@ -2436,6 +2452,47 @@ def create_app(
             raise HTTPException(status_code=404, detail="Scene not found")
         _invalidate_scene_preview_manifest_cache(app_settings.storage_root, user["organization_id"], scene_id)
         return _annotate_scene_inventory_image_statuses(app_settings.storage_root, updated)
+
+    @app.delete("/api/scenes/{scene_id}", response_model=SceneDeleteResult)
+    def delete_scene_endpoint(
+        scene_id: int,
+        user: dict[str, Any] = Depends(current_user),
+    ) -> SceneDeleteResult:
+        deleted = delete_scene_and_unhook_references(
+            database_path,
+            scene_id=scene_id,
+            organization_id=user["organization_id"],
+        )
+        if deleted is None:
+            raise HTTPException(status_code=404, detail="Scene not found")
+        for relative_path in deleted.get("deleted_uploaded_file_relative_paths") or []:
+            try:
+                file_path = _safe_child_path(app_settings.storage_root, relative_path)
+            except HTTPException:
+                continue
+            file_path.unlink(missing_ok=True)
+        _clear_scene_derived_cache(app_settings.storage_root, user["organization_id"], scene_id)
+        _invalidate_scene_preview_manifest_cache(app_settings.storage_root, user["organization_id"], scene_id)
+        for touched_scene_id in deleted.get("touched_scene_ids") or []:
+            _invalidate_scene_preview_manifest_cache(
+                app_settings.storage_root,
+                user["organization_id"],
+                int(touched_scene_id),
+            )
+        return SceneDeleteResult(
+            ok=True,
+            scene_id=int(deleted["scene_id"]),
+            scene_title=str(deleted["scene_title"]),
+            deleted_image_count=int(deleted["deleted_image_count"]),
+            deleted_object_count=int(deleted["deleted_object_count"]),
+            deleted_interaction_count=int(deleted["deleted_interaction_count"]),
+            deleted_processing_job_count=int(deleted["deleted_processing_job_count"]),
+            removed_scene_reference_count=int(deleted["removed_scene_reference_count"]),
+            updated_interaction_count=int(deleted["updated_interaction_count"]),
+            removed_overlay_binding_count=int(deleted["removed_overlay_binding_count"]),
+            cleared_start_scene=bool(deleted["cleared_start_scene"]),
+            touched_scene_ids=[int(value) for value in (deleted.get("touched_scene_ids") or [])],
+        )
 
     @app.post("/api/scenes/{scene_id}/images", response_model=Scene)
     async def post_scene_images(

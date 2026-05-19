@@ -2816,6 +2816,225 @@ def delete_scene_interaction(
         )
 
 
+def delete_scene_and_unhook_references(
+    db_path: Path,
+    scene_id: int,
+    organization_id: str,
+) -> dict[str, Any] | None:
+    with connect(db_path) as connection:
+        scene_row = connection.execute(
+            """
+            SELECT id,
+                   title
+            FROM scenes
+            WHERE id = ?
+              AND organization_id = ?
+            """,
+            (scene_id, organization_id),
+        ).fetchone()
+        if scene_row is None:
+            return None
+
+        scene_images = connection.execute(
+            """
+            SELECT scene_images.id,
+                   scene_images.uploaded_file_id,
+                   uploaded_files.relative_path
+            FROM scene_images
+            JOIN uploaded_files ON uploaded_files.id = scene_images.uploaded_file_id
+            WHERE scene_images.scene_id = ?
+            ORDER BY scene_images.id ASC
+            """,
+            (scene_id,),
+        ).fetchall()
+        image_uploaded_file_ids = [int(row["uploaded_file_id"]) for row in scene_images]
+        image_relative_paths = [str(row["relative_path"]) for row in scene_images if row["relative_path"]]
+
+        object_count_row = connection.execute(
+            "SELECT COUNT(*) AS count FROM scene_objects WHERE scene_id = ?",
+            (scene_id,),
+        ).fetchone()
+        interaction_count_row = connection.execute(
+            "SELECT COUNT(*) AS count FROM scene_interactions WHERE scene_id = ?",
+            (scene_id,),
+        ).fetchone()
+
+        removed_action_step_count = 0
+        updated_interaction_count = 0
+        touched_scene_ids: set[int] = set()
+        interaction_rows = connection.execute(
+            """
+            SELECT scene_interactions.id,
+                   scene_interactions.scene_id,
+                   scene_interactions.action_tree_json
+            FROM scene_interactions
+            JOIN scenes ON scenes.id = scene_interactions.scene_id
+            WHERE scenes.organization_id = ?
+              AND scene_interactions.scene_id != ?
+            """,
+            (organization_id, scene_id),
+        ).fetchall()
+        for row in interaction_rows:
+            current_tree = _json_loads(row["action_tree_json"], [])
+            updated_tree, removed_steps = _strip_deleted_scene_targets_from_steps(current_tree, scene_id)
+            if removed_steps <= 0:
+                continue
+            connection.execute(
+                """
+                UPDATE scene_interactions
+                SET action_tree_json = ?,
+                    updated_at = CURRENT_TIMESTAMP
+                WHERE id = ?
+                """,
+                (json.dumps(updated_tree, separators=(",", ":")), int(row["id"])),
+            )
+            removed_action_step_count += removed_steps
+            updated_interaction_count += 1
+            touched_scene_ids.add(int(row["scene_id"]))
+
+        overlay_bindings_removed = connection.execute(
+            """
+            DELETE FROM overlay_scene_bindings
+            WHERE organization_id = ?
+              AND overlay_scene_id = ?
+            """,
+            (organization_id, scene_id),
+        ).rowcount
+
+        start_scene_row = connection.execute(
+            """
+            SELECT start_scene_id
+            FROM global_settings
+            WHERE organization_id = ?
+            """,
+            (organization_id,),
+        ).fetchone()
+        cleared_start_scene = bool(start_scene_row and int(start_scene_row["start_scene_id"] or 0) == int(scene_id))
+        if cleared_start_scene:
+            connection.execute(
+                """
+                UPDATE global_settings
+                SET start_scene_id = NULL,
+                    updated_at = CURRENT_TIMESTAMP
+                WHERE organization_id = ?
+                """,
+                (organization_id,),
+            )
+
+        processing_job_count = connection.execute(
+            "SELECT COUNT(*) AS count FROM processing_jobs WHERE scene_id = ?",
+            (scene_id,),
+        ).fetchone()
+        connection.execute("DELETE FROM processing_jobs WHERE scene_id = ?", (scene_id,))
+        connection.execute("DELETE FROM scene_interactions WHERE scene_id = ?", (scene_id,))
+        connection.execute(
+            """
+            DELETE FROM object_animation_segments
+            WHERE object_animation_id IN (
+                SELECT object_animations.id
+                FROM object_animations
+                JOIN scene_objects ON scene_objects.id = object_animations.scene_object_id
+                WHERE scene_objects.scene_id = ?
+            )
+            """,
+            (scene_id,),
+        )
+        connection.execute(
+            """
+            DELETE FROM object_animations
+            WHERE scene_object_id IN (
+                SELECT id
+                FROM scene_objects
+                WHERE scene_id = ?
+            )
+            """,
+            (scene_id,),
+        )
+        connection.execute(
+            """
+            DELETE FROM object_masks
+            WHERE scene_object_id IN (
+                SELECT id
+                FROM scene_objects
+                WHERE scene_id = ?
+            )
+            """,
+            (scene_id,),
+        )
+        connection.execute(
+            """
+            DELETE FROM object_mask_images
+            WHERE scene_object_id IN (
+                SELECT id
+                FROM scene_objects
+                WHERE scene_id = ?
+            )
+            """,
+            (scene_id,),
+        )
+        connection.execute("DELETE FROM scene_objects WHERE scene_id = ?", (scene_id,))
+        connection.execute("DELETE FROM scene_images WHERE scene_id = ?", (scene_id,))
+        if image_uploaded_file_ids:
+            placeholders = ",".join("?" for _ in image_uploaded_file_ids)
+            connection.execute(
+                f"DELETE FROM uploaded_files WHERE id IN ({placeholders})",
+                tuple(image_uploaded_file_ids),
+            )
+        connection.execute(
+            """
+            DELETE FROM scenes
+            WHERE id = ?
+              AND organization_id = ?
+            """,
+            (scene_id, organization_id),
+        )
+
+    return {
+        "scene_id": int(scene_row["id"]),
+        "scene_title": str(scene_row["title"]),
+        "deleted_image_count": len(scene_images),
+        "deleted_object_count": int(object_count_row["count"] if object_count_row else 0),
+        "deleted_interaction_count": int(interaction_count_row["count"] if interaction_count_row else 0),
+        "deleted_processing_job_count": int(processing_job_count["count"] if processing_job_count else 0),
+        "deleted_uploaded_file_relative_paths": image_relative_paths,
+        "updated_interaction_count": updated_interaction_count,
+        "removed_scene_reference_count": removed_action_step_count,
+        "removed_overlay_binding_count": int(overlay_bindings_removed or 0),
+        "cleared_start_scene": cleared_start_scene,
+        "touched_scene_ids": sorted(touched_scene_ids),
+    }
+
+
+def _strip_deleted_scene_targets_from_steps(
+    steps: list[dict[str, Any]],
+    scene_id: int,
+) -> tuple[list[dict[str, Any]], int]:
+    normalized_scene_id = int(scene_id)
+    updated_steps: list[dict[str, Any]] = []
+    removed_count = 0
+    for step in steps or []:
+        if not isinstance(step, dict):
+            updated_steps.append(step)
+            continue
+        step_type = str(step.get("type") or "")
+        if step_type in {"change_scene", "open_overlay_scene", "change_overlay_scene"}:
+            target_scene_id = int(step.get("scene_id") or 0)
+            if target_scene_id == normalized_scene_id:
+                removed_count += 1
+                continue
+        next_step = dict(step)
+        if "then_steps" in next_step:
+            then_steps, removed_then = _strip_deleted_scene_targets_from_steps(next_step.get("then_steps") or [], normalized_scene_id)
+            next_step["then_steps"] = then_steps
+            removed_count += removed_then
+        if "else_steps" in next_step:
+            else_steps, removed_else = _strip_deleted_scene_targets_from_steps(next_step.get("else_steps") or [], normalized_scene_id)
+            next_step["else_steps"] = else_steps
+            removed_count += removed_else
+        updated_steps.append(next_step)
+    return updated_steps, removed_count
+
+
 def scene_object_belongs_to_scene(
     db_path: Path,
     scene_id: int,

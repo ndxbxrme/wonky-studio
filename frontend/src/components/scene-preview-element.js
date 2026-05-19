@@ -6,6 +6,7 @@ class WonkyScenePreviewElement extends HTMLElement {
     this.attachShadow({mode: 'open'});
     this.preview = null;
     this.currentSubtitle = null;
+    this.currentSubtitleSignature = '';
     this.runtimeObjectStates = {};
     this.showBackground = true;
     this.transparentStage = false;
@@ -217,7 +218,11 @@ class WonkyScenePreviewElement extends HTMLElement {
   }
 
   setSubtitle(subtitle) {
-    this.currentSubtitle = subtitle ?? null;
+    const nextSubtitle = subtitle ?? null;
+    const nextSignature = buildSubtitleSignature(nextSubtitle);
+    if (nextSignature === this.currentSubtitleSignature) return;
+    this.currentSubtitle = nextSubtitle;
+    this.currentSubtitleSignature = nextSignature;
     this.renderSubtitleOverlay();
   }
 
@@ -734,6 +739,16 @@ function previewBounds(render, sceneWidth, sceneHeight, canvasWidth, canvasHeigh
     width: (render.width / Math.max(1, sceneWidth || 1)) * canvasWidth,
     height: (render.height / Math.max(1, sceneHeight || 1)) * canvasHeight
   };
+}
+
+function buildSubtitleSignature(subtitle) {
+  if (!subtitle?.primaryText && !subtitle?.secondaryText) return '';
+  return JSON.stringify({
+    primaryText: subtitle.primaryText || '',
+    secondaryText: subtitle.secondaryText || '',
+    sizeClass: subtitle.sizeClass || '',
+    motionClass: subtitle.motionClass || ''
+  });
 }
 
 function renderSubtitleMarkup(subtitle) {
