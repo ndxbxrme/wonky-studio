@@ -1940,11 +1940,14 @@ textarea {
   justify-content: center;
   text-align: center;
   opacity: 1;
+  transform-origin: 50% 50%;
+  transition: transform 140ms ease, filter 140ms ease;
+  filter: drop-shadow(0 10px 18px rgba(44, 28, 14, 0.12));
 }
 
 .scene-runtime-verb-menu.is-entering .scene-runtime-verb-tag {
   opacity: 0;
-  animation: scene-runtime-verb-tag-in 180ms ease forwards;
+  animation: scene-runtime-verb-tag-in 220ms cubic-bezier(0.2, 0.9, 0.22, 1.2) forwards;
   animation-delay: var(--tag-delay, 0ms);
 }
 
@@ -1954,13 +1957,60 @@ textarea {
 }
 
 .scene-runtime-verb-tag:hover {
-  transform: translate(calc(-50% + var(--tag-x)), calc(-50% + var(--tag-y) - 4px)) scale(1.05);
+  transform: translate(calc(-50% + var(--tag-x)), calc(-50% + var(--tag-y) - 4px)) rotate(var(--tag-tilt, 1deg)) scale(1.03);
+  filter: drop-shadow(0 14px 22px rgba(44, 28, 14, 0.18));
 }
 
 .scene-runtime-verb-tag.is-disabled,
 .scene-runtime-verb-tag:disabled {
   opacity: 0.55;
   cursor: not-allowed;
+  filter: saturate(0.8);
+}
+
+.scene-runtime-verb-menu.is-confirming .scene-runtime-verb-tag {
+  animation: scene-runtime-verb-tag-dismiss 140ms ease forwards;
+}
+
+.scene-runtime-verb-menu.is-confirming .scene-runtime-verb-tag.is-confirming {
+  animation: scene-runtime-verb-tag-confirm 140ms cubic-bezier(0.22, 1, 0.36, 1) forwards;
+}
+
+.scene-runtime-feedback-layer {
+  position: absolute;
+  left: 0;
+  top: 0;
+  width: 0;
+  height: 0;
+  pointer-events: none;
+  z-index: 3;
+}
+
+.scene-runtime-feedback-layer.is-hidden {
+  display: none;
+}
+
+.scene-runtime-feedback-pulse {
+  position: absolute;
+  width: 18px;
+  height: 18px;
+  border-radius: 999px;
+  transform: translate(-50%, -50%);
+  opacity: 0;
+}
+
+.scene-runtime-feedback-pulse.is-accept {
+  border: 2px solid rgba(255, 241, 183, 0.95);
+  background: rgba(255, 241, 183, 0.38);
+  box-shadow: 0 0 0 0 rgba(255, 241, 183, 0.4);
+  animation: scene-runtime-feedback-accept 240ms cubic-bezier(0.22, 1, 0.36, 1) forwards;
+}
+
+.scene-runtime-feedback-pulse.is-blocked {
+  border: 2px solid rgba(255, 166, 166, 0.95);
+  background: rgba(255, 166, 166, 0.25);
+  box-shadow: 0 0 0 0 rgba(255, 166, 166, 0.3);
+  animation: scene-runtime-feedback-blocked 220ms cubic-bezier(0.22, 1, 0.36, 1) forwards;
 }
 
 .scene-runtime-inventory-shell {
@@ -2013,11 +2063,27 @@ textarea {
   filter: drop-shadow(0 10px 20px rgba(0, 0, 0, 0.18));
 }
 
+.scene-runtime-inventory-slot.is-entering img {
+  animation: scene-runtime-inventory-item-in 240ms cubic-bezier(0.2, 0.9, 0.22, 1.15) both;
+  animation-delay: var(--slot-delay, 0ms);
+}
+
 .scene-runtime-held-item {
   position: fixed;
   z-index: 8;
   pointer-events: none;
   transform: translate(14px, 14px);
+}
+
+.scene-runtime-held-item-ghost {
+  position: fixed;
+  z-index: 8;
+  pointer-events: none;
+  transform: translate(14px, 14px);
+}
+
+.scene-runtime-held-item-ghost.is-hidden {
+  display: none;
 }
 
 .scene-runtime-cursor {
@@ -2085,6 +2151,14 @@ textarea {
   width: 88px;
   height: 88px;
   opacity: 0.72;
+}
+
+.scene-runtime-held-item__inner.is-attach {
+  animation: scene-runtime-held-item-attach 220ms cubic-bezier(0.2, 0.9, 0.22, 1.18) both;
+}
+
+.scene-runtime-held-item__inner.is-ghost {
+  animation: scene-runtime-held-item-ghost 220ms ease-out forwards;
 }
 
 .scene-runtime-held-item__inner img {
@@ -2157,6 +2231,10 @@ textarea {
   background: #fbfcfa;
   display: grid;
   gap: 10px;
+}
+
+.preview-object-card.is-juice-bump {
+  animation: scene-runtime-sidebar-card-bump 220ms cubic-bezier(0.2, 0.9, 0.22, 1.12);
 }
 
 .preview-object-card.is-selected {
@@ -2357,7 +2435,11 @@ textarea {
 @keyframes scene-runtime-verb-tag-in {
   from {
     opacity: 0;
-    transform: translate(calc(-50% + var(--tag-x)), calc(-50% + var(--tag-y) + 14px));
+    transform: translate(calc(-50% + var(--tag-x)), calc(-50% + var(--tag-y) + 16px)) scale(0.84, 1.08);
+  }
+  62% {
+    opacity: 1;
+    transform: translate(calc(-50% + var(--tag-x)), calc(-50% + var(--tag-y) - 2px)) scale(1.05, 0.95);
   }
   to {
     opacity: 1;
@@ -2368,11 +2450,116 @@ textarea {
 @keyframes scene-runtime-verb-tag-in-disabled {
   from {
     opacity: 0;
-    transform: translate(calc(-50% + var(--tag-x)), calc(-50% + var(--tag-y) + 14px));
+    transform: translate(calc(-50% + var(--tag-x)), calc(-50% + var(--tag-y) + 14px)) scale(0.9, 1.04);
   }
   to {
     opacity: 0.55;
     transform: translate(calc(-50% + var(--tag-x)), calc(-50% + var(--tag-y)));
+  }
+}
+
+@keyframes scene-runtime-verb-tag-confirm {
+  0% {
+    transform: translate(calc(-50% + var(--tag-x)), calc(-50% + var(--tag-y))) scale(1);
+  }
+  45% {
+    transform: translate(calc(-50% + var(--tag-x)), calc(-50% + var(--tag-y) - 2px)) scale(1.08, 0.92);
+  }
+  100% {
+    opacity: 0;
+    transform: translate(calc(-50% + var(--tag-x)), calc(-50% + var(--tag-y) - 4px)) scale(1.02, 0.96);
+  }
+}
+
+@keyframes scene-runtime-verb-tag-dismiss {
+  from {
+    opacity: 1;
+    transform: translate(calc(-50% + var(--tag-x)), calc(-50% + var(--tag-y))) scale(1);
+  }
+  to {
+    opacity: 0;
+    transform: translate(calc(-50% + var(--tag-x)), calc(-50% + var(--tag-y) + 6px)) scale(0.95);
+  }
+}
+
+@keyframes scene-runtime-feedback-accept {
+  0% {
+    opacity: 0.95;
+    transform: translate(-50%, -50%) scale(0.3);
+    box-shadow: 0 0 0 0 rgba(255, 241, 183, 0.45);
+  }
+  100% {
+    opacity: 0;
+    transform: translate(-50%, -50%) scale(2.8);
+    box-shadow: 0 0 0 22px rgba(255, 241, 183, 0);
+  }
+}
+
+@keyframes scene-runtime-feedback-blocked {
+  0% {
+    opacity: 0.95;
+    transform: translate(-50%, -50%) scale(0.45);
+  }
+  55% {
+    opacity: 0.7;
+    transform: translate(calc(-50% - 6px), -50%) scale(1.25);
+  }
+  100% {
+    opacity: 0;
+    transform: translate(calc(-50% + 6px), -50%) scale(1.55);
+  }
+}
+
+@keyframes scene-runtime-inventory-item-in {
+  0% {
+    opacity: 0;
+    transform: translateY(10px) scale(0.82);
+  }
+  65% {
+    opacity: 1;
+    transform: translateY(-3px) scale(1.06);
+  }
+  100% {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+@keyframes scene-runtime-held-item-attach {
+  0% {
+    opacity: 0.52;
+    transform: scale(0.82);
+  }
+  60% {
+    opacity: 0.86;
+    transform: scale(1.08);
+  }
+  100% {
+    opacity: 0.72;
+    transform: scale(1);
+  }
+}
+
+@keyframes scene-runtime-held-item-ghost {
+  0% {
+    opacity: 0.72;
+    transform: scale(1);
+  }
+  100% {
+    opacity: 0;
+    transform: translateY(-10px) scale(0.84);
+  }
+}
+
+@keyframes scene-runtime-sidebar-card-bump {
+  0% {
+    transform: scale(0.96);
+  }
+  60% {
+    transform: scale(1.02);
+  }
+  100% {
+    transform: scale(1);
   }
 }
 

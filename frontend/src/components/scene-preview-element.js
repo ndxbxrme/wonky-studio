@@ -91,6 +91,10 @@ class WonkyScenePreviewElement extends HTMLElement {
           color: #f7fbff;
         }
 
+        .subtitle-card.is-entering {
+          animation: subtitle-settle-in 180ms cubic-bezier(0.2, 0.9, 0.22, 1.08);
+        }
+
         .subtitle-primary,
         .subtitle-secondary {
           margin: 0;
@@ -132,6 +136,17 @@ class WonkyScenePreviewElement extends HTMLElement {
 
         .subtitle-card.is-xsmall .subtitle-secondary {
           font-size: 0.84rem;
+        }
+
+        @keyframes subtitle-settle-in {
+          0% {
+            opacity: 0;
+            transform: translateY(8px) scale(0.985);
+          }
+          100% {
+            opacity: 1;
+            transform: translateY(0) scale(1);
+          }
         }
 
         .empty {
@@ -440,7 +455,11 @@ class WonkyScenePreviewElement extends HTMLElement {
     if (!object) return;
     this.dispatchEvent(new CustomEvent('preview-object-click', {
       bubbles: true,
-      detail: {objectId: object.id}
+      detail: {
+        objectId: object.id,
+        clientX: event.clientX,
+        clientY: event.clientY
+      }
     }));
   }
 
@@ -720,7 +739,7 @@ function previewBounds(render, sceneWidth, sceneHeight, canvasWidth, canvasHeigh
 function renderSubtitleMarkup(subtitle) {
   if (!subtitle?.primaryText && !subtitle?.secondaryText) return '';
   return `
-    <div class="subtitle-card ${subtitle.sizeClass}">
+    <div class="subtitle-card ${subtitle.sizeClass} ${subtitle.motionClass || 'is-entering'}">
       ${subtitle.primaryText ? `<p class="subtitle-primary">${escapeHtml(subtitle.primaryText)}</p>` : ''}
       ${subtitle.secondaryText ? `<p class="subtitle-secondary">${escapeHtml(subtitle.secondaryText)}</p>` : ''}
     </div>

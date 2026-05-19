@@ -77,6 +77,7 @@
           </div>
         </div>
         <div class="scene-runtime-verb-menu is-hidden" data-verb-menu-root></div>
+        <div class="scene-runtime-feedback-layer is-hidden" data-preview-feedback-layer></div>
         <div class="scene-runtime-overlay-shell is-hidden" data-preview-overlay-shell>
           <div class="scene-runtime-overlay-backdrop" data-preview-overlay-backdrop></div>
           <div class="scene-runtime-overlay-frame" data-preview-overlay-frame>
@@ -91,6 +92,7 @@
           </div>
         </div>
         <div class="scene-runtime-held-item is-hidden" data-held-inventory-item></div>
+        <div class="scene-runtime-held-item-ghost is-hidden" data-held-inventory-ghost></div>
         <div class="scene-runtime-cursor is-hidden" data-preview-cursor></div>
       </section>
 
@@ -184,7 +186,7 @@
           </div>
           <div class="preview-object-list" data-preview-inventory-items>
             {{#each inventoryItems as item}}
-              <section class="preview-object-card">
+              <section class="preview-object-card {{#if item.isJuiceBump}}is-juice-bump{{/if}}">
                 <div class="preview-object-card__header">
                   <strong>{{item.name}}</strong>
                   <span>{{#if item.isHeld}}held{{/if}}{{#if not item.isHeld}}carried{{/if}}</span>

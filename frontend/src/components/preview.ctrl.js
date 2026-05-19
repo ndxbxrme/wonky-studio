@@ -77,6 +77,14 @@ const PreviewCtrl = app => async params => {
     suppressVerbMenuDismissUntil: 0,
     ignoreNextVerbMenuOutsideClick: false,
     renderedVerbMenuSignature: '',
+    inventoryMotion: null,
+    inventoryMotionTimer: null,
+    heldItemMotion: null,
+    heldItemMotionTimer: null,
+    heldInventoryGhost: null,
+    heldInventoryGhostTimer: null,
+    feedbackPulse: null,
+    feedbackPulseTimer: null,
     basePreview: null,
     overlayPreview: null,
     overlayShell: null,
@@ -87,8 +95,10 @@ const PreviewCtrl = app => async params => {
     inventoryOverlayFrame: null,
     inventoryStage: null,
     heldInventoryItemRoot: null,
+    heldInventoryGhostRoot: null,
     stageRoot: null,
     cursorRoot: null,
+    feedbackLayerRoot: null,
     loadingScreen: null,
     loadingOverlay: null,
     loadingVisible: true,
@@ -146,6 +156,10 @@ const PreviewCtrl = app => async params => {
       this.stopMediaPlayback();
       if (!previewRouteTransitionInFlight) previewAudioRuntime.stopAll();
       if (this.preloadTimer) window.clearTimeout(this.preloadTimer);
+      if (this.inventoryMotionTimer) window.clearTimeout(this.inventoryMotionTimer);
+      if (this.heldItemMotionTimer) window.clearTimeout(this.heldItemMotionTimer);
+      if (this.heldInventoryGhostTimer) window.clearTimeout(this.heldInventoryGhostTimer);
+      if (this.feedbackPulseTimer) window.clearTimeout(this.feedbackPulseTimer);
       this.preloadTimer = null;
       this.unloadHandlers.forEach(unload => unload());
       this.unloadHandlers = [];
@@ -166,8 +180,10 @@ const PreviewCtrl = app => async params => {
       this.inventoryOverlayFrame = this.root?.querySelector('[data-inventory-overlay-frame]') ?? null;
       this.inventoryStage = this.root?.querySelector('[data-inventory-stage]') ?? null;
       this.heldInventoryItemRoot = this.root?.querySelector('[data-held-inventory-item]') ?? null;
+      this.heldInventoryGhostRoot = this.root?.querySelector('[data-held-inventory-ghost]') ?? null;
       this.stageRoot = this.root?.querySelector('[data-preview-stage]') ?? null;
       this.cursorRoot = this.root?.querySelector('[data-preview-cursor]') ?? null;
+      this.feedbackLayerRoot = this.root?.querySelector('[data-preview-feedback-layer]') ?? null;
       this.verbMenuRoot = this.root?.querySelector('[data-verb-menu-root]') ?? null;
       this.loadingScreen = this.root?.querySelector('[data-preview-loading-screen]') ?? null;
       this.loadingOverlay = this.root?.querySelector('[data-preview-loading-overlay]') ?? null;
@@ -194,6 +210,8 @@ const PreviewCtrl = app => async params => {
       this.clearViewBindings();
       this.bindView(this.root, 'click', event => this.onClick(event));
       this.bindView(this.root, 'contextmenu', event => this.onContextMenu(event));
+      this.bindView(this.root, 'mouseover', event => this.onMouseOver(event));
+      this.bindView(this.root, 'mouseout', event => this.onMouseOut(event));
       this.bindView(this.root, 'submit', event => this.onSubmit(event));
       this.bindView(this.root, 'input', event => this.onInput(event));
       this.bindView(this.root, 'change', event => this.onChange(event));
@@ -336,7 +354,8 @@ const PreviewCtrl = app => async params => {
       }));
       this.inventoryItems = buildInventoryInspectorItems(
         this.runtimeState?.inventory ?? [],
-        this.runtimeState?.heldInventoryObjectId
+        this.runtimeState?.heldInventoryObjectId,
+        this.inventoryMotion
       );
       this.syncContinuousAudioState();
       this.syncRuntimePanels();
@@ -571,6 +590,7 @@ const PreviewCtrl = app => async params => {
       this.syncSubtitleOverlay('overlay');
       this.syncFadeOverlay('overlay');
       this.syncVerbMenu();
+      this.syncFeedbackPulse();
       this.syncInventoryOverlay();
       this.syncHeldInventoryItem();
       this.syncCustomCursor();
@@ -621,6 +641,7 @@ const PreviewCtrl = app => async params => {
         if (this.verbMenuAnimationTimer) window.clearTimeout(this.verbMenuAnimationTimer);
         this.verbMenuAnimationTimer = null;
         this.verbMenuRoot.classList.remove('is-entering');
+        this.verbMenuRoot.classList.remove('is-confirming');
         this.verbMenuRoot.style.left = '';
         this.verbMenuRoot.style.top = '';
         this.verbMenuRoot.style.width = '';
@@ -651,6 +672,30 @@ const PreviewCtrl = app => async params => {
       }
     },
 
+    syncFeedbackPulse() {
+      if (!this.feedbackLayerRoot) return;
+      const pulse = this.feedbackPulse;
+      this.feedbackLayerRoot.classList.toggle('is-hidden', !pulse);
+      if (!pulse) {
+        this.feedbackLayerRoot.style.left = '';
+        this.feedbackLayerRoot.style.top = '';
+        this.feedbackLayerRoot.style.width = '';
+        this.feedbackLayerRoot.style.height = '';
+        this.feedbackLayerRoot.innerHTML = '';
+        return;
+      }
+      const preview = this.getLayerPreviewElement(pulse.layer);
+      const previewStageRect = preview?.getStageClientRect?.();
+      const stageRootRect = this.stageRoot?.getBoundingClientRect?.();
+      if (previewStageRect && stageRootRect) {
+        this.feedbackLayerRoot.style.left = `${previewStageRect.left - stageRootRect.left}px`;
+        this.feedbackLayerRoot.style.top = `${previewStageRect.top - stageRootRect.top}px`;
+        this.feedbackLayerRoot.style.width = `${previewStageRect.width}px`;
+        this.feedbackLayerRoot.style.height = `${previewStageRect.height}px`;
+      }
+      this.feedbackLayerRoot.innerHTML = renderInteractionPulse(pulse);
+    },
+
     syncInventoryOverlay() {
       const active = Boolean(this.runtimeState?.inventoryOverlayOpen);
       if (this.inventoryOverlayShell) {
@@ -665,7 +710,8 @@ const PreviewCtrl = app => async params => {
       this.inventoryStage.style.backgroundImage = config.backgroundUrl ? `url("${config.backgroundUrl}")` : 'none';
       this.inventoryStage.innerHTML = renderInventoryOverlay({
         slots: config.slots,
-        items: this.runtimeState?.inventory ?? []
+        items: this.runtimeState?.inventory ?? [],
+        motion: this.inventoryMotion
       });
     },
 
@@ -675,13 +721,23 @@ const PreviewCtrl = app => async params => {
       this.heldInventoryItemRoot.classList.toggle('is-hidden', !heldItem);
       if (!heldItem) {
         this.heldInventoryItemRoot.innerHTML = '';
+      } else {
+        if (pointerPosition) {
+          this.heldInventoryItemRoot.style.left = `${pointerPosition.clientX}px`;
+          this.heldInventoryItemRoot.style.top = `${pointerPosition.clientY}px`;
+        }
+        this.heldInventoryItemRoot.innerHTML = renderHeldInventoryItem(heldItem, this.heldItemMotion);
+      }
+      if (!this.heldInventoryGhostRoot) return;
+      const ghost = this.heldInventoryGhost;
+      this.heldInventoryGhostRoot.classList.toggle('is-hidden', !ghost);
+      if (!ghost) {
+        this.heldInventoryGhostRoot.innerHTML = '';
         return;
       }
-      if (pointerPosition) {
-        this.heldInventoryItemRoot.style.left = `${pointerPosition.clientX}px`;
-        this.heldInventoryItemRoot.style.top = `${pointerPosition.clientY}px`;
-      }
-      this.heldInventoryItemRoot.innerHTML = renderHeldInventoryItem(heldItem);
+      this.heldInventoryGhostRoot.style.left = `${ghost.clientX}px`;
+      this.heldInventoryGhostRoot.style.top = `${ghost.clientY}px`;
+      this.heldInventoryGhostRoot.innerHTML = renderHeldInventoryGhost(ghost);
     },
 
     syncCustomCursor() {
@@ -747,6 +803,67 @@ const PreviewCtrl = app => async params => {
       this.hoveredBaseObjectId = null;
       this.hoveredOverlayObjectId = null;
       this.syncCustomCursor();
+    },
+
+    setInventoryMotion(kind, objectIds = []) {
+      if (this.inventoryMotionTimer) window.clearTimeout(this.inventoryMotionTimer);
+      this.inventoryMotion = {
+        kind,
+        objectIds: objectIds.map(Number)
+      };
+      this.syncInventoryOverlay();
+      this.refreshInspectorState();
+      this.inventoryMotionTimer = window.setTimeout(() => {
+        this.inventoryMotionTimer = null;
+        this.inventoryMotion = null;
+        this.syncInventoryOverlay();
+        this.refreshInspectorState();
+      }, kind === 'open' ? 340 : 420);
+    },
+
+    setHeldItemMotion(kind) {
+      if (this.heldItemMotionTimer) window.clearTimeout(this.heldItemMotionTimer);
+      this.heldItemMotion = kind;
+      this.syncHeldInventoryItem();
+      this.heldItemMotionTimer = window.setTimeout(() => {
+        this.heldItemMotionTimer = null;
+        this.heldItemMotion = null;
+        this.syncHeldInventoryItem();
+      }, 260);
+    },
+
+    setHeldInventoryGhost(item, clientX, clientY) {
+      if (this.heldInventoryGhostTimer) window.clearTimeout(this.heldInventoryGhostTimer);
+      this.heldInventoryGhost = {
+        name: item.name,
+        thumbnailUrl: item.thumbnailUrl,
+        clientX,
+        clientY
+      };
+      this.syncHeldInventoryItem();
+      this.heldInventoryGhostTimer = window.setTimeout(() => {
+        this.heldInventoryGhostTimer = null;
+        this.heldInventoryGhost = null;
+        this.syncHeldInventoryItem();
+      }, 220);
+    },
+
+    showInteractionPulse(kind, layer, objectId, metadata = {}) {
+      if (this.feedbackPulseTimer) window.clearTimeout(this.feedbackPulseTimer);
+      const position = resolveStagePulsePosition.call(this, layer, objectId, metadata);
+      if (!position) return;
+      this.feedbackPulse = {
+        kind,
+        layer,
+        x: position.x,
+        y: position.y
+      };
+      this.syncFeedbackPulse();
+      this.feedbackPulseTimer = window.setTimeout(() => {
+        this.feedbackPulseTimer = null;
+        this.feedbackPulse = null;
+        this.syncFeedbackPulse();
+      }, 260);
     },
 
     setOverlayPresentationOpacity(opacity) {
@@ -965,7 +1082,8 @@ const PreviewCtrl = app => async params => {
         const verbId = Number(verbButton.dataset.verbId);
         const layer = verbButton.dataset.layer || this.getActiveLayerName();
         if (!verbButton.disabled) {
-          await this.selectVerb(layer, objectId, verbId);
+          await this.animateVerbSelection(verbButton);
+          await this.selectVerb(layer, objectId, verbId, event);
         }
         return;
       }
@@ -1035,6 +1153,25 @@ const PreviewCtrl = app => async params => {
         event.preventDefault();
         this.clearHeldInventoryItem();
       }
+    },
+
+    onMouseOver(event) {
+      if (!this.activeVerbMenu) return;
+      const verbButton = event.target.closest?.('[data-action="select-verb"]');
+      if (!verbButton) return;
+      if (this.verbMenuDismissTimer) {
+        window.clearTimeout(this.verbMenuDismissTimer);
+        this.verbMenuDismissTimer = null;
+      }
+    },
+
+    onMouseOut(event) {
+      if (!this.activeVerbMenu) return;
+      const verbButton = event.target.closest?.('[data-action="select-verb"]');
+      if (!verbButton) return;
+      const nextTarget = event.relatedTarget instanceof Element ? event.relatedTarget : null;
+      if (nextTarget?.closest?.('[data-action="select-verb"]')) return;
+      this.bumpVerbMenuTimeout();
     },
 
     async onSubmit(event) {
@@ -1139,10 +1276,13 @@ const PreviewCtrl = app => async params => {
       if (this.activeVerbMenu) this.closeVerbMenu();
       const heldItem = this.getHeldInventoryItem();
       if (heldItem) {
-        await this.triggerInventoryUse(layer, objectId, heldItem.scene_object_id, event.detail ?? {});
+        const matched = await this.triggerInventoryUse(layer, objectId, heldItem.scene_object_id, event.detail ?? {});
+        if (matched) this.showInteractionPulse('accept', layer, objectId, event.detail ?? {});
+        else this.showInteractionPulse('blocked', layer, objectId, event.detail ?? {});
         return;
       }
-      await this.triggerObjectClick(layer, objectId);
+      const matched = await this.triggerObjectClick(layer, objectId, event.detail ?? {});
+      if (matched) this.showInteractionPulse('accept', layer, objectId, event.detail ?? {});
     },
 
     async onPreviewObjectMenu(event, layer) {
@@ -1159,8 +1299,8 @@ const PreviewCtrl = app => async params => {
 
     async triggerObjectClick(layer, objectId, metadata = {}) {
       const state = this.getLayerRuntimeState(layer)?.objects?.[objectId];
-      if (!state?.enabled || !state?.visible) return;
-      await this.executeMatchingInteractionsForLayer(
+      if (!state?.enabled || !state?.visible) return false;
+      return this.executeMatchingInteractionsForLayer(
         layer,
         interaction => (
           interaction.trigger?.type === 'object_click'
@@ -1172,8 +1312,8 @@ const PreviewCtrl = app => async params => {
 
     async triggerInventoryUse(layer, objectId, inventoryObjectId, metadata = {}) {
       const state = this.getLayerRuntimeState(layer)?.objects?.[objectId];
-      if (!state?.enabled || !state?.visible) return;
-      await this.executeMatchingInteractionsForLayer(
+      if (!state?.enabled || !state?.visible) return false;
+      return this.executeMatchingInteractionsForLayer(
         layer,
         interaction => (
           interaction.trigger?.type === 'inventory_use'
@@ -1277,6 +1417,21 @@ const PreviewCtrl = app => async params => {
       this.syncVerbMenu();
     },
 
+    async animateVerbSelection(button) {
+      if (!button || !this.verbMenuRoot) {
+        await waitMilliseconds(120);
+        return;
+      }
+      this.verbMenuRoot.classList.remove('is-entering');
+      if (this.verbMenuAnimationTimer) {
+        window.clearTimeout(this.verbMenuAnimationTimer);
+        this.verbMenuAnimationTimer = null;
+      }
+      this.verbMenuRoot.classList.add('is-confirming');
+      button.classList.add('is-confirming');
+      await waitMilliseconds(140);
+    },
+
     bumpVerbMenuTimeout() {
       if (this.verbMenuDismissTimer) window.clearTimeout(this.verbMenuDismissTimer);
       this.verbMenuDismissTimer = window.setTimeout(() => {
@@ -1285,9 +1440,9 @@ const PreviewCtrl = app => async params => {
       }, Math.round(this.getVerbMenuTimeoutSeconds() * 1000));
     },
 
-    async selectVerb(layer, objectId, verbId) {
+    async selectVerb(layer, objectId, verbId, event = null) {
       this.closeVerbMenu();
-      await this.executeMatchingInteractionsForLayer(
+      const matched = await this.executeMatchingInteractionsForLayer(
         layer,
         interaction => (
           interaction.trigger?.type === 'object_verb'
@@ -1296,12 +1451,16 @@ const PreviewCtrl = app => async params => {
         ),
         {reason: 'object_verb', objectId: Number(objectId), verbId: Number(verbId)}
       );
+      if (matched) {
+        this.showInteractionPulse('accept', layer, objectId, event ? {clientX: event.clientX, clientY: event.clientY} : {});
+      }
     },
 
     openInventoryOverlay() {
       if (this.activeVerbMenu) this.closeVerbMenu();
       if (!this.runtimeState) return;
       this.runtimeState.inventoryOverlayOpen = true;
+      this.setInventoryMotion('open', (this.runtimeState.inventory ?? []).map(item => Number(item.scene_object_id)));
       this.refreshInspectorState();
     },
 
@@ -1318,11 +1477,16 @@ const PreviewCtrl = app => async params => {
       if (!item || !this.runtimeState) return;
       this.runtimeState.heldInventoryObjectId = Number(sceneObjectId);
       this.runtimeState.inventoryOverlayOpen = false;
+      this.setHeldItemMotion('attach');
       this.refreshInspectorState();
     },
 
     clearHeldInventoryItem() {
       if (!this.runtimeState) return;
+      const heldItem = this.getHeldInventoryItem();
+      if (heldItem && this.pointerClientX != null && this.pointerClientY != null) {
+        this.setHeldInventoryGhost(heldItem, this.pointerClientX, this.pointerClientY);
+      }
       this.runtimeState.heldInventoryObjectId = null;
       this.syncHeldInventoryItem();
       this.refreshInspectorState();
@@ -1356,9 +1520,10 @@ const PreviewCtrl = app => async params => {
 
     async executeMatchingInteractionsForLayer(layer, predicate, metadata = {}) {
       const interactions = (this.getLayerPreviewData(layer)?.interactions ?? []).filter(predicate);
-      if (!interactions.length) return;
+      if (!interactions.length) return false;
       const chainState = {remaining: MAX_CHAINED_INTERACTIONS};
       await this.executeInteractions(layer, interactions, metadata, chainState);
+      return true;
     },
 
     async executeInteractions(layer, interactions, metadata = {}, chainState = {remaining: MAX_CHAINED_INTERACTIONS}) {
@@ -1480,6 +1645,7 @@ const PreviewCtrl = app => async params => {
         );
         if (!exists) {
           this.runtimeState.inventory = [...(this.runtimeState.inventory ?? []), inventoryItem];
+          this.setInventoryMotion('add', [Number(inventoryItem.scene_object_id)]);
         }
         this.refreshInspectorState();
         return;
@@ -1487,6 +1653,17 @@ const PreviewCtrl = app => async params => {
 
       if (step.type === 'remove_inventory_item') {
         if (!this.runtimeState) return;
+        const removedItem = (this.runtimeState.inventory ?? []).find(
+          item => Number(item.scene_object_id) === Number(step.scene_object_id)
+        );
+        if (
+          removedItem
+          && Number(this.runtimeState.heldInventoryObjectId) === Number(step.scene_object_id)
+          && this.pointerClientX != null
+          && this.pointerClientY != null
+        ) {
+          this.setHeldInventoryGhost(removedItem, this.pointerClientX, this.pointerClientY);
+        }
         this.runtimeState.inventory = (this.runtimeState.inventory ?? []).filter(
           item => Number(item.scene_object_id) !== Number(step.scene_object_id)
         );
@@ -1498,6 +1675,10 @@ const PreviewCtrl = app => async params => {
       }
 
       if (step.type === 'clear_held_inventory_item') {
+        const heldItem = this.getHeldInventoryItem();
+        if (heldItem && this.pointerClientX != null && this.pointerClientY != null) {
+          this.setHeldInventoryGhost(heldItem, this.pointerClientX, this.pointerClientY);
+        }
         this.clearHeldInventoryItem();
         return;
       }
@@ -2238,7 +2419,7 @@ function renderPreviewVariables(variables) {
 
 function renderInventoryItems(items) {
   return (items ?? []).map(item => `
-    <section class="preview-object-card">
+    <section class="preview-object-card ${item.isJuiceBump ? 'is-juice-bump' : ''}">
       <div class="preview-object-card__header">
         <strong>${escapeHtml(item.name)}</strong>
         <span>${item.isHeld ? 'held' : 'carried'}</span>
@@ -2262,7 +2443,7 @@ function renderVerbMenu(menu) {
             data-layer="${escapeHtml(menu.layer)}"
             data-object-id="${menu.objectId}"
             data-verb-id="${item.id}"
-            style="--tag-x:${Number(item.offsetX || 0).toFixed(2)}px; --tag-y:${Number(item.offsetY || 0).toFixed(2)}px; --tag-delay:${index * VERB_MENU_STAGGER_MS}ms;${item.backgroundUrl ? `--tag-background:url('${escapeHtml(item.backgroundUrl)}');` : ''}"
+            style="--tag-x:${Number(item.offsetX || 0).toFixed(2)}px; --tag-y:${Number(item.offsetY || 0).toFixed(2)}px; --tag-delay:${index * VERB_MENU_STAGGER_MS}ms; --tag-tilt:${verbTiltDirection(item.id, index)};${item.backgroundUrl ? `--tag-background:url('${escapeHtml(item.backgroundUrl)}');` : ''}"
             ${item.enabled ? '' : 'disabled'}
           >
             <span>${escapeHtml(item.label)}</span>
@@ -2293,17 +2474,18 @@ function roundMenuValue(value) {
   return Math.round((Number(value) || 0) * 100) / 100;
 }
 
-function renderInventoryOverlay({slots, items}) {
+function renderInventoryOverlay({slots, items, motion}) {
   return `
     <div class="scene-runtime-inventory-surface">
       ${(slots ?? []).map((slot, index) => {
         const item = items?.[index] ?? null;
+        const animated = item && shouldAnimateInventoryItem(item.scene_object_id, motion);
         return `
           <button
-            class="scene-runtime-inventory-slot ${item ? 'has-item' : ''}"
+            class="scene-runtime-inventory-slot ${item ? 'has-item' : ''} ${animated ? 'is-entering' : ''}"
             type="button"
             ${item ? `data-action="select-inventory-item" data-object-id="${item.scene_object_id}"` : 'disabled'}
-            style="left:${slot.x}px; top:${slot.y}px; width:${slot.size}px; height:${slot.size}px; transform:${slot.origin === 'center' ? 'translate(-50%, -50%)' : 'none'};"
+            style="left:${slot.x}px; top:${slot.y}px; width:${slot.size}px; height:${slot.size}px; transform:${slot.origin === 'center' ? 'translate(-50%, -50%)' : 'none'}; --slot-delay:${index * 34}ms;"
           >
             ${item ? `<img src="${escapeHtml(item.thumbnailUrl)}" alt="${escapeHtml(item.name)}" />` : ''}
           </button>
@@ -2313,11 +2495,28 @@ function renderInventoryOverlay({slots, items}) {
   `;
 }
 
-function renderHeldInventoryItem(item) {
+function renderHeldInventoryItem(item, motion = null) {
   return `
-    <div class="scene-runtime-held-item__inner">
+    <div class="scene-runtime-held-item__inner ${motion === 'attach' ? 'is-attach' : ''}">
       <img src="${escapeHtml(item.thumbnailUrl)}" alt="${escapeHtml(item.name)}" />
     </div>
+  `;
+}
+
+function renderHeldInventoryGhost(item) {
+  return `
+    <div class="scene-runtime-held-item__inner is-ghost">
+      <img src="${escapeHtml(item.thumbnailUrl)}" alt="${escapeHtml(item.name)}" />
+    </div>
+  `;
+}
+
+function renderInteractionPulse(pulse) {
+  return `
+    <div
+      class="scene-runtime-feedback-pulse is-${escapeHtml(pulse.kind)}"
+      style="left:${Number(pulse.x || 0).toFixed(2)}px; top:${Number(pulse.y || 0).toFixed(2)}px;"
+    ></div>
   `;
 }
 
@@ -2382,6 +2581,31 @@ function pointInsideRect(x, y, rect) {
   );
 }
 
+function resolveStagePulsePosition(layer, objectId, metadata = {}) {
+  const preview = this.getLayerPreviewElement(layer);
+  const stageRect = preview?.getStageClientRect?.();
+  const objectRect = preview?.getObjectClientBounds?.(objectId);
+  if (stageRect && Number.isFinite(Number(metadata.clientX)) && Number.isFinite(Number(metadata.clientY))) {
+    return {
+      x: Number(metadata.clientX) - stageRect.left,
+      y: Number(metadata.clientY) - stageRect.top
+    };
+  }
+  if (stageRect && objectRect) {
+    return {
+      x: (objectRect.left - stageRect.left) + (objectRect.width / 2),
+      y: (objectRect.top - stageRect.top) + (objectRect.height / 2)
+    };
+  }
+  if (stageRect) {
+    return {
+      x: stageRect.width / 2,
+      y: stageRect.height / 2
+    };
+  }
+  return null;
+}
+
 function normalizeEventKeyCode(event) {
   const code = String(event.code || '').trim();
   return code || '';
@@ -2393,10 +2617,11 @@ function isEditableTarget(target) {
   return Boolean(target.closest('input, textarea, select, [contenteditable="true"]'));
 }
 
-function buildInventoryInspectorItems(items, heldInventoryObjectId) {
+function buildInventoryInspectorItems(items, heldInventoryObjectId, motion = null) {
   return (items ?? []).map(item => ({
     ...item,
-    isHeld: Number(item.scene_object_id) === Number(heldInventoryObjectId)
+    isHeld: Number(item.scene_object_id) === Number(heldInventoryObjectId),
+    isJuiceBump: shouldAnimateInventoryItem(item.scene_object_id, motion)
   }));
 }
 
@@ -2460,7 +2685,17 @@ function computeVerbMenuPosition(stageRect, objectRect, count) {
       y: (objectRect.top - stageRect.top) + (objectRect.height / 2)
     },
     count
-  );
+    );
+}
+
+function shouldAnimateInventoryItem(sceneObjectId, motion) {
+  if (!motion?.objectIds?.length) return false;
+  return motion.objectIds.some(id => Number(id) === Number(sceneObjectId));
+}
+
+function verbTiltDirection(id, index) {
+  const numericId = Number(id);
+  return ((numericId || index) % 2 === 0) ? '1deg' : '-1deg';
 }
 
 function computeVerbMenuLayout(stageWidth, stageHeight, anchorPoint, count) {
