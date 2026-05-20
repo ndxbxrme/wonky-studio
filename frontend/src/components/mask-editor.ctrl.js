@@ -95,7 +95,7 @@ const MaskEditorCtrl = app => async params => {
       if (event.defaultPrevented || event.altKey) return;
       const key = event.key;
       const lowerKey = key.toLowerCase();
-      const editable = isEditableTarget(event.target);
+      const editable = isEditableTarget(event.target) || isEditableWithinShadowRoot(this.editor);
 
       if ((event.ctrlKey || event.metaKey) && lowerKey === 's') {
         event.preventDefault();
@@ -285,6 +285,11 @@ function isEditableTarget(target) {
   if (!(target instanceof HTMLElement)) return false;
   if (target.isContentEditable) return true;
   return Boolean(target.closest('input, textarea, select, [contenteditable="true"]'));
+}
+
+function isEditableWithinShadowRoot(host) {
+  const active = host?.shadowRoot?.activeElement;
+  return isEditableTarget(active);
 }
 
 export {MaskEditorCtrl};

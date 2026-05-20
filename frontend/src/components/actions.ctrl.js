@@ -73,6 +73,7 @@ const ActionsCtrl = app => async params => {
     previousSceneId: null,
     nextSceneId: null,
     animationOptions: [],
+    animationNameOptions: [],
     actionTypes: ACTION_TYPES,
     branchOptions: [],
     actionRows: [],
@@ -165,6 +166,7 @@ const ActionsCtrl = app => async params => {
             return animations.map(animation => ({
               objectId: object.id,
               animationId: animation.id,
+              name: animation.name,
               label: `${object.name} / ${animation.name}`
             }));
           } catch {
@@ -173,6 +175,10 @@ const ActionsCtrl = app => async params => {
         })
       );
       this.animationOptions = animationGroups.flat();
+      this.animationNameOptions = [...new Set(this.animationOptions.map(animation => animation.name || ''))]
+        .filter(Boolean)
+        .sort((left, right) => left.localeCompare(right))
+        .map(name => ({value: name, label: name}));
     },
 
     async loadReferencedScriptLineSummaries() {
@@ -356,8 +362,9 @@ const ActionsCtrl = app => async params => {
         this.refreshView();
         return;
       }
-      if (event.target.matches('[name="action_type"], [name="target_scope"]')) {
+      if (event.target.matches('[name="action_type"], [name="target_scope"], [name="target_object_mode"], [name="scene_object_mode"], [name="trigger_type"], [name="trigger_match_mode"]')) {
         this.updateActionFormVisibility(event.target.closest('[data-action-step-form]'));
+        this.updateInteractionFormVisibility(event.target.closest('[data-interaction-create-form], [data-interaction-edit-form]'));
         return;
       }
       if (event.target.matches('[name="property"]')) {
@@ -552,13 +559,40 @@ const ActionsCtrl = app => async params => {
         createForm.elements.trigger_type.value = 'object_click';
         createForm.elements.trigger_object_id.value = String(this.preselectedObjectId);
       }
+      this.root?.querySelectorAll('[data-interaction-create-form], [data-interaction-edit-form]').forEach(form => {
+        this.updateInteractionFormVisibility(form);
+      });
       const editForm = this.root?.querySelector('[data-interaction-edit-form]');
       if (editForm && this.selectedInteraction) {
         setInteractionFormValues(editForm, this.selectedInteraction);
+        this.updateInteractionFormVisibility(editForm);
       }
       this.root?.querySelectorAll('[data-action-step-form]').forEach(form => {
         this.updateActionFormVisibility(form);
       });
+    },
+
+    updateInteractionFormVisibility(form) {
+      if (!form) return;
+      const triggerType = form.elements.trigger_type?.value ?? 'scene_enter';
+      const triggerMatchMode = normalizeTriggerMatchMode(triggerType, form.elements.trigger_match_mode?.value ?? 'exact');
+      if (form.elements.trigger_match_mode) form.elements.trigger_match_mode.value = triggerMatchMode;
+      form.querySelectorAll('[data-trigger-visible-for]').forEach(field => {
+        const visibleFor = (field.dataset.triggerVisibleFor ?? '').split(/\s+/);
+        field.hidden = !visibleFor.includes(triggerType);
+      });
+      const objectField = form.querySelector('[data-trigger-field="object"]');
+      if (objectField) {
+        objectField.hidden = !triggerNeedsObject(triggerType, triggerMatchMode);
+      }
+      const inventoryField = form.querySelector('[data-trigger-field="inventory"]');
+      if (inventoryField) {
+        inventoryField.hidden = !(triggerType === 'inventory_use' && triggerMatchMode === 'exact');
+      }
+      const matchModeField = form.querySelector('[data-trigger-field="match-mode"]');
+      if (matchModeField) {
+        matchModeField.hidden = !triggerSupportsMatchMode(triggerType);
+      }
     },
 
     updateActionFormVisibility(form) {
@@ -566,6 +600,8 @@ const ActionsCtrl = app => async params => {
       const selectedType = form.elements.action_type?.value ?? 'play_animation';
       const selectedProperty = form.elements.property?.value ?? 'visible';
       const targetScope = form.elements.target_scope?.value ?? 'object';
+      const targetObjectMode = form.elements.target_object_mode?.value ?? 'static';
+      const sceneObjectMode = form.elements.scene_object_mode?.value ?? 'static';
       form.querySelector('[data-action-type-help]')?.replaceChildren(
         document.createTextNode(actionTypeHelp(selectedType))
       );
@@ -574,12 +610,50 @@ const ActionsCtrl = app => async params => {
         field.hidden = !visibleFor.includes(selectedType);
       });
       const targetObjectField = form.querySelector('[data-form-field="target-object"]');
-      if (targetObjectField && selectedType === 'go_to_frame' && targetScope === 'background') {
-        targetObjectField.hidden = true;
+      if (targetObjectField) {
+        targetObjectField.hidden = !(
+          (
+            selectedType === 'go_to_frame'
+            && targetScope !== 'background'
+            && targetObjectMode === 'static'
+          )
+          || (
+            selectedType === 'set_object_property'
+            && targetObjectMode === 'static'
+          )
+        );
       }
       const frameIndexField = form.querySelector('[data-form-field="frame-index"]');
-      if (frameIndexField && selectedType === 'go_to_frame' && targetScope === 'pickup_background') {
-        frameIndexField.hidden = true;
+      if (frameIndexField) {
+        frameIndexField.hidden = !(
+          selectedType === 'go_to_frame'
+          && targetScope !== 'pickup_background'
+        );
+      }
+      const animationField = form.querySelector('[data-form-field="animation"]');
+      if (animationField) {
+        animationField.hidden = !(selectedType === 'play_animation' && targetObjectMode === 'static');
+      }
+      const animationNameField = form.querySelector('[data-form-field="animation-name"]');
+      if (animationNameField) {
+        animationNameField.hidden = !(selectedType === 'play_animation' && targetObjectMode !== 'static');
+      }
+      const targetObjectModeField = form.querySelector('[data-form-field="target-object-mode"]');
+      if (targetObjectModeField) {
+        targetObjectModeField.hidden = !(
+          selectedType === 'play_animation'
+          || selectedType === 'set_object_property'
+          || (selectedType === 'go_to_frame' && targetScope !== 'background')
+        );
+      }
+      const sceneObjectModeField = form.querySelector('[data-form-field="scene-object-mode"]');
+      if (sceneObjectModeField) sceneObjectModeField.hidden = !(selectedType === 'add_inventory_item' || selectedType === 'remove_inventory_item');
+      const inventoryObjectField = form.querySelector('[data-form-field="inventory-object"]');
+      if (inventoryObjectField) {
+        inventoryObjectField.hidden = !(
+          (selectedType === 'add_inventory_item' || selectedType === 'remove_inventory_item')
+          && sceneObjectMode === 'static'
+        );
       }
       form.querySelectorAll('[data-property-visible-for]').forEach(field => {
         const visibleFor = (field.dataset.propertyVisibleFor ?? '').split(/\s+/);
@@ -654,12 +728,13 @@ function interactionPayload(interaction) {
 
 function readTrigger(formData) {
   const type = String(formData.get('trigger_type') ?? 'scene_enter');
-  const trigger = {type};
-  if (['object_mouseover', 'object_mouseout', 'object_click', 'object_use', 'object_verb', 'inventory_use'].includes(type)) {
+  const matchMode = normalizeTriggerMatchMode(type, String(formData.get('trigger_match_mode') ?? 'exact'));
+  const trigger = {type, match_mode: matchMode};
+  if (triggerNeedsObject(type, matchMode)) {
     trigger.object_id = Number(formData.get('trigger_object_id'));
   }
   if (type === 'object_verb') trigger.verb_id = Number(formData.get('trigger_verb_id'));
-  if (type === 'inventory_use') trigger.inventory_object_id = Number(formData.get('trigger_inventory_object_id'));
+  if (type === 'inventory_use' && matchMode === 'exact') trigger.inventory_object_id = Number(formData.get('trigger_inventory_object_id'));
   if (type === 'variable_changed') trigger.variable_id = Number(formData.get('trigger_variable_id'));
   if (type === 'key_press') trigger.key_code = String(formData.get('trigger_key_code') ?? '');
   return trigger;
@@ -670,19 +745,27 @@ function readActionStepForm(form) {
   const type = String(formData.get('action_type') ?? '');
   const wait = String(formData.get('wait') ?? 'wait');
   if (type === 'play_animation') {
-    const [targetObjectId, animationId] = String(formData.get('animation_ref') ?? ':').split(':');
-    return {
+    const targetObjectMode = String(formData.get('target_object_mode') ?? 'static');
+    const step = {
       type,
-      target_object_id: Number(targetObjectId),
-      animation_id: Number(animationId),
+      target_object_mode: targetObjectMode,
       mode: String(formData.get('animation_mode') ?? 'queued'),
       wait
     };
+    if (targetObjectMode === 'static') {
+      const [targetObjectId, animationId] = String(formData.get('animation_ref') ?? ':').split(':');
+      step.target_object_id = Number(targetObjectId);
+      step.animation_id = Number(animationId);
+    } else {
+      step.animation_name = String(formData.get('animation_name') ?? '').trim();
+    }
+    return step;
   }
   if (type === 'set_object_property') {
     const property = String(formData.get('property') ?? 'visible');
     return {
       type,
+      target_object_mode: String(formData.get('target_object_mode') ?? 'static'),
       target_object_id: Number(formData.get('target_object_id')),
       property,
       value: property === 'label'
@@ -696,6 +779,7 @@ function readActionStepForm(form) {
     const step = {
       type,
       target_scope: targetScope,
+      target_object_mode: String(formData.get('target_object_mode') ?? 'static'),
       wait
     };
     if (targetScope === 'object') {
@@ -750,6 +834,7 @@ function readActionStepForm(form) {
   if (type === 'add_inventory_item' || type === 'remove_inventory_item') {
     return {
       type,
+      scene_object_mode: String(formData.get('scene_object_mode') ?? 'static'),
       scene_object_id: Number(formData.get('inventory_scene_object_id')),
       wait
     };
@@ -826,6 +911,9 @@ function setInteractionFormValues(form, interaction) {
   form.elements.name.value = interaction.name;
   form.elements.enabled.checked = Boolean(interaction.enabled);
   form.elements.trigger_type.value = interaction.trigger?.type ?? 'scene_enter';
+  if (form.elements.trigger_match_mode) {
+    form.elements.trigger_match_mode.value = interaction.trigger?.match_mode ?? 'exact';
+  }
   if (form.elements.trigger_object_id) {
     form.elements.trigger_object_id.value = interaction.trigger?.object_id ?? '';
   }
@@ -929,6 +1017,28 @@ function interactionMatchesFilters(interaction, filters) {
   return objectId === String(filters.objectId);
 }
 
+function triggerSupportsMatchMode(triggerType) {
+  return ['object_click', 'object_verb', 'inventory_use'].includes(String(triggerType));
+}
+
+function normalizeTriggerMatchMode(triggerType, matchMode) {
+  if (!triggerSupportsMatchMode(triggerType)) return 'exact';
+  if (['exact', 'object_default', 'scene_default'].includes(String(matchMode))) return String(matchMode);
+  return 'exact';
+}
+
+function triggerNeedsObject(triggerType, matchMode) {
+  const normalizedType = String(triggerType);
+  const normalizedMatchMode = normalizeTriggerMatchMode(normalizedType, matchMode);
+  if (!['object_mouseover', 'object_mouseout', 'object_click', 'object_use', 'object_verb', 'inventory_use'].includes(normalizedType)) {
+    return false;
+  }
+  if (['object_click', 'object_verb', 'inventory_use'].includes(normalizedType) && normalizedMatchMode === 'scene_default') {
+    return false;
+  }
+  return true;
+}
+
 function flattenActionRows(tree, context, depth = 0, branch = '') {
   return tree.flatMap((step, index) => {
     const row = {
@@ -957,18 +1067,27 @@ function countSteps(tree) {
 
 function triggerLabel(interaction, scene, variables, verbs, inventoryObjects) {
   const trigger = interaction.trigger ?? {};
+  const matchMode = String(trigger.match_mode ?? 'exact');
   if (['object_mouseover', 'object_mouseout', 'object_click', 'object_use'].includes(trigger.type)) {
     const object = scene?.objects?.find(item => item.id === trigger.object_id);
-    return `${trigger.type.replace(/_/g, ' ')} · ${object?.name ?? 'object'}`;
+    return formatTriggerLabelPrefix(trigger.type, matchMode, object?.name ?? 'object');
   }
   if (trigger.type === 'object_verb') {
     const object = scene?.objects?.find(item => item.id === trigger.object_id);
     const verb = verbs.find(item => item.id === trigger.verb_id);
+    if (matchMode === 'scene_default') {
+      return `scene default verb · ${verb?.label ?? verb?.key ?? 'verb'}`;
+    }
+    if (matchMode === 'object_default') {
+      return `default verb · ${object?.name ?? 'object'} · ${verb?.label ?? verb?.key ?? 'verb'}`;
+    }
     return `on verb · ${object?.name ?? 'object'} · ${verb?.label ?? verb?.key ?? 'verb'}`;
   }
   if (trigger.type === 'inventory_use') {
     const object = scene?.objects?.find(item => item.id === trigger.object_id);
     const inventoryObject = inventoryObjects.find(item => item.id === trigger.inventory_object_id);
+    if (matchMode === 'scene_default') return 'scene default inventory use';
+    if (matchMode === 'object_default') return `default inventory use · ${object?.name ?? 'object'}`;
     return `inventory use · ${inventoryObject?.name ?? 'item'} -> ${object?.name ?? 'object'}`;
   }
   if (trigger.type === 'variable_changed') {
@@ -993,16 +1112,16 @@ function actionMeta(step, context) {
       return `background · frame ${step.frame_index}`;
     }
     if (step.target_scope === 'pickup_background') {
-      return `${findObjectName(context, step.target_object_id)} · pickup frame`;
+      return `${describeObjectTarget(step, context)} · pickup frame`;
     }
-    return `${findObjectName(context, step.target_object_id)} · frame ${step.frame_index}`;
+    return `${describeObjectTarget(step, context)} · frame ${step.frame_index}`;
   }
-  if (step.type === 'set_object_property') return `${step.property} = ${step.value}`;
+  if (step.type === 'set_object_property') return `${describeObjectTarget(step, context)} · ${step.property} = ${step.value}`;
   if (step.type === 'set_variable') return `${findVariableName(context, step.variable_id)} = ${step.value}`;
   if (step.type === 'increment_variable') return `${findVariableName(context, step.variable_id)} += ${step.amount}`;
   if (step.type === 'toggle_variable') return `toggle ${findVariableName(context, step.variable_id)}`;
-  if (step.type === 'add_inventory_item') return `add ${findInventoryObjectName(context, step.scene_object_id)}`;
-  if (step.type === 'remove_inventory_item') return `remove ${findInventoryObjectName(context, step.scene_object_id)}`;
+  if (step.type === 'add_inventory_item') return `add ${describeInventoryTarget(step, context)}`;
+  if (step.type === 'remove_inventory_item') return `remove ${describeInventoryTarget(step, context)}`;
   if (step.type === 'clear_held_inventory_item') return 'clear held inventory item';
   if (step.type === 'if_variable') return `if ${findVariableName(context, step.variable_id)} ${step.operator} ${step.value}`;
   if (step.type === 'fade_out' || step.type === 'fade_in') return `${step.color} · ${step.duration_seconds}s${step.affect_audio ? ' · audio' : ''}`;
@@ -1012,7 +1131,11 @@ function actionMeta(step, context) {
   if (step.type === 'open_overlay_scene') return `open overlay ${findSceneName(context, step.scene_id)}`;
   if (step.type === 'close_overlay_scene') return 'close overlay';
   if (step.type === 'change_overlay_scene') return `change overlay ${findSceneName(context, step.scene_id)}`;
-  if (step.type === 'play_animation') return `${findAnimationName(context, step.animation_id)}${step.mode ? ` · ${step.mode}` : ''}`;
+  if (step.type === 'play_animation') {
+    return step.target_object_mode === 'trigger_object'
+      ? `${step.animation_name} on triggered object${step.mode ? ` · ${step.mode}` : ''}`
+      : `${findAnimationName(context, step.animation_id)}${step.mode ? ` · ${step.mode}` : ''}`;
+  }
   if (step.type === 'delay') return `${step.duration_seconds}s`;
   return step.wait ? `${step.wait}` : '';
 }
@@ -1100,6 +1223,25 @@ function findSceneName(context, sceneId) {
 
 function findAnimationName(context, animationId) {
   return context?.animationOptions?.find(animation => Number(animation.animationId) === Number(animationId))?.label ?? `animation ${animationId}`;
+}
+
+function formatTriggerLabelPrefix(triggerType, matchMode, objectName) {
+  const base = String(triggerType).replace(/_/g, ' ');
+  if (matchMode === 'scene_default') return `scene default ${base}`;
+  if (matchMode === 'object_default') return `default ${base} · ${objectName}`;
+  return `${base} · ${objectName}`;
+}
+
+function describeObjectTarget(step, context) {
+  if (step.target_object_mode === 'trigger_object') return 'triggered object';
+  if (step.target_object_mode === 'trigger_inventory_object') return 'used inventory item';
+  return findObjectName(context, step.target_object_id);
+}
+
+function describeInventoryTarget(step, context) {
+  if (step.scene_object_mode === 'trigger_object') return 'triggered object';
+  if (step.scene_object_mode === 'trigger_inventory_object') return 'used inventory item';
+  return findInventoryObjectName(context, step.scene_object_id);
 }
 
 export {ActionsCtrl};

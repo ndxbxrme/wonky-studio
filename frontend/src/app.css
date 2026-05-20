@@ -1735,6 +1735,8 @@ textarea {
   align-items: end;
 }
 
+.stack-form [hidden],
+.interaction-editor__fields [hidden],
 .action-step-form [hidden] {
   display: none;
 }
@@ -2075,7 +2077,6 @@ textarea {
   cursor: pointer;
   pointer-events: auto;
   font: 600 0.98rem/1.1 "Georgia", serif;
-  text-transform: lowercase;
   display: flex;
   align-items: center;
   justify-content: center;

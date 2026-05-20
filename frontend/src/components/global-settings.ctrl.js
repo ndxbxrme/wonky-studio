@@ -62,6 +62,7 @@ const GlobalSettingsCtrl = app => async () => {
     status: '',
     isEditingVerb: false,
     verbSubmitLabel: 'Add verb',
+    selectedVerbKey: '',
     hasVerbs: false,
     hasOverlayBindings: false,
     hasVerbTagBackground: false,
@@ -124,6 +125,7 @@ const GlobalSettingsCtrl = app => async () => {
       }
       this.isEditingVerb = Boolean(this.selectedVerbId);
       this.verbSubmitLabel = this.isEditingVerb ? 'Update verb' : 'Add verb';
+      this.selectedVerbKey = this.verbs.find(verb => Number(verb.id) === Number(this.selectedVerbId))?.key ?? '';
       this.hasVerbTagBackground = Boolean(this.globalSettings?.verb_tag_background_relative_path);
       this.hasInventoryBackground = Boolean(this.globalSettings?.inventory_background_relative_path);
       this.verbTagBackgroundUrl = this.hasVerbTagBackground
@@ -156,6 +158,9 @@ const GlobalSettingsCtrl = app => async () => {
         form.elements.start_scene_id.value = this.globalSettings.start_scene_id ? String(this.globalSettings.start_scene_id) : '';
         form.elements.inventory_key_code.value = this.globalSettings.inventory_key_code ?? 'KeyI';
         form.elements.verb_menu_timeout_seconds.value = String(this.globalSettings.verb_menu_timeout_seconds ?? 4);
+        form.elements.verb_menu_show_disabled.value = this.globalSettings.verb_menu_show_disabled === false
+          ? 'hide_disabled'
+          : 'show_disabled';
       }
       const inventoryForm = this.root?.querySelector('[data-inventory-layout-form]');
       if (inventoryForm && this.globalSettings) {
@@ -240,6 +245,11 @@ const GlobalSettingsCtrl = app => async () => {
       const deleteButton = event.target.closest('[data-action="delete-overlay-binding"]');
       if (deleteButton) {
         await this.deleteOverlayBinding(deleteButton.dataset.bindingId);
+        return;
+      }
+      const deleteVerbButton = event.target.closest('[data-action="delete-verb"]');
+      if (deleteVerbButton) {
+        await this.deleteVerb(deleteVerbButton);
       }
     },
 
@@ -335,7 +345,8 @@ const GlobalSettingsCtrl = app => async () => {
             overlay_affect_audio: formData.get('overlay_affect_audio') === 'on',
             start_scene_id: formData.get('start_scene_id') ? Number(formData.get('start_scene_id')) : null,
             inventory_key_code: String(formData.get('inventory_key_code') ?? 'KeyI'),
-            verb_menu_timeout_seconds: Number(formData.get('verb_menu_timeout_seconds') || 4)
+            verb_menu_timeout_seconds: Number(formData.get('verb_menu_timeout_seconds') || 4),
+            verb_menu_show_disabled: String(formData.get('verb_menu_show_disabled') ?? 'show_disabled') !== 'hide_disabled'
           })
         });
         await this.refreshData();
@@ -406,6 +417,23 @@ const GlobalSettingsCtrl = app => async () => {
         this.setStatus(verbId ? 'Verb saved.' : 'Verb created.');
       } catch {
         this.setStatus(verbId ? 'Could not save verb.' : 'Could not create verb.');
+      }
+    },
+
+    async deleteVerb(button) {
+      const verbId = Number(button.dataset.verbId);
+      const verbKey = String(button.dataset.verbKey ?? '').trim();
+      if (!verbId) return;
+      if (!window.confirm(`Remove verb "${verbKey}"? Interactions using it will stop matching until updated.`)) return;
+      this.setStatus('Removing verb...');
+      try {
+        await apiFetch(`/api/verbs/${verbId}`, {method: 'DELETE'});
+        this.selectedVerbId = null;
+        await this.refreshData();
+        this.refreshView();
+        this.setStatus('Verb removed.');
+      } catch {
+        this.setStatus('Could not remove verb.');
       }
     },
 

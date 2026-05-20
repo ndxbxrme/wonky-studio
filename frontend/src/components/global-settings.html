@@ -61,6 +61,13 @@
             Verb menu timeout
             <input name="verb_menu_timeout_seconds" type="number" min="0.25" max="30" step="0.25" />
           </label>
+          <label>
+            Verb display mode
+            <select name="verb_menu_show_disabled">
+              <option value="show_disabled">Show unavailable verbs disabled</option>
+              <option value="hide_disabled">Hide unavailable verbs</option>
+            </select>
+          </label>
           <label class="checkbox-label">
             <input name="overlay_affect_audio" type="checkbox" />
             Duck audio while overlay is open
@@ -164,6 +171,7 @@
           <div class="form-actions">
             <button class="button secondary compact" type="submit">{{verbSubmitLabel}}</button>
             {{#if isEditingVerb}}
+              <button class="button danger compact" type="button" data-action="delete-verb" data-verb-id="{{selectedVerbId}}" data-verb-key="{{selectedVerbKey}}">Remove verb</button>
               <button class="button secondary compact form-actions__cancel" type="button" data-action="cancel-verb-edit">X</button>
             {{/if}}
           </div>

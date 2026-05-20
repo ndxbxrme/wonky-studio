@@ -1323,28 +1323,32 @@ const PreviewCtrl = app => async params => {
     async triggerObjectClick(layer, objectId, metadata = {}) {
       const state = this.getLayerRuntimeState(layer)?.objects?.[objectId];
       if (!state?.enabled || !state?.visible) return false;
-      return this.executeMatchingInteractionsForLayer(
-        layer,
-        interaction => (
-          interaction.trigger?.type === 'object_click'
-          && Number(interaction.trigger?.object_id) === Number(objectId)
-        ),
-        {reason: 'object_click', objectId: Number(objectId), ...metadata}
+      const interactions = resolveTriggeredInteractions(
+        this.getLayerPreviewData(layer)?.interactions ?? [],
+        buildObjectClickTriggerTiers(Number(objectId))
       );
+      if (!interactions.length) return false;
+      const chainState = {remaining: MAX_CHAINED_INTERACTIONS};
+      await this.executeInteractions(layer, interactions, {reason: 'object_click', objectId: Number(objectId), ...metadata}, chainState);
+      return true;
     },
 
     async triggerInventoryUse(layer, objectId, inventoryObjectId, metadata = {}) {
       const state = this.getLayerRuntimeState(layer)?.objects?.[objectId];
       if (!state?.enabled || !state?.visible) return false;
-      return this.executeMatchingInteractionsForLayer(
-        layer,
-        interaction => (
-          interaction.trigger?.type === 'inventory_use'
-          && Number(interaction.trigger?.object_id) === Number(objectId)
-          && Number(interaction.trigger?.inventory_object_id) === Number(inventoryObjectId)
-        ),
-        {reason: 'inventory_use', objectId: Number(objectId), inventoryObjectId: Number(inventoryObjectId), ...metadata}
+      const interactions = resolveTriggeredInteractions(
+        this.getLayerPreviewData(layer)?.interactions ?? [],
+        buildInventoryUseTriggerTiers(Number(objectId), Number(inventoryObjectId))
       );
+      if (!interactions.length) return false;
+      const chainState = {remaining: MAX_CHAINED_INTERACTIONS};
+      await this.executeInteractions(
+        layer,
+        interactions,
+        {reason: 'inventory_use', objectId: Number(objectId), inventoryObjectId: Number(inventoryObjectId), ...metadata},
+        chainState
+      );
+      return true;
     },
 
     async onPreviewObjectMouseover(event, layer) {
@@ -1465,15 +1469,20 @@ const PreviewCtrl = app => async params => {
 
     async selectVerb(layer, objectId, verbId, event = null) {
       this.closeVerbMenu();
-      const matched = await this.executeMatchingInteractionsForLayer(
-        layer,
-        interaction => (
-          interaction.trigger?.type === 'object_verb'
-          && Number(interaction.trigger?.object_id) === Number(objectId)
-          && Number(interaction.trigger?.verb_id) === Number(verbId)
-        ),
-        {reason: 'object_verb', objectId: Number(objectId), verbId: Number(verbId)}
+      const interactions = resolveTriggeredInteractions(
+        this.getLayerPreviewData(layer)?.interactions ?? [],
+        buildObjectVerbTriggerTiers(Number(objectId), Number(verbId))
       );
+      const matched = Boolean(interactions.length);
+      if (matched) {
+        const chainState = {remaining: MAX_CHAINED_INTERACTIONS};
+        await this.executeInteractions(
+          layer,
+          interactions,
+          {reason: 'object_verb', objectId: Number(objectId), verbId: Number(verbId)},
+          chainState
+        );
+      }
       if (matched) {
         this.showInteractionPulse('accept', layer, objectId, event ? {clientX: event.clientX, clientY: event.clientY} : {});
       }
@@ -1577,14 +1586,18 @@ const PreviewCtrl = app => async params => {
       const preview = this.getLayerPreviewElement(layer);
 
       if (step.type === 'play_animation') {
-        const runPromise = preview?.playAnimation(step.target_object_id, step.animation_id, {
+        const resolvedObjectId = resolveStepTargetObjectId(step, metadata);
+        if (!resolvedObjectId) return;
+        const resolvedAnimationId = resolveStepAnimationId(previewData, step, resolvedObjectId);
+        if (!resolvedAnimationId) return;
+        const runPromise = preview?.playAnimation(resolvedObjectId, resolvedAnimationId, {
           mode: step.mode ?? 'queued'
         });
         if (step.wait !== 'continue') await runPromise;
         else void runPromise;
-        const render = getAnimationLastRender(previewData, step.target_object_id, step.animation_id);
-        if (render && runtimeState?.objects?.[step.target_object_id]) {
-          runtimeState.objects[step.target_object_id].render = render;
+        const render = getAnimationLastRender(previewData, resolvedObjectId, resolvedAnimationId);
+        if (render && runtimeState?.objects?.[resolvedObjectId]) {
+          runtimeState.objects[resolvedObjectId].render = render;
           this.pushRuntimeToPreview(layer);
         }
         return;
@@ -1597,33 +1610,39 @@ const PreviewCtrl = app => async params => {
           return;
         }
         if ((step.target_scope ?? 'object') === 'pickup_background') {
+          const resolvedObjectId = resolveStepTargetObjectId(step, metadata);
+          if (!resolvedObjectId) return;
           const sceneObject = previewData?.objects?.find(
-            object => Number(object.id) === Number(step.target_object_id)
+            object => Number(object.id) === Number(resolvedObjectId)
           );
           const pickupUploadedFileId = Number(sceneObject?.pickup_uploaded_file_id ?? 0);
           const render = getObjectRenderForUploadedFileId(
             previewData,
-            step.target_object_id,
+            resolvedObjectId,
             pickupUploadedFileId
           );
-          if (runtimeState?.objects?.[step.target_object_id]) {
-            runtimeState.objects[step.target_object_id].render = render;
+          if (runtimeState?.objects?.[resolvedObjectId]) {
+            runtimeState.objects[resolvedObjectId].render = render;
           }
-          preview?.setObjectRender?.(step.target_object_id, render);
+          preview?.setObjectRender?.(resolvedObjectId, render);
           this.refreshInspectorState();
           return;
         }
-        const render = getObjectRenderForFrame(previewData, step.target_object_id, step.frame_index);
-        if (runtimeState?.objects?.[step.target_object_id]) {
-          runtimeState.objects[step.target_object_id].render = render;
+        const resolvedObjectId = resolveStepTargetObjectId(step, metadata);
+        if (!resolvedObjectId) return;
+        const render = getObjectRenderForFrame(previewData, resolvedObjectId, step.frame_index);
+        if (runtimeState?.objects?.[resolvedObjectId]) {
+          runtimeState.objects[resolvedObjectId].render = render;
         }
-        preview?.setObjectRender?.(step.target_object_id, render);
+        preview?.setObjectRender?.(resolvedObjectId, render);
         this.refreshInspectorState();
         return;
       }
 
       if (step.type === 'set_object_property') {
-        const objectState = runtimeState?.objects?.[step.target_object_id];
+        const resolvedObjectId = resolveStepTargetObjectId(step, metadata);
+        if (!resolvedObjectId) return;
+        const objectState = runtimeState?.objects?.[resolvedObjectId];
         if (!objectState) return;
         if (step.property === 'visible') objectState.visible = Boolean(step.value);
         if (step.property === 'enabled') objectState.enabled = Boolean(step.value);
@@ -1661,7 +1680,9 @@ const PreviewCtrl = app => async params => {
       }
 
       if (step.type === 'add_inventory_item') {
-        const inventoryItem = buildInventoryItemFromSceneObject(this.previewData, this.overlayPreviewData, step.scene_object_id);
+        const sceneObjectId = resolveStepSceneObjectId(step, metadata);
+        if (!sceneObjectId) return;
+        const inventoryItem = buildInventoryItemFromSceneObject(this.previewData, this.overlayPreviewData, sceneObjectId);
         if (!inventoryItem || !this.runtimeState) return;
         const exists = (this.runtimeState.inventory ?? []).some(
           item => Number(item.scene_object_id) === Number(inventoryItem.scene_object_id)
@@ -1676,21 +1697,23 @@ const PreviewCtrl = app => async params => {
 
       if (step.type === 'remove_inventory_item') {
         if (!this.runtimeState) return;
+        const sceneObjectId = resolveStepSceneObjectId(step, metadata);
+        if (!sceneObjectId) return;
         const removedItem = (this.runtimeState.inventory ?? []).find(
-          item => Number(item.scene_object_id) === Number(step.scene_object_id)
+          item => Number(item.scene_object_id) === Number(sceneObjectId)
         );
         if (
           removedItem
-          && Number(this.runtimeState.heldInventoryObjectId) === Number(step.scene_object_id)
+          && Number(this.runtimeState.heldInventoryObjectId) === Number(sceneObjectId)
           && this.pointerClientX != null
           && this.pointerClientY != null
         ) {
           this.setHeldInventoryGhost(removedItem, this.pointerClientX, this.pointerClientY);
         }
         this.runtimeState.inventory = (this.runtimeState.inventory ?? []).filter(
-          item => Number(item.scene_object_id) !== Number(step.scene_object_id)
+          item => Number(item.scene_object_id) !== Number(sceneObjectId)
         );
-        if (Number(this.runtimeState.heldInventoryObjectId) === Number(step.scene_object_id)) {
+        if (Number(this.runtimeState.heldInventoryObjectId) === Number(sceneObjectId)) {
           this.runtimeState.heldInventoryObjectId = null;
         }
         this.refreshInspectorState();
@@ -2051,18 +2074,18 @@ const PreviewCtrl = app => async params => {
     },
 
     objectHasDirectInteraction(layer, objectId) {
-      return (this.getLayerPreviewData(layer)?.interactions ?? []).some(interaction => (
-        Number(interaction.trigger?.object_id) === Number(objectId)
-        && ['object_click', 'object_verb'].includes(interaction.trigger?.type)
+      const interactions = this.getLayerPreviewData(layer)?.interactions ?? [];
+      if (resolveTriggeredInteractions(interactions, buildObjectClickTriggerTiers(Number(objectId))).length) return true;
+      return (this.getLayerPreviewData(layer)?.verbs ?? []).some(verb => (
+        resolveTriggeredInteractions(interactions, buildObjectVerbTriggerTiers(Number(objectId), Number(verb.id))).length > 0
       ));
     },
 
     objectHasInventoryUse(layer, objectId, inventoryObjectId) {
-      return (this.getLayerPreviewData(layer)?.interactions ?? []).some(interaction => (
-        interaction.trigger?.type === 'inventory_use'
-        && Number(interaction.trigger?.object_id) === Number(objectId)
-        && Number(interaction.trigger?.inventory_object_id) === Number(inventoryObjectId)
-      ));
+      return resolveTriggeredInteractions(
+        this.getLayerPreviewData(layer)?.interactions ?? [],
+        buildInventoryUseTriggerTiers(Number(objectId), Number(inventoryObjectId))
+      ).length > 0;
     },
 
     findAudioAsset(layer, audioAssetId, expectedKind) {
@@ -2220,6 +2243,17 @@ function getAnimationLastRender(previewData, objectId, animationId) {
   return object?.default_render ?? null;
 }
 
+function getAnimationIdForName(previewData, objectId, animationName) {
+  const object = (previewData?.objects ?? []).find(item => Number(item.id) === Number(objectId));
+  if (!object) return null;
+  const normalizedName = String(animationName ?? '').trim().toLowerCase();
+  if (!normalizedName) return null;
+  const animation = (object.animations ?? []).find(
+    item => String(item.name ?? '').trim().toLowerCase() === normalizedName
+  );
+  return animation ? Number(animation.id) : null;
+}
+
 function getObjectRenderForFrame(previewData, objectId, frameIndex) {
   const object = (previewData?.objects ?? []).find(item => Number(item.id) === Number(objectId));
   if (!object) return null;
@@ -2241,6 +2275,32 @@ function getObjectRenderForUploadedFileId(previewData, objectId, uploadedFileId)
     : -1;
   if (frameIndex < 0) return null;
   return getObjectRenderForFrame(previewData, objectId, frameIndex);
+}
+
+function resolveStepTargetObjectId(step, metadata = {}) {
+  const mode = String(step?.target_object_mode ?? 'static');
+  if (mode === 'trigger_object') return numericOrNull(metadata?.objectId);
+  if (mode === 'trigger_inventory_object') return numericOrNull(metadata?.inventoryObjectId);
+  return numericOrNull(step?.target_object_id);
+}
+
+function resolveStepSceneObjectId(step, metadata = {}) {
+  const mode = String(step?.scene_object_mode ?? 'static');
+  if (mode === 'trigger_object') return numericOrNull(metadata?.objectId);
+  if (mode === 'trigger_inventory_object') return numericOrNull(metadata?.inventoryObjectId);
+  return numericOrNull(step?.scene_object_id);
+}
+
+function resolveStepAnimationId(previewData, step, resolvedObjectId) {
+  if (String(step?.target_object_mode ?? 'static') === 'static') {
+    return numericOrNull(step?.animation_id);
+  }
+  return getAnimationIdForName(previewData, resolvedObjectId, step?.animation_name);
+}
+
+function numericOrNull(value) {
+  const numeric = Number(value);
+  return Number.isFinite(numeric) && numeric > 0 ? numeric : null;
 }
 
 function compareVariable(leftValue, operator, rightValue) {
@@ -2722,30 +2782,135 @@ function normalizeInventorySlots(slots) {
   }));
 }
 
+function getInteractionMatchMode(interaction) {
+  const mode = String(interaction?.trigger?.match_mode ?? 'exact');
+  return ['exact', 'object_default', 'scene_default'].includes(mode) ? mode : 'exact';
+}
+
+function resolveTriggeredInteractions(interactions, tiers) {
+  for (const matcher of tiers) {
+    const matches = (interactions ?? []).filter(matcher);
+    if (matches.length) return matches;
+  }
+  return [];
+}
+
+function buildObjectClickTriggerTiers(objectId) {
+  return [
+    interaction => (
+      interaction.trigger?.type === 'object_click'
+      && getInteractionMatchMode(interaction) === 'exact'
+      && Number(interaction.trigger?.object_id) === Number(objectId)
+    ),
+    interaction => (
+      interaction.trigger?.type === 'object_click'
+      && getInteractionMatchMode(interaction) === 'object_default'
+      && Number(interaction.trigger?.object_id) === Number(objectId)
+    ),
+    interaction => (
+      interaction.trigger?.type === 'object_click'
+      && getInteractionMatchMode(interaction) === 'scene_default'
+    )
+  ];
+}
+
+function buildObjectVerbTriggerTiers(objectId, verbId) {
+  return [
+    interaction => (
+      interaction.trigger?.type === 'object_verb'
+      && getInteractionMatchMode(interaction) === 'exact'
+      && Number(interaction.trigger?.object_id) === Number(objectId)
+      && Number(interaction.trigger?.verb_id) === Number(verbId)
+    ),
+    interaction => (
+      interaction.trigger?.type === 'object_verb'
+      && getInteractionMatchMode(interaction) === 'object_default'
+      && Number(interaction.trigger?.object_id) === Number(objectId)
+      && Number(interaction.trigger?.verb_id) === Number(verbId)
+    ),
+    interaction => (
+      interaction.trigger?.type === 'object_verb'
+      && getInteractionMatchMode(interaction) === 'scene_default'
+      && Number(interaction.trigger?.verb_id) === Number(verbId)
+    )
+  ];
+}
+
+function buildInventoryUseTriggerTiers(objectId, inventoryObjectId) {
+  return [
+    interaction => (
+      interaction.trigger?.type === 'inventory_use'
+      && getInteractionMatchMode(interaction) === 'exact'
+      && Number(interaction.trigger?.object_id) === Number(objectId)
+      && Number(interaction.trigger?.inventory_object_id) === Number(inventoryObjectId)
+    ),
+    interaction => (
+      interaction.trigger?.type === 'inventory_use'
+      && getInteractionMatchMode(interaction) === 'object_default'
+      && Number(interaction.trigger?.object_id) === Number(objectId)
+    ),
+    interaction => (
+      interaction.trigger?.type === 'inventory_use'
+      && getInteractionMatchMode(interaction) === 'scene_default'
+    )
+  ];
+}
+
 function buildVerbMenuItems(previewData, objectId, languageSettings) {
   const labels = previewData?.verbs ?? [];
+  const showDisabled = previewData?.global_settings?.verb_menu_show_disabled !== false;
   return labels
     .filter(verb => verb.enabled !== false)
     .map(verb => ({
       id: verb.id,
       key: verb.key,
       label: resolveVerbLabel(verb, languageSettings.primaryLanguage),
-      enabled: (previewData?.interactions ?? []).some(interaction => (
-        interaction.trigger?.type === 'object_verb'
-        && Number(interaction.trigger?.object_id) === Number(objectId)
-        && Number(interaction.trigger?.verb_id) === Number(verb.id)
-      )),
+      enabled: resolveTriggeredInteractions(
+        previewData?.interactions ?? [],
+        buildObjectVerbTriggerTiers(Number(objectId), Number(verb.id))
+      ).length > 0,
       backgroundUrl: previewData?.global_settings?.verb_tag_background_relative_path
         ? globalSettingsAssetUrl('verb_tag_background')
         : ''
-    }));
+    }))
+    .filter(verb => showDisabled || verb.enabled);
 }
 
 function resolveVerbLabel(verb, language) {
-  return verb.labels?.[language]
-    || verb.labels?.en
-    || Object.values(verb.labels ?? {})[0]
+  const labels = verb.labels ?? {};
+  const normalizedLanguage = String(language ?? '').trim().toLowerCase();
+  const languageCandidates = buildLanguageCandidates(normalizedLanguage);
+  for (const candidate of languageCandidates) {
+    if (labels[candidate]) return labels[candidate];
+  }
+  const matchingEntry = Object.entries(labels).find(([key]) => languageCandidates.includes(String(key).trim().toLowerCase()));
+  if (matchingEntry?.[1]) return matchingEntry[1];
+  return labels.en
+    || Object.values(labels)[0]
+    || verb.label
     || verb.key;
+}
+
+function buildLanguageCandidates(language) {
+  const candidates = [];
+  const add = value => {
+    const normalized = String(value ?? '').trim().toLowerCase();
+    if (normalized && !candidates.includes(normalized)) candidates.push(normalized);
+  };
+  add(language);
+  if (language.includes('-')) add(language.split('-')[0]);
+  if (language.includes('_')) add(language.split('_')[0]);
+  const aliases = {
+    english: 'en',
+    german: 'de',
+    deutsch: 'de',
+    spanish: 'es',
+    french: 'fr',
+    italian: 'it',
+    portuguese: 'pt'
+  };
+  add(aliases[language]);
+  return candidates;
 }
 
 function computeVerbMenuPosition(stageRect, objectRect, count) {

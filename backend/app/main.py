@@ -841,6 +841,7 @@ class GlobalSettingsUpdate(BaseModel):
     start_scene_id: int | None = Field(default=None, ge=1)
     inventory_key_code: str | None = Field(default=None, min_length=1, max_length=32)
     verb_menu_timeout_seconds: float | None = Field(default=None, gt=0.25, le=30)
+    verb_menu_show_disabled: bool | None = None
     inventory_slots: list[InventorySlot] | None = None
     cursor_states: dict[str, dict[str, int | None | str | None]] | None = None
 
@@ -854,6 +855,7 @@ class GlobalSettings(GlobalSettingsUpdate):
     start_scene_id: int | None = None
     inventory_key_code: str = "KeyI"
     verb_menu_timeout_seconds: float = 4.0
+    verb_menu_show_disabled: bool = True
     inventory_slots: list[InventorySlot] = []
     inventory_background_relative_path: str | None = None
     verb_tag_background_relative_path: str | None = None
@@ -866,6 +868,7 @@ class InteractionTrigger(BaseModel):
     type: str = Field(
         pattern="^(scene_enter|scene_exit|overlay_open|overlay_close|object_mouseover|object_mouseout|object_click|object_use|object_verb|inventory_use|variable_changed|key_press)$"
     )
+    match_mode: str = Field(default="exact", pattern="^(exact|object_default|scene_default)$")
     object_id: int | None = None
     variable_id: int | None = None
     key_code: str | None = None
@@ -1982,6 +1985,7 @@ def create_app(
             if settings_update.inventory_key_code
             else None,
             verb_menu_timeout_seconds=settings_update.verb_menu_timeout_seconds,
+            verb_menu_show_disabled=settings_update.verb_menu_show_disabled,
             inventory_slots=[
                 slot.model_dump()
                 for slot in (settings_update.inventory_slots or [])
@@ -4475,39 +4479,49 @@ def _normalize_interaction_trigger(
     trigger: dict[str, Any],
 ) -> dict[str, Any]:
     trigger_type = str(trigger.get("type") or "")
-    normalized: dict[str, Any] = {"type": trigger_type}
+    match_mode = _choice(trigger.get("match_mode"), {"exact", "object_default", "scene_default"}, "exact")
+    normalized: dict[str, Any] = {"type": trigger_type, "match_mode": match_mode}
     if trigger_type in {"scene_enter", "scene_exit", "overlay_open", "overlay_close"}:
+        normalized["match_mode"] = "exact"
         return normalized
     if trigger_type == "key_press":
+        normalized["match_mode"] = "exact"
         normalized["key_code"] = _normalize_key_code(trigger.get("key_code"))
         return normalized
     if trigger_type in {"object_mouseover", "object_mouseout", "object_click", "object_use"}:
-        object_id = _required_int(trigger.get("object_id"), "Trigger object is required")
-        if not scene_object_belongs_to_scene(db_path, scene_id, object_id, organization_id):
-            raise HTTPException(status_code=400, detail="Trigger object is not in this scene")
-        normalized["object_id"] = object_id
+        if trigger_type not in {"object_click"} and match_mode != "exact":
+            raise HTTPException(status_code=400, detail="Only object click supports default matching")
+        if match_mode != "scene_default":
+            object_id = _required_int(trigger.get("object_id"), "Trigger object is required")
+            if not scene_object_belongs_to_scene(db_path, scene_id, object_id, organization_id):
+                raise HTTPException(status_code=400, detail="Trigger object is not in this scene")
+            normalized["object_id"] = object_id
         return normalized
     if trigger_type == "object_verb":
-        object_id = _required_int(trigger.get("object_id"), "Trigger object is required")
         verb_id = _required_int(trigger.get("verb_id"), "Verb is required")
-        if not scene_object_belongs_to_scene(db_path, scene_id, object_id, organization_id):
-            raise HTTPException(status_code=400, detail="Trigger object is not in this scene")
         if get_verb_by_id(db_path, organization_id, verb_id) is None:
             raise HTTPException(status_code=400, detail="Trigger verb does not exist")
-        normalized["object_id"] = object_id
+        if match_mode != "scene_default":
+            object_id = _required_int(trigger.get("object_id"), "Trigger object is required")
+            if not scene_object_belongs_to_scene(db_path, scene_id, object_id, organization_id):
+                raise HTTPException(status_code=400, detail="Trigger object is not in this scene")
+            normalized["object_id"] = object_id
         normalized["verb_id"] = verb_id
         return normalized
     if trigger_type == "inventory_use":
-        object_id = _required_int(trigger.get("object_id"), "Trigger object is required")
-        inventory_object_id = _required_int(trigger.get("inventory_object_id"), "Inventory object is required")
-        if not scene_object_belongs_to_scene(db_path, scene_id, object_id, organization_id):
-            raise HTTPException(status_code=400, detail="Trigger object is not in this scene")
-        if get_scene_object_for_organization(db_path, inventory_object_id, organization_id) is None:
-            raise HTTPException(status_code=400, detail="Inventory object does not exist")
-        normalized["object_id"] = object_id
-        normalized["inventory_object_id"] = inventory_object_id
+        if match_mode != "scene_default":
+            object_id = _required_int(trigger.get("object_id"), "Trigger object is required")
+            if not scene_object_belongs_to_scene(db_path, scene_id, object_id, organization_id):
+                raise HTTPException(status_code=400, detail="Trigger object is not in this scene")
+            normalized["object_id"] = object_id
+        if match_mode == "exact":
+            inventory_object_id = _required_int(trigger.get("inventory_object_id"), "Inventory object is required")
+            if get_scene_object_for_organization(db_path, inventory_object_id, organization_id) is None:
+                raise HTTPException(status_code=400, detail="Inventory object does not exist")
+            normalized["inventory_object_id"] = inventory_object_id
         return normalized
     if trigger_type == "variable_changed":
+        normalized["match_mode"] = "exact"
         variable_id = _required_int(trigger.get("variable_id"), "Trigger variable is required")
         if get_game_variable_by_id(db_path, organization_id, variable_id) is None:
             raise HTTPException(status_code=400, detail="Trigger variable does not exist")
@@ -4544,25 +4558,39 @@ def _normalize_action_step(
         "type": step_type,
     }
     if step_type == "play_animation":
-        object_id = _required_int(step.get("target_object_id"), "Animation target object is required")
-        animation_id = _required_int(step.get("animation_id"), "Animation is required")
-        if not scene_object_belongs_to_scene(db_path, scene_id, object_id, organization_id):
-            raise HTTPException(status_code=400, detail="Animation target object is not in this scene")
-        if not object_animation_belongs_to_object(db_path, animation_id, object_id, organization_id):
-            raise HTTPException(status_code=400, detail="Animation does not belong to the target object")
+        target_object_mode = _choice(
+            step.get("target_object_mode"),
+            {"static", "trigger_object", "trigger_inventory_object"},
+            "static",
+        )
         normalized.update(
             {
-                "target_object_id": object_id,
-                "animation_id": animation_id,
+                "target_object_mode": target_object_mode,
                 "mode": _choice(step.get("mode"), {"queued", "immediate"}, "queued"),
                 "wait": _choice(step.get("wait"), {"wait", "continue"}, "wait"),
             }
         )
+        if target_object_mode == "static":
+            object_id = _required_int(step.get("target_object_id"), "Animation target object is required")
+            animation_id = _required_int(step.get("animation_id"), "Animation is required")
+            if not scene_object_belongs_to_scene(db_path, scene_id, object_id, organization_id):
+                raise HTTPException(status_code=400, detail="Animation target object is not in this scene")
+            if not object_animation_belongs_to_object(db_path, animation_id, object_id, organization_id):
+                raise HTTPException(status_code=400, detail="Animation does not belong to the target object")
+            normalized["target_object_id"] = object_id
+            normalized["animation_id"] = animation_id
+        else:
+            animation_name = str(step.get("animation_name") or "").strip()
+            if not animation_name:
+                raise HTTPException(status_code=400, detail="Animation name is required for triggered object playback")
+            normalized["animation_name"] = animation_name
         return normalized
     if step_type == "set_object_property":
-        object_id = _required_int(step.get("target_object_id"), "Property target object is required")
-        if not scene_object_belongs_to_scene(db_path, scene_id, object_id, organization_id):
-            raise HTTPException(status_code=400, detail="Property target object is not in this scene")
+        target_object_mode = _choice(
+            step.get("target_object_mode"),
+            {"static", "trigger_object", "trigger_inventory_object"},
+            "static",
+        )
         property_name = _choice(step.get("property"), {"visible", "enabled", "label"}, "")
         value = step.get("value")
         if property_name in {"visible", "enabled"} and not isinstance(value, bool):
@@ -4571,20 +4599,31 @@ def _normalize_action_step(
             raise HTTPException(status_code=400, detail="label requires text")
         normalized.update(
             {
-                "target_object_id": object_id,
+                "target_object_mode": target_object_mode,
                 "property": property_name,
                 "value": value,
                 "wait": _choice(step.get("wait"), {"wait", "continue"}, "continue"),
             }
         )
+        if target_object_mode == "static":
+            object_id = _required_int(step.get("target_object_id"), "Property target object is required")
+            if not scene_object_belongs_to_scene(db_path, scene_id, object_id, organization_id):
+                raise HTTPException(status_code=400, detail="Property target object is not in this scene")
+            normalized["target_object_id"] = object_id
         return normalized
     if step_type == "go_to_frame":
         target_scope = _choice(step.get("target_scope"), {"object", "background", "pickup_background"}, "object")
+        target_object_mode = _choice(
+            step.get("target_object_mode"),
+            {"static", "trigger_object", "trigger_inventory_object"},
+            "static",
+        )
         scene = get_scene_with_images(db_path, scene_id)
         image_count = len(scene.get("images", [])) if scene else 0
         normalized.update(
             {
                 "target_scope": target_scope,
+                "target_object_mode": target_object_mode,
                 "wait": _choice(step.get("wait"), {"wait", "continue"}, "continue"),
             }
         )
@@ -4592,21 +4631,23 @@ def _normalize_action_step(
             frame_index = _required_int(step.get("frame_index"), "Frame index is required")
             if frame_index < 0 or frame_index >= image_count:
                 raise HTTPException(status_code=400, detail="Frame index is outside this scene's image range")
-            object_id = _required_int(step.get("target_object_id"), "Frame target object is required")
-            if not scene_object_belongs_to_scene(db_path, scene_id, object_id, organization_id):
-                raise HTTPException(status_code=400, detail="Frame target object is not in this scene")
             normalized["frame_index"] = frame_index
-            normalized["target_object_id"] = object_id
+            if target_object_mode == "static":
+                object_id = _required_int(step.get("target_object_id"), "Frame target object is required")
+                if not scene_object_belongs_to_scene(db_path, scene_id, object_id, organization_id):
+                    raise HTTPException(status_code=400, detail="Frame target object is not in this scene")
+                normalized["target_object_id"] = object_id
         elif target_scope == "background":
             frame_index = _required_int(step.get("frame_index"), "Frame index is required")
             if frame_index < 0 or frame_index >= image_count:
                 raise HTTPException(status_code=400, detail="Frame index is outside this scene's image range")
             normalized["frame_index"] = frame_index
         else:
-            object_id = _required_int(step.get("target_object_id"), "Pickup frame target object is required")
-            if not scene_object_belongs_to_scene(db_path, scene_id, object_id, organization_id):
-                raise HTTPException(status_code=400, detail="Pickup frame target object is not in this scene")
-            normalized["target_object_id"] = object_id
+            if target_object_mode == "static":
+                object_id = _required_int(step.get("target_object_id"), "Pickup frame target object is required")
+                if not scene_object_belongs_to_scene(db_path, scene_id, object_id, organization_id):
+                    raise HTTPException(status_code=400, detail="Pickup frame target object is not in this scene")
+                normalized["target_object_id"] = object_id
         return normalized
     if step_type == "show_subtitle":
         line_ids = [
@@ -4770,15 +4811,22 @@ def _normalize_action_step(
         )
         return normalized
     if step_type in {"add_inventory_item", "remove_inventory_item"}:
-        scene_object_id = _required_int(step.get("scene_object_id"), "Inventory object is required")
-        if get_scene_object_for_organization(db_path, scene_object_id, organization_id) is None:
-            raise HTTPException(status_code=400, detail="Inventory object does not exist")
+        scene_object_mode = _choice(
+            step.get("scene_object_mode"),
+            {"static", "trigger_object", "trigger_inventory_object"},
+            "static",
+        )
         normalized.update(
             {
-                "scene_object_id": scene_object_id,
+                "scene_object_mode": scene_object_mode,
                 "wait": _choice(step.get("wait"), {"wait", "continue"}, "continue"),
             }
         )
+        if scene_object_mode == "static":
+            scene_object_id = _required_int(step.get("scene_object_id"), "Inventory object is required")
+            if get_scene_object_for_organization(db_path, scene_object_id, organization_id) is None:
+                raise HTTPException(status_code=400, detail="Inventory object does not exist")
+            normalized["scene_object_id"] = scene_object_id
         return normalized
     if step_type == "clear_held_inventory_item":
         normalized.update({"wait": _choice(step.get("wait"), {"wait", "continue"}, "continue")})
@@ -5195,7 +5243,7 @@ def _build_scene_preview_manifest(
         if interaction.get("enabled")
     ]
     preview_objects = []
-    go_to_frame_refs = _collect_go_to_frame_refs(preview_interactions)
+    go_to_frame_refs, has_contextual_go_to_frame_refs = _collect_go_to_frame_refs(preview_interactions)
     frame_index_by_uploaded_file_id = {
         int(image["uploaded_file_id"]): index for index, image in enumerate(scene_images)
     }
@@ -5210,6 +5258,15 @@ def _build_scene_preview_manifest(
             organization_id=organization_id,
         )
         referenced_frame_indices = set(go_to_frame_refs.get(int(scene_object["id"]), set()))
+        if has_contextual_go_to_frame_refs:
+            referenced_frame_indices.update(
+                frame_index
+                for frame_index, scene_image in enumerate(scene_images)
+                if any(
+                    int(object_mask["uploaded_file_id"]) == int(scene_image["uploaded_file_id"])
+                    for object_mask in object_masks
+                )
+            )
         pickup_uploaded_file_id = scene_object.get("pickup_uploaded_file_id")
         if pickup_uploaded_file_id is not None:
             pickup_frame_index = frame_index_by_uploaded_file_id.get(int(pickup_uploaded_file_id))
@@ -5326,11 +5383,12 @@ def _collect_script_line_ids(interactions: list[dict[str, Any]]) -> set[int]:
     return line_ids
 
 
-def _collect_go_to_frame_refs(interactions: list[dict[str, Any]]) -> dict[int, set[int]]:
+def _collect_go_to_frame_refs(interactions: list[dict[str, Any]]) -> tuple[dict[int, set[int]], bool]:
     refs: dict[int, set[int]] = {}
+    has_contextual_refs = False
     for interaction in interactions:
-        _collect_go_to_frame_refs_from_steps(interaction.get("action_tree") or [], refs)
-    return refs
+        has_contextual_refs = _collect_go_to_frame_refs_from_steps(interaction.get("action_tree") or [], refs) or has_contextual_refs
+    return refs, has_contextual_refs
 
 
 def _collect_script_line_ids_from_steps(steps: list[dict[str, Any]], line_ids: set[int]) -> None:
@@ -5348,19 +5406,24 @@ def _collect_script_line_ids_from_steps(steps: list[dict[str, Any]], line_ids: s
 def _collect_go_to_frame_refs_from_steps(
     steps: list[dict[str, Any]],
     refs: dict[int, set[int]],
-) -> None:
+) -> bool:
+    has_contextual_refs = False
     for step in steps:
         if step.get("type") == "go_to_frame" and step.get("target_scope", "object") == "object":
-            try:
-                object_id = int(step.get("target_object_id"))
-                frame_index = int(step.get("frame_index"))
-            except (TypeError, ValueError):
-                object_id = None
-                frame_index = None
-            if object_id is not None and frame_index is not None:
-                refs.setdefault(object_id, set()).add(frame_index)
-        _collect_go_to_frame_refs_from_steps(step.get("then_steps") or [], refs)
-        _collect_go_to_frame_refs_from_steps(step.get("else_steps") or [], refs)
+            if step.get("target_object_mode", "static") != "static":
+                has_contextual_refs = True
+            else:
+                try:
+                    object_id = int(step.get("target_object_id"))
+                    frame_index = int(step.get("frame_index"))
+                except (TypeError, ValueError):
+                    object_id = None
+                    frame_index = None
+                if object_id is not None and frame_index is not None:
+                    refs.setdefault(object_id, set()).add(frame_index)
+        has_contextual_refs = _collect_go_to_frame_refs_from_steps(step.get("then_steps") or [], refs) or has_contextual_refs
+        has_contextual_refs = _collect_go_to_frame_refs_from_steps(step.get("else_steps") or [], refs) or has_contextual_refs
+    return has_contextual_refs
 
 
 def _preview_render_payload_for_mask(

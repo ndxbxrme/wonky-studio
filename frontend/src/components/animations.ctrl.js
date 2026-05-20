@@ -40,7 +40,6 @@ const AnimationsCtrl = app => async params => {
       this.preview = this.root?.querySelector('wonky-animation-preview');
       this.bind(this.root, 'click', event => this.onClick(event));
       this.bind(this.root, 'submit', event => this.onSubmit(event));
-      this.bind(this.root, 'input', event => this.onInput(event));
       this.bind(this.root, 'change', event => this.onChange(event));
       this.bind(this.preview, 'preview-error', event => this.onPreviewError(event));
       this.bind(window, 'keydown', event => this.onKeyDown(event));
@@ -205,12 +204,6 @@ const AnimationsCtrl = app => async params => {
         return;
       }
 
-      const editField = event.target.closest('[data-animation-edit-form] input');
-      if (!editField) return;
-      await this.refreshDraftAnimationView();
-    },
-
-    async onInput(event) {
       const editField = event.target.closest('[data-animation-edit-form] input');
       if (!editField) return;
       await this.refreshDraftAnimationView();
