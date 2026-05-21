@@ -2526,7 +2526,7 @@ function renderVerbMenu(menu) {
             data-layer="${escapeHtml(menu.layer)}"
             data-object-id="${menu.objectId}"
             data-verb-id="${item.id}"
-            style="--tag-x:${Number(item.offsetX || 0).toFixed(2)}px; --tag-y:${Number(item.offsetY || 0).toFixed(2)}px; --tag-delay:${index * VERB_MENU_STAGGER_MS}ms; --tag-tilt:${verbTiltDirection(item.id, index)};${item.backgroundUrl ? `--tag-background:url('${escapeHtml(item.backgroundUrl)}');` : ''}"
+            style="--tag-x:${Number(item.offsetX || 0).toFixed(2)}px; --tag-y:${Number(item.offsetY || 0).toFixed(2)}px; --tag-delay:${index * VERB_MENU_STAGGER_MS}ms; --tag-tilt:${verbTiltDirection(item.id, index)};${item.backgroundUrl ? `--tag-background:url('${escapeHtml(item.backgroundUrl)}');` : ''}${item.textColor ? `--tag-color:${escapeHtml(item.textColor)};` : ''}"
             ${item.enabled ? '' : 'disabled'}
           >
             <span>${escapeHtml(item.label)}</span>
@@ -2869,6 +2869,7 @@ function buildVerbMenuItems(previewData, objectId, languageSettings) {
         previewData?.interactions ?? [],
         buildObjectVerbTriggerTiers(Number(objectId), Number(verb.id))
       ).length > 0,
+      textColor: previewData?.global_settings?.verb_text_color || '#34261b',
       backgroundUrl: previewData?.global_settings?.verb_tag_background_relative_path
         ? globalSettingsAssetUrl('verb_tag_background')
         : ''

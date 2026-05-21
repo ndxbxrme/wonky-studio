@@ -161,6 +161,7 @@ const GlobalSettingsCtrl = app => async () => {
         form.elements.verb_menu_show_disabled.value = this.globalSettings.verb_menu_show_disabled === false
           ? 'hide_disabled'
           : 'show_disabled';
+        form.elements.verb_text_color.value = this.globalSettings.verb_text_color ?? '#34261b';
       }
       const inventoryForm = this.root?.querySelector('[data-inventory-layout-form]');
       if (inventoryForm && this.globalSettings) {
@@ -346,7 +347,8 @@ const GlobalSettingsCtrl = app => async () => {
             start_scene_id: formData.get('start_scene_id') ? Number(formData.get('start_scene_id')) : null,
             inventory_key_code: String(formData.get('inventory_key_code') ?? 'KeyI'),
             verb_menu_timeout_seconds: Number(formData.get('verb_menu_timeout_seconds') || 4),
-            verb_menu_show_disabled: String(formData.get('verb_menu_show_disabled') ?? 'show_disabled') !== 'hide_disabled'
+            verb_menu_show_disabled: String(formData.get('verb_menu_show_disabled') ?? 'show_disabled') !== 'hide_disabled',
+            verb_text_color: String(formData.get('verb_text_color') ?? '#34261b')
           })
         });
         await this.refreshData();

@@ -1,0 +1,19 @@
+; Engine configuration file.
+; Minimal Godot 4 project shell for Wonky Studio runtime work.
+
+config_version=5
+
+[application]
+
+config/name="Wonky Studio Runtime"
+run/main_scene="res://scenes/Main.tscn"
+config/features=PackedStringArray("4.6")
+
+[display]
+
+window/size/viewport_width=1920
+window/size/viewport_height=1080
+
+[rendering]
+
+renderer/rendering_method="forward_plus"

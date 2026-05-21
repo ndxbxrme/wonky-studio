@@ -192,6 +192,20 @@
           </form>
         </div>
       </section>
+
+      <section class="auth-panel" aria-labelledby="build-game-title">
+        <div class="panel-stack">
+          <div>
+            <p class="eyebrow">Build</p>
+            <h2 id="build-game-title">Export Godot build</h2>
+            <p>Build a ready-to-unzip Godot package for artists from the current runtime export.</p>
+          </div>
+          <div class="tool-links">
+            <button class="button secondary" type="button" data-action="export-runtime-bundle-zip">Build Godot zip</button>
+          </div>
+          <p class="form-status" data-godot-build-status aria-live="polite"></p>
+        </div>
+      </section>
     {{/if}}
 
     {{#if isAdmin}}
@@ -232,6 +246,8 @@
             </div>
             <div class="tool-links">
               <button class="button secondary" type="button" data-action="export-project">Export project</button>
+              <button class="button secondary" type="button" data-action="export-runtime-bundle">Export runtime bundle</button>
+              <button class="button secondary" type="button" data-action="export-godot-code-files">Export Godot code files</button>
               <input class="file-input" type="file" accept=".zip,application/zip" data-import-project-input />
               <button class="button secondary" type="button" data-action="browse-import-project">Import project zip</button>
             </div>

@@ -1,4 +1,4 @@
-import {apiFetch} from '../api.js';
+import {apiFetch, apiUrl} from '../api.js';
 import {applyStatus} from '../status.js';
 import {hydrateSceneDetails, loadSceneSummaries, scenes} from '../state/scenes.js';
 import {logoutUser, user} from '../state/user.js';
@@ -67,6 +67,24 @@ const DefaultCtrl = app => async () => {
       const exportProjectButton = event.target.closest('[data-action="export-project"]');
       if (exportProjectButton) {
         this.exportProject(exportProjectButton);
+        return;
+      }
+
+      const exportRuntimeBundleButton = event.target.closest('[data-action="export-runtime-bundle"]');
+      if (exportRuntimeBundleButton) {
+        await this.exportRuntimeBundle(exportRuntimeBundleButton);
+        return;
+      }
+
+      const exportRuntimeBundleZipButton = event.target.closest('[data-action="export-runtime-bundle-zip"]');
+      if (exportRuntimeBundleZipButton) {
+        await this.exportRuntimeBundleZip(exportRuntimeBundleZipButton);
+        return;
+      }
+
+      const exportGodotCodeFilesButton = event.target.closest('[data-action="export-godot-code-files"]');
+      if (exportGodotCodeFilesButton) {
+        await this.exportGodotCodeFiles(exportGodotCodeFilesButton);
         return;
       }
 
@@ -250,6 +268,64 @@ const DefaultCtrl = app => async () => {
         button.disabled = false;
         applyStatus(status, 'Project export started.');
       }, 800);
+    },
+
+    async exportRuntimeBundle(button) {
+      const status = document.querySelector('[data-project-archive-status]');
+      button.disabled = true;
+      applyStatus(status, 'Preparing runtime bundle...');
+      try {
+        const result = await apiFetch('/api/admin/export-runtime-bundle', {method: 'POST'});
+        const sceneCount = Number(result.archive?.scene_count ?? 0);
+        const scriptLineCount = Number(result.archive?.script_line_count ?? 0);
+        applyStatus(
+          status,
+          `Wrote ${result.output_path}. Included ${sceneCount} scene${sceneCount === 1 ? '' : 's'}, ${scriptLineCount} referenced script line${scriptLineCount === 1 ? '' : 's'}, and ${result.archive?.file_count ?? 0} asset file${Number(result.archive?.file_count ?? 0) === 1 ? '' : 's'}.`,
+        );
+      } catch (error) {
+        applyStatus(status, error?.message || 'Could not write runtime bundle.');
+      } finally {
+        button.disabled = false;
+      }
+    },
+
+    async exportGodotCodeFiles(button) {
+      const status = document.querySelector('[data-project-archive-status]');
+      button.disabled = true;
+      applyStatus(status, 'Exporting Godot code files...');
+      try {
+        const result = await apiFetch('/api/admin/export-godot-code-files', {method: 'POST'});
+        const fileCount = Number(result.file_count ?? 0);
+        applyStatus(
+          status,
+          `Updated Godot shell in ${result.output_path}. Copied ${fileCount} file${fileCount === 1 ? '' : 's'} without touching runtime assets.`,
+        );
+      } catch (error) {
+        applyStatus(status, error?.message || 'Could not export Godot code files.');
+      } finally {
+        button.disabled = false;
+      }
+    },
+
+    async exportRuntimeBundleZip(button) {
+      const status = document.querySelector('[data-godot-build-status]');
+      button.disabled = true;
+      applyStatus(status, 'Building Godot zip...');
+      try {
+        const result = await apiFetch('/api/admin/export-runtime-bundle-zip', {method: 'POST'});
+        const fileCount = Number(result.file_count ?? 0);
+        const sizeBytes = Number(result.size_bytes ?? 0);
+        const sizeMb = sizeBytes > 0 ? (sizeBytes / (1024 * 1024)).toFixed(1) : '0.0';
+        applyStatus(
+          status,
+          `Wrote ${result.output_path}. Packed ${fileCount} file${fileCount === 1 ? '' : 's'} from ${result.source_folder_path} into a ${sizeMb} MB zip. Starting download...`,
+        );
+        window.location.assign(apiUrl(result.download_path || '/api/admin/export-runtime-bundle-zip/download'));
+      } catch (error) {
+        applyStatus(status, error?.message || 'Could not build Godot zip.');
+      } finally {
+        button.disabled = false;
+      }
     },
 
     async exportDatabaseBackup(button) {

@@ -2073,7 +2073,7 @@ textarea {
   background-position: center;
   background-repeat: no-repeat;
   background-size: 100% 100%;
-  color: #34261b;
+  color: var(--tag-color, #34261b);
   cursor: pointer;
   pointer-events: auto;
   font: 600 0.98rem/1.1 "Georgia", serif;

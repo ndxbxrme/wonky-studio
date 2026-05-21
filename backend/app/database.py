@@ -363,6 +363,7 @@ def init_database(
                 inventory_key_code TEXT NOT NULL DEFAULT 'KeyI',
                 verb_menu_timeout_seconds REAL NOT NULL DEFAULT 4.0,
                 verb_menu_show_disabled INTEGER NOT NULL DEFAULT 1,
+                verb_text_color TEXT NOT NULL DEFAULT '#34261b',
                 inventory_slots_json TEXT NOT NULL DEFAULT '[]',
                 inventory_background_relative_path TEXT,
                 verb_tag_background_relative_path TEXT,
@@ -389,6 +390,7 @@ def init_database(
         _ensure_column(connection, "global_settings", "inventory_key_code", "TEXT NOT NULL DEFAULT 'KeyI'")
         _ensure_column(connection, "global_settings", "verb_menu_timeout_seconds", "REAL NOT NULL DEFAULT 4.0")
         _ensure_column(connection, "global_settings", "verb_menu_show_disabled", "INTEGER NOT NULL DEFAULT 1")
+        _ensure_column(connection, "global_settings", "verb_text_color", "TEXT NOT NULL DEFAULT '#34261b'")
         _ensure_column(connection, "global_settings", "inventory_slots_json", "TEXT NOT NULL DEFAULT '[]'")
         _ensure_column(connection, "global_settings", "inventory_background_relative_path", "TEXT")
         _ensure_column(connection, "global_settings", "verb_tag_background_relative_path", "TEXT")
@@ -1455,6 +1457,7 @@ def get_global_settings(db_path: Path, organization_id: str) -> dict[str, Any]:
                    inventory_key_code,
                    verb_menu_timeout_seconds,
                    verb_menu_show_disabled,
+                   verb_text_color,
                    inventory_slots_json,
                    inventory_background_relative_path,
                    verb_tag_background_relative_path,
@@ -1496,6 +1499,7 @@ def get_global_settings(db_path: Path, organization_id: str) -> dict[str, Any]:
                        inventory_key_code,
                        verb_menu_timeout_seconds,
                        verb_menu_show_disabled,
+                       verb_text_color,
                        inventory_slots_json,
                        inventory_background_relative_path,
                        verb_tag_background_relative_path,
@@ -1537,6 +1541,7 @@ def update_global_settings(
     inventory_key_code: str | None = None,
     verb_menu_timeout_seconds: float | None = None,
     verb_menu_show_disabled: bool | None = None,
+    verb_text_color: str | None = None,
     inventory_slots: list[dict[str, Any]] | None = None,
     inventory_background_relative_path: str | None = None,
     verb_tag_background_relative_path: str | None = None,
@@ -1572,6 +1577,9 @@ def update_global_settings(
     if verb_menu_show_disabled is not None:
         assignments.append("verb_menu_show_disabled = ?")
         values.append(int(bool(verb_menu_show_disabled)))
+    if verb_text_color is not None:
+        assignments.append("verb_text_color = ?")
+        values.append(str(verb_text_color))
     if inventory_slots is not None:
         assignments.append("inventory_slots_json = ?")
         values.append(json_dumps(inventory_slots))

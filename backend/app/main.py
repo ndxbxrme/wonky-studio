@@ -155,6 +155,13 @@ from .project_archive import (
     import_project_database_json,
     workspace_is_empty,
 )
+from .runtime_export import (
+    export_godot_code_files,
+    export_runtime_bundle,
+    export_runtime_bundle_zip,
+    runtime_bundle_output_path,
+    runtime_bundle_zip_output_path,
+)
 from .script_localization import (
     ScriptLocalizationProvider,
     build_script_localization_provider,
@@ -580,6 +587,34 @@ class DatabaseBackupResult(BaseModel):
     archive: ProjectArchiveSummary
 
 
+class RuntimeBundleSummary(BaseModel):
+    format_version: int
+    scene_count: int
+    script_line_count: int
+    file_count: int
+
+
+class RuntimeBundleExportResult(BaseModel):
+    ok: bool
+    output_path: str
+    archive: RuntimeBundleSummary
+
+
+class RuntimeBundleZipExportResult(BaseModel):
+    ok: bool
+    output_path: str
+    source_folder_path: str
+    file_count: int
+    size_bytes: int
+    download_path: str
+
+
+class GodotCodeExportResult(BaseModel):
+    ok: bool
+    output_path: str
+    file_count: int
+
+
 class SceneDeleteResult(BaseModel):
     ok: bool
     scene_id: int
@@ -842,6 +877,7 @@ class GlobalSettingsUpdate(BaseModel):
     inventory_key_code: str | None = Field(default=None, min_length=1, max_length=32)
     verb_menu_timeout_seconds: float | None = Field(default=None, gt=0.25, le=30)
     verb_menu_show_disabled: bool | None = None
+    verb_text_color: str | None = Field(default=None, min_length=1, max_length=32)
     inventory_slots: list[InventorySlot] | None = None
     cursor_states: dict[str, dict[str, int | None | str | None]] | None = None
 
@@ -856,6 +892,7 @@ class GlobalSettings(GlobalSettingsUpdate):
     inventory_key_code: str = "KeyI"
     verb_menu_timeout_seconds: float = 4.0
     verb_menu_show_disabled: bool = True
+    verb_text_color: str = "#34261b"
     inventory_slots: list[InventorySlot] = []
     inventory_background_relative_path: str | None = None
     verb_tag_background_relative_path: str | None = None
@@ -1251,6 +1288,92 @@ def create_app(
             media_type="application/zip",
             filename=f"wonky-project-{admin['organization_id']}.zip",
             background=BackgroundTask(lambda: temp_path.unlink(missing_ok=True)),
+        )
+
+    @app.post("/api/admin/export-runtime-bundle", response_model=RuntimeBundleExportResult)
+    def post_export_runtime_bundle(
+        admin: dict[str, Any] = Depends(current_admin),
+    ) -> dict[str, Any]:
+        output_path = runtime_bundle_output_path(
+            app_settings.storage_root,
+            admin["organization_id"],
+        )
+        export_summary = export_runtime_bundle(
+            db_path=database_path,
+            storage_root=app_settings.storage_root,
+            script_audio_root=app_settings.script_audio_root,
+            organization_id=admin["organization_id"],
+            output_path=output_path,
+            godot_project_root=Path(__file__).resolve().parents[2] / "godot",
+        )
+        return {
+            "ok": True,
+            "output_path": export_summary["output_path"],
+            "archive": {
+                "format_version": export_summary["format_version"],
+                "scene_count": export_summary["scene_count"],
+                "script_line_count": export_summary["script_line_count"],
+                "file_count": export_summary["file_count"],
+            },
+        }
+
+    @app.post("/api/admin/export-godot-code-files", response_model=GodotCodeExportResult)
+    def post_export_godot_code_files(
+        admin: dict[str, Any] = Depends(current_admin),
+    ) -> dict[str, Any]:
+        output_path = runtime_bundle_output_path(
+            app_settings.storage_root,
+            admin["organization_id"],
+        )
+        export_summary = export_godot_code_files(
+            output_path=output_path,
+            godot_project_root=Path(__file__).resolve().parents[2] / "godot",
+        )
+        return {
+            "ok": True,
+            "output_path": export_summary["output_path"],
+            "file_count": export_summary["file_count"],
+        }
+
+    @app.post("/api/admin/export-runtime-bundle-zip", response_model=RuntimeBundleZipExportResult)
+    def post_export_runtime_bundle_zip(
+        user: dict[str, Any] = Depends(current_user),
+    ) -> dict[str, Any]:
+        runtime_folder_path = runtime_bundle_output_path(
+            app_settings.storage_root,
+            user["organization_id"],
+        )
+        zip_output_path = runtime_bundle_zip_output_path(
+            app_settings.storage_root,
+            user["organization_id"],
+        )
+        export_summary = export_runtime_bundle_zip(
+            runtime_folder_path=runtime_folder_path,
+            output_path=zip_output_path,
+        )
+        return {
+            "ok": True,
+            "output_path": export_summary["output_path"],
+            "source_folder_path": export_summary["folder_path"],
+            "file_count": export_summary["file_count"],
+            "size_bytes": export_summary["size_bytes"],
+            "download_path": "/api/admin/export-runtime-bundle-zip/download",
+        }
+
+    @app.get("/api/admin/export-runtime-bundle-zip/download")
+    def get_export_runtime_bundle_zip_download(
+        user: dict[str, Any] = Depends(current_user),
+    ) -> FileResponse:
+        zip_output_path = runtime_bundle_zip_output_path(
+            app_settings.storage_root,
+            user["organization_id"],
+        )
+        if not zip_output_path.exists() or not zip_output_path.is_file():
+            raise HTTPException(status_code=404, detail="Runtime zip has not been built yet.")
+        return FileResponse(
+            zip_output_path,
+            media_type="application/zip",
+            filename=f"wonky-runtime-{user['organization_id']}.zip",
         )
 
     @app.post("/api/admin/export-database-backup", response_model=DatabaseBackupResult)
@@ -1986,6 +2109,7 @@ def create_app(
             else None,
             verb_menu_timeout_seconds=settings_update.verb_menu_timeout_seconds,
             verb_menu_show_disabled=settings_update.verb_menu_show_disabled,
+            verb_text_color=settings_update.verb_text_color,
             inventory_slots=[
                 slot.model_dump()
                 for slot in (settings_update.inventory_slots or [])

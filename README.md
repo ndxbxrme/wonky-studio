@@ -2,6 +2,8 @@
 
 Internal asset tooling for a point-and-click adventure game built from real-world diorama photography. The current focus is manual scene intake, object and mask authoring, animation authoring, script/audio review, action authoring, audio library management, and a live preview that behaves more like a playable runtime than a static inspector.
 
+The repo now also includes a Godot runtime that consumes exported project data, so Wonky Studio can build both a web preview and a playable Godot package from the same authored content.
+
 ## Run Locally
 
 Backend:
@@ -179,6 +181,18 @@ Scene preview:
 - Supports global inventory UI, pickup-frame driven object swaps, radial verb menus, local-only preview master/music volume sliders, and custom runtime cursors.
 - Listens for editor updates in the same browser via `BroadcastChannel` and refreshes automatically.
 
+Godot runtime export:
+
+- Wonky Studio can export a selective Godot runtime bundle containing only referenced runtime assets.
+- The working runtime folder is written to `/mnt/d/wonky-studio/wonky-runtime-<organization_id>`.
+- The exported runtime contains:
+  - `project.godot`
+  - `runtime/runtime.json`
+  - `runtime/scenes/<id>.json`
+  - `runtime/assets/...`
+- A separate `Build Godot zip` action packages that runtime folder into a ready-to-download zip for artists.
+- The Godot runtime currently supports scene rendering, click/verb/inventory-use interactions, default trigger precedence, inventory overlay and held items, subtitles, narration audio, BGM/SFX, and authored key-press interactions.
+
 Navigation and UI:
 
 - A shared top-level app bar now exposes `Scenes`, `Images`, `Transcript library`, `Audio library`, `Variables`, `Guide`, and `Health` on the main authoring routes.
@@ -199,6 +213,7 @@ Navigation and UI:
 - `backend/app/object_rendering.py`: reusable object crop/render helpers used for thumbnails and preview renders.
 - `backend/app/script_import.py`: imports script line, translation, and audio candidate data from local manifests.
 - `backend/app/project_archive.py`: full-project import/export archive helpers.
+- `backend/app/runtime_export.py`: selective Godot runtime export helpers and packaging.
 - `backend/tests/e2e/test_api.py`: backend e2e coverage for auth, uploads, scenes, VLM, mask extraction, mask editing, thumbnails, script/audio review, actions, and preview payloads.
 
 ## Frontend Map
@@ -228,6 +243,22 @@ Navigation and UI:
 - `frontend/src/components/system-health.*`: dependency health page.
 - `frontend/src/audio-runtime.js`: shared preview audio manager for looping BGM, crossfades, SFX, and ducking.
 - `frontend/src/app.css`: global app styles.
+
+## Godot Runtime
+
+- `godot/` is a separate runtime host, not the source of truth for authored content.
+- Export a playable Godot project from Wonky Studio using:
+  - `Export runtime bundle` to write/update the working runtime folder.
+  - `Build Godot zip` to package that folder for download.
+  - `Export Godot code files` when iterating on the Godot shell without rebuilding runtime assets.
+- Open the exported runtime folder in Godot 4.6.x.
+- The current Godot runtime implements:
+  - scene background and object render composition
+  - object animations and `go_to_frame`
+  - `scene_enter`, `object_click`, `object_verb`, `inventory_use`, `object_mouseover`, `object_mouseout`, and `key_press`
+  - default interaction matching (`exact`, `object_default`, `scene_default`)
+  - inventory overlay, held items, and radial verb menu
+  - subtitles, narration playback, looping BGM with crossfades, and SFX
 
 ## Turbomini Notes
 

@@ -1,0 +1,244 @@
+[gd_scene load_steps=2 format=3]
+
+[ext_resource type="Script" path="res://scripts/main.gd" id="1_main"]
+
+[node name="Main" type="Control"]
+layout_mode = 3
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+grow_horizontal = 2
+grow_vertical = 2
+script = ExtResource("1_main")
+
+[node name="SceneStage" type="Control" parent="."]
+layout_mode = 1
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+grow_horizontal = 2
+grow_vertical = 2
+mouse_filter = 2
+
+[node name="Overlay" type="MarginContainer" parent="."]
+layout_mode = 1
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+grow_horizontal = 2
+grow_vertical = 2
+mouse_filter = 2
+theme_override_constants/margin_left = 16
+theme_override_constants/margin_top = 16
+theme_override_constants/margin_right = 16
+theme_override_constants/margin_bottom = 16
+
+[node name="OverlayVBox" type="VBoxContainer" parent="Overlay"]
+layout_mode = 2
+size_flags_horizontal = 1
+size_flags_vertical = 1
+theme_override_constants/separation = 8
+
+[node name="ButtonRow" type="HBoxContainer" parent="Overlay/OverlayVBox"]
+layout_mode = 2
+theme_override_constants/separation = 8
+
+[node name="OpenButton" type="Button" parent="Overlay/OverlayVBox/ButtonRow"]
+layout_mode = 2
+text = "Open runtime.json"
+
+[node name="ReloadButton" type="Button" parent="Overlay/OverlayVBox/ButtonRow"]
+layout_mode = 2
+text = "Reload last file"
+
+[node name="StatusPanel" type="PanelContainer" parent="Overlay/OverlayVBox"]
+layout_mode = 2
+size_flags_horizontal = 1
+
+[node name="StatusMargin" type="MarginContainer" parent="Overlay/OverlayVBox/StatusPanel"]
+layout_mode = 2
+theme_override_constants/margin_left = 12
+theme_override_constants/margin_top = 8
+theme_override_constants/margin_right = 12
+theme_override_constants/margin_bottom = 8
+
+[node name="StatusLabel" type="Label" parent="Overlay/OverlayVBox/StatusPanel/StatusMargin"]
+layout_mode = 2
+autowrap_mode = 3
+text = "No runtime bundle loaded yet."
+
+[node name="InventoryPanel" type="PanelContainer" parent="Overlay/OverlayVBox"]
+layout_mode = 2
+size_flags_horizontal = 1
+
+[node name="InventoryMargin" type="MarginContainer" parent="Overlay/OverlayVBox/InventoryPanel"]
+layout_mode = 2
+theme_override_constants/margin_left = 12
+theme_override_constants/margin_top = 8
+theme_override_constants/margin_right = 12
+theme_override_constants/margin_bottom = 12
+
+[node name="InventoryVBox" type="VBoxContainer" parent="Overlay/OverlayVBox/InventoryPanel/InventoryMargin"]
+layout_mode = 2
+theme_override_constants/separation = 8
+
+[node name="InventoryTitle" type="Label" parent="Overlay/OverlayVBox/InventoryPanel/InventoryMargin/InventoryVBox"]
+layout_mode = 2
+text = "Inventory"
+
+[node name="InventoryButtons" type="HBoxContainer" parent="Overlay/OverlayVBox/InventoryPanel/InventoryMargin/InventoryVBox"]
+layout_mode = 2
+theme_override_constants/separation = 8
+
+[node name="FileDialog" type="FileDialog" parent="."]
+title = "Choose runtime.json"
+file_mode = 0
+access = 2
+filters = PackedStringArray("*.json ; Runtime JSON")
+
+[node name="VerbMenuLayer" type="Control" parent="."]
+visible = false
+layout_mode = 1
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+grow_horizontal = 2
+grow_vertical = 2
+mouse_filter = 2
+
+[node name="InventoryOverlayLayer" type="Control" parent="."]
+visible = false
+layout_mode = 1
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+grow_horizontal = 2
+grow_vertical = 2
+mouse_filter = 2
+
+[node name="InventoryOverlayBackdrop" type="ColorRect" parent="InventoryOverlayLayer"]
+layout_mode = 1
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+grow_horizontal = 2
+grow_vertical = 2
+color = Color(0, 0, 0, 0.45)
+
+[node name="InventoryOverlayMargin" type="MarginContainer" parent="InventoryOverlayLayer"]
+layout_mode = 1
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+grow_horizontal = 2
+grow_vertical = 2
+theme_override_constants/margin_left = 0
+theme_override_constants/margin_top = 0
+theme_override_constants/margin_right = 0
+theme_override_constants/margin_bottom = 0
+
+[node name="InventoryOverlayAlign" type="Control" parent="InventoryOverlayLayer/InventoryOverlayMargin"]
+layout_mode = 2
+size_flags_horizontal = 3
+size_flags_vertical = 3
+
+[node name="InventoryOverlayFrame" type="PanelContainer" parent="InventoryOverlayLayer/InventoryOverlayMargin/InventoryOverlayAlign"]
+layout_mode = 1
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+grow_horizontal = 2
+grow_vertical = 2
+
+[node name="InventoryOverlayFrameMargin" type="MarginContainer" parent="InventoryOverlayLayer/InventoryOverlayMargin/InventoryOverlayAlign/InventoryOverlayFrame"]
+layout_mode = 2
+theme_override_constants/margin_left = 0
+theme_override_constants/margin_top = 0
+theme_override_constants/margin_right = 0
+theme_override_constants/margin_bottom = 0
+
+[node name="InventoryOverlayVBox" type="VBoxContainer" parent="InventoryOverlayLayer/InventoryOverlayMargin/InventoryOverlayAlign/InventoryOverlayFrame/InventoryOverlayFrameMargin"]
+layout_mode = 2
+size_flags_horizontal = 3
+size_flags_vertical = 3
+theme_override_constants/separation = 0
+
+[node name="InventoryOverlayTitle" type="Label" parent="InventoryOverlayLayer/InventoryOverlayMargin/InventoryOverlayAlign/InventoryOverlayFrame/InventoryOverlayFrameMargin/InventoryOverlayVBox"]
+visible = false
+layout_mode = 2
+horizontal_alignment = 1
+text = "Inventory"
+
+[node name="InventoryOverlayHint" type="Label" parent="InventoryOverlayLayer/InventoryOverlayMargin/InventoryOverlayAlign/InventoryOverlayFrame/InventoryOverlayFrameMargin/InventoryOverlayVBox"]
+visible = false
+layout_mode = 2
+horizontal_alignment = 1
+autowrap_mode = 3
+text = "Select an item to hold it. Press Escape or the inventory key to close."
+
+[node name="InventoryOverlayStage" type="Control" parent="InventoryOverlayLayer/InventoryOverlayMargin/InventoryOverlayAlign/InventoryOverlayFrame/InventoryOverlayFrameMargin/InventoryOverlayVBox"]
+layout_mode = 2
+size_flags_horizontal = 3
+size_flags_vertical = 3
+custom_minimum_size = Vector2(0, 0)
+
+[node name="SubtitleLayer" type="MarginContainer" parent="."]
+visible = false
+layout_mode = 1
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+grow_horizontal = 2
+grow_vertical = 2
+mouse_filter = 2
+theme_override_constants/margin_left = 24
+theme_override_constants/margin_top = 24
+theme_override_constants/margin_right = 24
+theme_override_constants/margin_bottom = 32
+
+[node name="SubtitleAlign" type="VBoxContainer" parent="SubtitleLayer"]
+layout_mode = 2
+size_flags_horizontal = 4
+size_flags_vertical = 10
+alignment = 2
+
+[node name="SubtitlePanel" type="PanelContainer" parent="SubtitleLayer/SubtitleAlign"]
+layout_mode = 2
+size_flags_horizontal = 4
+size_flags_vertical = 8
+custom_minimum_size = Vector2(320, 0)
+
+[node name="SubtitleMargin" type="MarginContainer" parent="SubtitleLayer/SubtitleAlign/SubtitlePanel"]
+layout_mode = 2
+theme_override_constants/margin_left = 20
+theme_override_constants/margin_top = 14
+theme_override_constants/margin_right = 20
+theme_override_constants/margin_bottom = 16
+
+[node name="SubtitleVBox" type="VBoxContainer" parent="SubtitleLayer/SubtitleAlign/SubtitlePanel/SubtitleMargin"]
+layout_mode = 2
+theme_override_constants/separation = 6
+
+[node name="SubtitlePrimary" type="Label" parent="SubtitleLayer/SubtitleAlign/SubtitlePanel/SubtitleMargin/SubtitleVBox"]
+layout_mode = 2
+size_flags_horizontal = 3
+horizontal_alignment = 1
+autowrap_mode = 3
+text = "Subtitle primary"
+
+[node name="SubtitleSecondary" type="Label" parent="SubtitleLayer/SubtitleAlign/SubtitlePanel/SubtitleMargin/SubtitleVBox"]
+layout_mode = 2
+size_flags_horizontal = 3
+horizontal_alignment = 1
+autowrap_mode = 3
+text = "Subtitle secondary"
+
+[node name="HeldItemLayer" type="Control" parent="."]
+visible = false
+layout_mode = 1
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+grow_horizontal = 2
+grow_vertical = 2
+mouse_filter = 2
