@@ -912,6 +912,7 @@ function flattenActionTypes(steps) {
 }
 
 function labelFromType(type) {
+  if (String(type) === 'object_click') return 'primary action';
   return String(type).replace(/_/g, ' ');
 }
 

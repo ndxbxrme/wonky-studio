@@ -30,7 +30,7 @@
         <div class="workspace-summary-panel__header">
           <div>
             <p class="eyebrow">Overview</p>
-            <h2 id="workspace-summary-title">Workspace summary</h2>
+            <h2 id="workspace-summary-title">Project summary</h2>
           </div>
         </div>
         <div class="workspace-summary-grid">
@@ -151,7 +151,7 @@
         {{#if isGuest}}
           <div>
             <h2>Sign in</h2>
-            <p>Use your team Google account to access {{organizationId}}.</p>
+            <p>Sign in with your team Google account.</p>
           </div>
           {{#if inviteToken}}
             <p class="notice">This invite will be applied after Google sign-in.</p>
@@ -198,7 +198,7 @@
           <div>
             <p class="eyebrow">Build</p>
             <h2 id="build-game-title">Export Godot build</h2>
-            <p>Build a ready-to-unzip Godot package for artists from the current runtime export.</p>
+            <p>Build a ready-to-unzip Godot package.</p>
           </div>
           <div class="tool-links">
             <button class="button secondary" type="button" data-action="export-runtime-bundle-zip">Build Godot zip</button>
@@ -242,7 +242,7 @@
             <div>
               <p class="eyebrow">Backups</p>
               <strong>Project import and export</strong>
-              <p>Export a full project zip, or import one into an empty workspace.</p>
+              <p>Export the full project as a zip, or import one into an empty workspace.</p>
             </div>
             <div class="tool-links">
               <button class="button secondary" type="button" data-action="export-project">Export project</button>
@@ -257,7 +257,7 @@
             <div>
               <p class="eyebrow">Quick backup</p>
               <strong>Database JSON backup</strong>
-              <p>Write or restore <code>/mnt/d/wonky-studio/backup.json</code>. Useful if you are zipping the full <code>wonky-studio</code> folder yourself.</p>
+              <p>Write or restore <code>/mnt/d/wonky-studio/backup.json</code>. Useful if you are zipping the full <code>wonky-studio</code> folder.</p>
             </div>
             <div class="tool-links">
               <button class="button secondary" type="button" data-action="export-database-backup">Write backup.json</button>
@@ -269,7 +269,7 @@
             <div>
               <p class="eyebrow">Development</p>
               <strong>Reset workspace data</strong>
-              <p>Clears scenes, uploads, masks, assets, and invites. Users stay in place.</p>
+              <p>Clears scenes, uploads, masks, assets, and invites. Team accounts stay in place.</p>
             </div>
             <button class="button danger" type="button" data-action="reset-database">Reset database</button>
             <p class="form-status" data-reset-database-status aria-live="polite"></p>

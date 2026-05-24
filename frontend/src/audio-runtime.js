@@ -7,6 +7,31 @@ class PreviewAudioRuntime {
     this.duckFactor = 1;
     this.activeSfx = new Set();
     this.pendingBgmRequest = null;
+    this.preloadedAudio = new Map();
+  }
+
+  async preloadUrls(urls = []) {
+    const orderedUrls = [...new Set((urls ?? []).filter(Boolean))];
+    await Promise.all(orderedUrls.map(url => this.preloadUrl(url).catch(() => {})));
+  }
+
+  async preloadUrl(url) {
+    if (!url) return;
+    const cached = this.preloadedAudio.get(url);
+    if (cached) return cached;
+    const promise = fetch(url, {credentials: 'include', cache: 'default'})
+      .then(response => {
+        if (!response.ok) {
+          throw new Error(`Could not preload audio: ${url} (${response.status})`);
+        }
+        return response.blob();
+      })
+      .catch(error => {
+        this.preloadedAudio.delete(url);
+        throw error;
+      });
+    this.preloadedAudio.set(url, promise);
+    return promise;
   }
 
   setVolumes({bgmVolume, sfxVolume}) {

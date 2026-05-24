@@ -1,4 +1,4 @@
-import {apiUrl, uploadedFileUrl} from '../api.js';
+import {apiUrl, globalSettingsAssetUrl, uploadedFileUrl} from '../api.js';
 
 class WonkyScenePreviewElement extends HTMLElement {
   constructor() {
@@ -17,9 +17,13 @@ class WonkyScenePreviewElement extends HTMLElement {
     this.hoveredObjectId = null;
     this.focusedObjectId = null;
     this.useExternalCursor = false;
+    this.interactionMode = 'desktop';
     this.longPressTimer = null;
     this.longPressTriggered = false;
+    this.longPressPointerType = '';
+    this.lastPointerType = 'mouse';
     this.pendingImageUrls = new Set();
+    this.lastFittedRect = null;
     this.resizeObserver = new ResizeObserver(() => this.renderCanvas());
     this.shadowRoot.innerHTML = `
       <style>
@@ -27,33 +31,27 @@ class WonkyScenePreviewElement extends HTMLElement {
           display: block;
           width: 100%;
           height: 100%;
-          min-height: 320px;
+          min-height: 0;
         }
 
         .shell {
+          position: relative;
           width: 100%;
           height: 100%;
-          display: grid;
-          place-items: center;
           background: #10171d;
-          border-radius: 8px;
           overflow: hidden;
         }
 
         .shell.is-transparent {
           background: transparent;
-          border-radius: 0;
         }
 
         .stage {
-          width: 100%;
-          max-width: 100%;
-          max-height: 100%;
-          aspect-ratio: var(--scene-width, 16) / var(--scene-height, 9);
-          background: #18212a;
-          display: grid;
           position: relative;
-          place-self: center;
+          width: 100%;
+          height: 100%;
+          background: #18212a;
+          overflow: hidden;
         }
 
         .stage.is-transparent {
@@ -61,6 +59,8 @@ class WonkyScenePreviewElement extends HTMLElement {
         }
 
         canvas {
+          position: absolute;
+          inset: 0;
           width: 100%;
           height: 100%;
           display: block;
@@ -164,6 +164,10 @@ class WonkyScenePreviewElement extends HTMLElement {
   setUseExternalCursor(active) {
     this.useExternalCursor = Boolean(active);
     this.setCanvasCursor(Boolean(this.hoveredObjectId));
+  }
+
+  setInteractionMode(mode) {
+    this.interactionMode = mode === 'touch' ? 'touch' : 'desktop';
   }
 
   connectedCallback() {
@@ -400,6 +404,8 @@ class WonkyScenePreviewElement extends HTMLElement {
     const canvasHeight = this.canvas.height;
     const sceneWidth = Math.max(1, this.preview.width || 1);
     const sceneHeight = Math.max(1, this.preview.height || 1);
+    const fittedRect = fitSceneRect(sceneWidth, sceneHeight, canvasWidth, canvasHeight);
+    this.lastFittedRect = fittedRect;
 
     ctx.setTransform(1, 0, 0, 1, 0, 0);
     ctx.clearRect(0, 0, canvasWidth, canvasHeight);
@@ -411,7 +417,7 @@ class WonkyScenePreviewElement extends HTMLElement {
 
     const backgroundImage = imageCache.get(this.currentBackgroundUrl)?.value ?? null;
     if (this.showBackground && backgroundImage) {
-      ctx.drawImage(backgroundImage, 0, 0, canvasWidth, canvasHeight);
+      ctx.drawImage(backgroundImage, fittedRect.left, fittedRect.top, fittedRect.width, fittedRect.height);
     } else if (this.showBackground && this.currentBackgroundUrl) {
       this.ensureImageLoaded(this.currentBackgroundUrl);
     }
@@ -434,10 +440,11 @@ class WonkyScenePreviewElement extends HTMLElement {
         this.ensureImageLoaded(imageUrl);
         continue;
       }
-      const x = (render.left / sceneWidth) * canvasWidth;
-      const y = (render.top / sceneHeight) * canvasHeight;
-      const width = (render.width / sceneWidth) * canvasWidth;
-      const height = (render.height / sceneHeight) * canvasHeight;
+      const bounds = previewBounds(render, sceneWidth, sceneHeight, canvasWidth, canvasHeight);
+      const x = bounds.left;
+      const y = bounds.top;
+      const width = bounds.width;
+      const height = bounds.height;
       if (width <= 0 || height <= 0) continue;
       ctx.drawImage(image, x, y, width, height);
       if (Number(object.id) === Number(this.focusedObjectId)) {
@@ -463,7 +470,8 @@ class WonkyScenePreviewElement extends HTMLElement {
       detail: {
         objectId: object.id,
         clientX: event.clientX,
-        clientY: event.clientY
+        clientY: event.clientY,
+        pointerType: this.lastPointerType || 'mouse'
       }
     }));
   }
@@ -477,13 +485,23 @@ class WonkyScenePreviewElement extends HTMLElement {
 
   onCanvasPointerDown(event) {
     if (event.button !== 0) return;
+    this.lastPointerType = event.pointerType || 'mouse';
     this.cancelLongPress();
     this.longPressTriggered = false;
+    this.longPressPointerType = event.pointerType || 'mouse';
+    if (this.interactionMode !== 'touch') return;
     this.longPressTimer = window.setTimeout(() => {
       const object = this.findObjectAtCanvasEvent(event);
-      if (!object) return;
       this.longPressTriggered = true;
-      this.dispatchObjectMenu(object, event);
+      this.dispatchEvent(new CustomEvent('preview-stage-longpress', {
+        bubbles: true,
+        detail: {
+          objectId: object?.id ?? null,
+          clientX: event.clientX,
+          clientY: event.clientY,
+          pointerType: event.pointerType || this.longPressPointerType || this.lastPointerType || 'touch'
+        }
+      }));
     }, 420);
   }
 
@@ -594,13 +612,15 @@ class WonkyScenePreviewElement extends HTMLElement {
     subtitleRoot.innerHTML = renderSubtitleMarkup(this.currentSubtitle);
   }
 
-  dispatchObjectMenu(object, event) {
+  dispatchObjectMenu(object, event, source = 'contextmenu') {
     this.dispatchEvent(new CustomEvent('preview-object-menu', {
       bubbles: true,
       detail: {
         objectId: object.id,
         clientX: event.clientX,
-        clientY: event.clientY
+        clientY: event.clientY,
+        pointerType: event.pointerType || this.longPressPointerType || this.lastPointerType || 'mouse',
+        source
       }
     }));
   }
@@ -620,6 +640,26 @@ class WonkyScenePreviewElement extends HTMLElement {
       top: rect.top + bounds.top,
       width: bounds.width,
       height: bounds.height
+    };
+  }
+
+  getDebugMetrics() {
+    const canvasRect = this.canvas?.getBoundingClientRect?.() ?? null;
+    const stageRect = this.getStageClientRect();
+    return {
+      stageRect: stageRect ? simplifyRect(stageRect) : null,
+      canvasRect: canvasRect ? simplifyRect(canvasRect) : null,
+      canvasPixels: this.canvas ? {width: this.canvas.width, height: this.canvas.height} : null,
+      fittedRect: this.lastFittedRect ? {
+        left: roundMetric(this.lastFittedRect.left),
+        top: roundMetric(this.lastFittedRect.top),
+        width: roundMetric(this.lastFittedRect.width),
+        height: roundMetric(this.lastFittedRect.height)
+      } : null,
+      previewSize: this.preview ? {
+        width: Number(this.preview.width) || 0,
+        height: Number(this.preview.height) || 0
+      } : null
     };
   }
 
@@ -645,14 +685,7 @@ async function loadImage(url) {
   const cached = imageCache.get(url);
   if (cached?.promise) return cached.promise;
 
-  const promise = fetch(url, {credentials: 'include', cache: 'default'})
-    .then(response => {
-      if (!response.ok) {
-        throw new Error(`Could not fetch image: ${url} (${response.status})`);
-      }
-      return response.blob();
-    })
-    .then(blob => blobToImage(blob))
+  const promise = imageUrlToImage(url)
     .then(image => {
       imageCache.set(url, {promise: Promise.resolve(image), value: image});
       return image;
@@ -667,7 +700,7 @@ async function loadImage(url) {
 }
 
 async function preloadPreviewAssets(preview, options = {}) {
-  if (!preview?.images?.length) return;
+  if (!preview) return;
   const onProgress = typeof options.onProgress === 'function' ? options.onProgress : null;
   const mode = options.mode === 'all' ? 'all' : 'initial';
   const urls = collectPreviewAssetUrls(preview, mode);
@@ -691,6 +724,7 @@ function collectPreviewAssetUrls(preview, mode = 'initial') {
     frame => Number(frame.frame_index) === backgroundFrameIndex
   ) ?? preview?.images?.[0] ?? null;
   if (selectedBackground) urls.add(uploadedFileUrl(selectedBackground.uploaded_file_id));
+  collectGlobalPreviewAssetUrls(preview, urls);
   for (const object of preview.objects ?? []) {
     if (object.default_render?.url) urls.add(resolvePreviewUrl(object.default_render.url));
     if (mode !== 'all') continue;
@@ -706,19 +740,32 @@ function collectPreviewAssetUrls(preview, mode = 'initial') {
   return urls;
 }
 
-function blobToImage(blob) {
-  const objectUrl = URL.createObjectURL(blob);
+function collectGlobalPreviewAssetUrls(preview, urls) {
+  const globalSettings = preview?.global_settings ?? {};
+  if (globalSettings.inventory_background_relative_path) {
+    urls.add(globalSettingsAssetUrl('inventory_background'));
+  }
+  if (globalSettings.verb_tag_background_relative_path) {
+    urls.add(globalSettingsAssetUrl('verb_tag_background'));
+  }
+  const cursorStates = globalSettings.cursor_states ?? {};
+  for (const stateKey of ['default', 'hover_interactive', 'busy', 'blocked']) {
+    if (cursorStates?.[stateKey]?.relative_path) {
+      urls.add(globalSettingsAssetUrl(`cursor_${stateKey}`));
+    }
+  }
+}
+
+function imageUrlToImage(url) {
   return new Promise((resolve, reject) => {
     const image = new Image();
     image.onload = () => {
-      URL.revokeObjectURL(objectUrl);
       resolve(image);
     };
     image.onerror = () => {
-      URL.revokeObjectURL(objectUrl);
-      reject(new Error('Could not decode image blob'));
+      reject(new Error(`Could not load image: ${url}`));
     };
-    image.src = objectUrl;
+    image.src = url;
   });
 }
 
@@ -733,12 +780,42 @@ function wait(durationSeconds) {
 }
 
 function previewBounds(render, sceneWidth, sceneHeight, canvasWidth, canvasHeight) {
+  const fittedRect = fitSceneRect(sceneWidth, sceneHeight, canvasWidth, canvasHeight);
   return {
-    left: (render.left / Math.max(1, sceneWidth || 1)) * canvasWidth,
-    top: (render.top / Math.max(1, sceneHeight || 1)) * canvasHeight,
-    width: (render.width / Math.max(1, sceneWidth || 1)) * canvasWidth,
-    height: (render.height / Math.max(1, sceneHeight || 1)) * canvasHeight
+    left: fittedRect.left + ((render.left / Math.max(1, sceneWidth || 1)) * fittedRect.width),
+    top: fittedRect.top + ((render.top / Math.max(1, sceneHeight || 1)) * fittedRect.height),
+    width: (render.width / Math.max(1, sceneWidth || 1)) * fittedRect.width,
+    height: (render.height / Math.max(1, sceneHeight || 1)) * fittedRect.height
   };
+}
+
+function fitSceneRect(sceneWidth, sceneHeight, availableWidth, availableHeight) {
+  const safeSceneWidth = Math.max(1, Number(sceneWidth) || 1);
+  const safeSceneHeight = Math.max(1, Number(sceneHeight) || 1);
+  const safeAvailableWidth = Math.max(1, Number(availableWidth) || 1);
+  const safeAvailableHeight = Math.max(1, Number(availableHeight) || 1);
+  const scale = Math.min(safeAvailableWidth / safeSceneWidth, safeAvailableHeight / safeSceneHeight);
+  const width = safeSceneWidth * scale;
+  const height = safeSceneHeight * scale;
+  return {
+    left: (safeAvailableWidth - width) / 2,
+    top: (safeAvailableHeight - height) / 2,
+    width,
+    height
+  };
+}
+
+function simplifyRect(rect) {
+  return {
+    left: roundMetric(rect.left),
+    top: roundMetric(rect.top),
+    width: roundMetric(rect.width),
+    height: roundMetric(rect.height)
+  };
+}
+
+function roundMetric(value) {
+  return Math.round((Number(value) || 0) * 100) / 100;
 }
 
 function buildSubtitleSignature(subtitle) {

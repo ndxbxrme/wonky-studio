@@ -208,7 +208,7 @@ const ActionsCtrl = app => async params => {
         {value: 'all', label: 'All triggers'},
         ...triggerTypes.map(type => ({
           value: type,
-          label: String(type).replace(/_/g, ' ')
+          label: humanTriggerTypeLabel(type)
         }))
       ];
       const objects = this.scene?.objects ?? [];
@@ -1097,7 +1097,7 @@ function triggerLabel(interaction, scene, variables, verbs, inventoryObjects) {
   if (trigger.type === 'key_press') {
     return `key press · ${trigger.key_code ?? 'key'}`;
   }
-  return String(trigger.type ?? 'scene_enter').replace(/_/g, ' ');
+  return humanTriggerTypeLabel(trigger.type ?? 'scene_enter');
 }
 
 function actionLabel(step) {
@@ -1226,10 +1226,15 @@ function findAnimationName(context, animationId) {
 }
 
 function formatTriggerLabelPrefix(triggerType, matchMode, objectName) {
-  const base = String(triggerType).replace(/_/g, ' ');
+  const base = humanTriggerTypeLabel(triggerType);
   if (matchMode === 'scene_default') return `scene default ${base}`;
   if (matchMode === 'object_default') return `default ${base} · ${objectName}`;
   return `${base} · ${objectName}`;
+}
+
+function humanTriggerTypeLabel(triggerType) {
+  if (String(triggerType) === 'object_click') return 'primary action';
+  return String(triggerType).replace(/_/g, ' ');
 }
 
 function describeObjectTarget(step, context) {

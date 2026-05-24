@@ -86,6 +86,7 @@ const PreviewCtrl = app => async params => {
     heldInventoryGhostTimer: null,
     feedbackPulse: null,
     feedbackPulseTimer: null,
+    inventoryBackdropHoldTimer: null,
     basePreview: null,
     overlayPreview: null,
     overlayShell: null,
@@ -95,6 +96,7 @@ const PreviewCtrl = app => async params => {
     inventoryOverlayBackdrop: null,
     inventoryOverlayFrame: null,
     inventoryStage: null,
+    inventorySurfaceClientRect: null,
     heldInventoryItemRoot: null,
     heldInventoryGhostRoot: null,
     stageRoot: null,
@@ -103,6 +105,7 @@ const PreviewCtrl = app => async params => {
     inventoryLayoutVersion: 0,
     loadingScreen: null,
     loadingOverlay: null,
+    startPreviewButton: null,
     loadingVisible: true,
     loadingTitle: 'Loading preview',
     loadingDetail: 'Fetching scene data…',
@@ -112,6 +115,11 @@ const PreviewCtrl = app => async params => {
     localMusicVolume: 5,
     startPromptVisible: false,
     audioUnlocked: false,
+    isTouchMode: false,
+    fullscreenSupported: false,
+    isFullscreenActive: false,
+    previewControlHint: 'Click objects to open verbs. Right click also opens verbs.',
+    startPromptHint: 'Click once to begin scene audio and run the opening actions.',
     stagePointerInside: false,
     pointerClientX: null,
     pointerClientY: null,
@@ -130,12 +138,22 @@ const PreviewCtrl = app => async params => {
         this.audioUnlocked = true;
         void previewAudioRuntime.resumePendingBgm();
       });
+      this.bind(document, 'fullscreenchange', () => this.updateFullscreenState());
       this.bind(window, 'pointermove', event => {
         this.syncHeldInventoryItem({clientX: event.clientX, clientY: event.clientY});
         this.updatePreviewPointer(event);
       });
       this.bind(window, 'resize', () => {
         this.syncInventoryOverlay();
+        this.scheduleViewportRefresh();
+      });
+      this.bind(window.visualViewport, 'resize', () => {
+        this.syncInventoryOverlay();
+        this.scheduleViewportRefresh();
+      });
+      this.bind(window, 'orientationchange', () => {
+        this.syncInventoryOverlay();
+        this.scheduleViewportRefresh();
       });
       this.bind(window, 'blur', () => this.clearPreviewPointer());
       this.previewSyncCleanup = listenScenePreview(this.sceneId, async () => {
@@ -165,6 +183,7 @@ const PreviewCtrl = app => async params => {
       if (this.heldItemMotionTimer) window.clearTimeout(this.heldItemMotionTimer);
       if (this.heldInventoryGhostTimer) window.clearTimeout(this.heldInventoryGhostTimer);
       if (this.feedbackPulseTimer) window.clearTimeout(this.feedbackPulseTimer);
+      if (this.inventoryBackdropHoldTimer) window.clearTimeout(this.inventoryBackdropHoldTimer);
       this.preloadTimer = null;
       this.unloadHandlers.forEach(unload => unload());
       this.unloadHandlers = [];
@@ -192,6 +211,8 @@ const PreviewCtrl = app => async params => {
       this.verbMenuRoot = this.root?.querySelector('[data-verb-menu-root]') ?? null;
       this.loadingScreen = this.root?.querySelector('[data-preview-loading-screen]') ?? null;
       this.loadingOverlay = this.root?.querySelector('[data-preview-loading-overlay]') ?? null;
+      this.startPreviewButton = this.root?.querySelector('[data-action="start-preview"]') ?? null;
+      this.refreshInputModeFlags();
     },
 
     bind(target, type, handler) {
@@ -215,6 +236,9 @@ const PreviewCtrl = app => async params => {
       this.clearViewBindings();
       this.bindView(this.root, 'click', event => this.onClick(event));
       this.bindView(this.root, 'contextmenu', event => this.onContextMenu(event));
+      this.bindView(this.root, 'pointerdown', event => this.onPointerDown(event));
+      this.bindView(this.root, 'pointerup', () => this.cancelInventoryBackdropHold());
+      this.bindView(this.root, 'pointercancel', () => this.cancelInventoryBackdropHold());
       this.bindView(this.root, 'mouseover', event => this.onMouseOver(event));
       this.bindView(this.root, 'mouseout', event => this.onMouseOut(event));
       this.bindView(this.root, 'submit', event => this.onSubmit(event));
@@ -226,14 +250,20 @@ const PreviewCtrl = app => async params => {
     bindPreviewEvents() {
       this.bindView(this.basePreview, 'preview-object-click', event => this.onPreviewObjectClick(event, 'base'));
       this.bindView(this.basePreview, 'preview-object-menu', event => this.onPreviewObjectMenu(event, 'base'));
+      this.bindView(this.basePreview, 'preview-stage-longpress', event => this.onPreviewStageLongPress(event, 'base'));
       this.bindView(this.basePreview, 'preview-object-mouseover', event => this.onPreviewObjectMouseover(event, 'base'));
       this.bindView(this.basePreview, 'preview-object-mouseout', event => this.onPreviewObjectMouseout(event, 'base'));
       this.bindView(this.basePreview, 'preview-error', event => this.onPreviewError(event));
       this.bindView(this.overlayPreview, 'preview-object-click', event => this.onPreviewObjectClick(event, 'overlay'));
       this.bindView(this.overlayPreview, 'preview-object-menu', event => this.onPreviewObjectMenu(event, 'overlay'));
+      this.bindView(this.overlayPreview, 'preview-stage-longpress', event => this.onPreviewStageLongPress(event, 'overlay'));
       this.bindView(this.overlayPreview, 'preview-object-mouseover', event => this.onPreviewObjectMouseover(event, 'overlay'));
       this.bindView(this.overlayPreview, 'preview-object-mouseout', event => this.onPreviewObjectMouseout(event, 'overlay'));
       this.bindView(this.overlayPreview, 'preview-error', event => this.onPreviewError(event));
+      this.bindView(this.inventoryOverlayShell, 'click', event => this.onInventoryShellClick(event));
+      this.bindView(this.inventoryOverlayShell, 'pointerdown', event => this.onInventoryShellPointerDown(event));
+      this.bindView(this.inventoryOverlayShell, 'pointerup', () => this.cancelInventoryBackdropHold());
+      this.bindView(this.inventoryOverlayShell, 'pointercancel', () => this.cancelInventoryBackdropHold());
     },
 
     async refreshData() {
@@ -256,12 +286,13 @@ const PreviewCtrl = app => async params => {
         });
         this.prepareSceneNavigation();
         this.prepareState();
-        this.applyCarriedVariables();
-        this.applyLocalAudioSettings();
-        this.primeCursorAssets();
-        this.scheduleConnectedScenePreload();
-        this.editorReady = Boolean(this.previewData);
-        this.editorMissing = !this.editorReady;
+      this.applyCarriedVariables();
+      this.applyLocalAudioSettings();
+      this.primeCursorAssets();
+      this.primeAudioAssets();
+      this.scheduleConnectedScenePreload();
+      this.editorReady = Boolean(this.previewData);
+      this.editorMissing = !this.editorReady;
       } catch {
         previewRouteTransitionInFlight = false;
         previewSceneCarryover = null;
@@ -364,6 +395,135 @@ const PreviewCtrl = app => async params => {
       );
       this.syncContinuousAudioState();
       this.syncRuntimePanels();
+    },
+
+    refreshInputModeFlags() {
+      this.isTouchMode = detectTouchMode();
+      this.previewControlHint = this.isTouchMode
+        ? 'Tap once to focus. Tap again for verbs. Press and hold for inventory and close actions.'
+        : 'Click objects to open verbs. Right click also opens verbs.';
+      this.startPromptHint = this.isTouchMode
+        ? 'Tap once to begin scene audio and run the opening actions.'
+        : 'Click once to begin scene audio and run the opening actions.';
+      this.fullscreenSupported = Boolean(
+        document.fullscreenEnabled
+        && this.stageRoot
+        && typeof this.stageRoot.requestFullscreen === 'function'
+      );
+      this.updateFullscreenState();
+      this.root?.classList.toggle('is-touch-mode', this.isTouchMode);
+      document.body.classList.toggle('preview-touch-shell', this.isTouchMode);
+      document.documentElement.classList.toggle('preview-touch-shell', this.isTouchMode);
+      this.syncTouchStageChrome();
+      if (this.startPreviewButton) {
+        this.startPreviewButton.textContent = this.isTouchMode
+          ? (this.fullscreenSupported ? 'Tap to start full screen' : 'Tap to start')
+          : 'Start preview';
+      }
+      this.basePreview?.setInteractionMode?.(this.isTouchMode ? 'touch' : 'desktop');
+      this.overlayPreview?.setInteractionMode?.(this.isTouchMode ? 'touch' : 'desktop');
+    },
+
+    updateFullscreenState() {
+      this.isFullscreenActive = Boolean(document.fullscreenElement && this.stageRoot && document.fullscreenElement === this.stageRoot);
+      document.body.classList.toggle('preview-touch-stage-fullscreen', this.isTouchMode && this.isFullscreenActive);
+      document.documentElement.classList.toggle('preview-touch-stage-fullscreen', this.isTouchMode && this.isFullscreenActive);
+      this.syncTouchStageChrome();
+      if (!this.isFullscreenActive && typeof screen?.orientation?.unlock === 'function') {
+        try {
+          screen.orientation.unlock();
+        } catch {}
+      }
+      this.scheduleViewportRefresh();
+    },
+
+    refreshPreviewCanvasLayout() {
+      window.requestAnimationFrame(() => {
+        this.basePreview?.renderCanvas?.();
+        this.overlayPreview?.renderCanvas?.();
+      });
+    },
+
+    scheduleViewportRefresh() {
+      this.refreshPreviewCanvasLayout();
+      window.setTimeout(() => {
+        this.syncTouchStageChrome();
+        this.refreshPreviewCanvasLayout();
+      }, 60);
+      window.setTimeout(() => {
+        this.syncTouchStageChrome();
+        this.refreshPreviewCanvasLayout();
+      }, 240);
+    },
+
+    syncTouchStageChrome() {
+      if (!this.stageRoot) return;
+      const previewGrid = this.root?.querySelector('.scene-runtime-grid');
+      const previewHeader = this.root?.querySelector('.preview-header');
+      const runtimeSidebar = this.root?.querySelector('.scene-runtime-sidebar');
+      if (this.isTouchMode) {
+        if (this.root) {
+          this.root.style.width = '100vw';
+          this.root.style.height = '100dvh';
+          this.root.style.minHeight = '100dvh';
+          this.root.style.margin = '0';
+          this.root.style.padding = '0';
+          this.root.style.gap = '0';
+          this.root.style.position = 'fixed';
+          this.root.style.inset = '0';
+          this.root.style.display = 'block';
+          this.root.style.background = '#000000';
+        }
+        if (previewGrid) {
+          previewGrid.style.width = '100%';
+          previewGrid.style.height = '100%';
+          previewGrid.style.display = 'block';
+          previewGrid.style.overflow = 'hidden';
+        }
+        this.stageRoot.style.padding = '0';
+        this.stageRoot.style.border = '0';
+        this.stageRoot.style.borderRadius = '0';
+        this.stageRoot.style.background = '#000000';
+        this.stageRoot.style.boxShadow = 'none';
+        this.stageRoot.style.position = 'fixed';
+        this.stageRoot.style.inset = '0';
+        this.stageRoot.style.width = '100vw';
+        this.stageRoot.style.height = '100dvh';
+        this.stageRoot.style.minHeight = '100dvh';
+        if (previewHeader) previewHeader.style.display = 'none';
+        if (runtimeSidebar) runtimeSidebar.style.display = 'none';
+      } else {
+        if (this.root) {
+          this.root.style.width = '';
+          this.root.style.height = '';
+          this.root.style.minHeight = '';
+          this.root.style.margin = '';
+          this.root.style.padding = '';
+          this.root.style.gap = '';
+          this.root.style.position = '';
+          this.root.style.inset = '';
+          this.root.style.display = '';
+          this.root.style.background = '';
+        }
+        if (previewGrid) {
+          previewGrid.style.width = '';
+          previewGrid.style.height = '';
+          previewGrid.style.display = '';
+          previewGrid.style.overflow = '';
+        }
+        this.stageRoot.style.padding = '';
+        this.stageRoot.style.border = '';
+        this.stageRoot.style.borderRadius = '';
+        this.stageRoot.style.background = '';
+        this.stageRoot.style.boxShadow = '';
+        this.stageRoot.style.position = '';
+        this.stageRoot.style.inset = '';
+        this.stageRoot.style.width = '';
+        this.stageRoot.style.height = '';
+        this.stageRoot.style.minHeight = '';
+        if (previewHeader) previewHeader.style.display = '';
+        if (runtimeSidebar) runtimeSidebar.style.display = '';
+      }
     },
 
     getActiveLayerName() {
@@ -583,6 +743,7 @@ const PreviewCtrl = app => async params => {
     },
 
     syncRuntimePanels() {
+      this.refreshInputModeFlags();
       const objectsRoot = this.root?.querySelector('[data-preview-objects]');
       if (objectsRoot) objectsRoot.innerHTML = renderPreviewObjects(this.previewObjects);
       const variablesRoot = this.root?.querySelector('[data-preview-variables]');
@@ -710,6 +871,7 @@ const PreviewCtrl = app => async params => {
       }
       if (!this.inventoryStage) return;
       if (!active) {
+        this.inventorySurfaceClientRect = null;
         this.inventoryStage.innerHTML = '';
         return;
       }
@@ -718,6 +880,7 @@ const PreviewCtrl = app => async params => {
       const render = surface => {
         if (!this.runtimeState?.inventoryOverlayOpen) return;
         if (layoutVersion !== this.inventoryLayoutVersion) return;
+        this.inventorySurfaceClientRect = resolveInventorySurfaceClientRect(this.inventoryStage, surface);
         this.inventoryStage.innerHTML = renderInventoryOverlay({
           slots: config.slots,
           items: this.runtimeState?.inventory ?? [],
@@ -1059,7 +1222,7 @@ const PreviewCtrl = app => async params => {
     },
 
     async runStartupSceneEnterActions() {
-      if (this.startupSceneEnterNeedsUserGesture() && !this.audioUnlocked) {
+      if (this.shouldShowStartupPrompt()) {
         this.startPromptVisible = true;
         this.syncStartOverlay();
         return;
@@ -1067,6 +1230,17 @@ const PreviewCtrl = app => async params => {
       this.startPromptVisible = false;
       this.syncStartOverlay();
       await this.runSceneEnterActions();
+    },
+
+    shouldShowStartupPrompt() {
+      return (
+        this.needsTouchFullscreenPrompt()
+        || (this.startupSceneEnterNeedsUserGesture() && !this.audioUnlocked)
+      );
+    },
+
+    needsTouchFullscreenPrompt() {
+      return this.isTouchMode && this.fullscreenSupported && !this.isFullscreenActive;
     },
 
     startupSceneEnterNeedsUserGesture() {
@@ -1094,9 +1268,15 @@ const PreviewCtrl = app => async params => {
       const startPreviewButton = event.target.closest('[data-action="start-preview"]');
       if (startPreviewButton) {
         this.audioUnlocked = true;
+        await this.ensureTouchFullscreen();
         this.startPromptVisible = false;
         this.syncStartOverlay();
         await this.runSceneEnterActions();
+        return;
+      }
+      const fullscreenButton = event.target.closest('[data-action="toggle-fullscreen"]');
+      if (fullscreenButton) {
+        await this.toggleFullscreen();
         return;
       }
       const verbButton = event.target.closest('[data-action="select-verb"]');
@@ -1155,7 +1335,8 @@ const PreviewCtrl = app => async params => {
       }
 
       const insideVerbMenu = event.target.closest('[data-verb-menu-root]');
-      const insideInventory = event.target.closest('[data-inventory-overlay-shell]');
+      const inventoryBackdrop = event.target.closest('[data-inventory-overlay-backdrop]');
+      const insideInventory = event.target.closest('.scene-runtime-inventory-surface, [data-action="select-inventory-item"]');
       if (this.activeVerbMenu && !insideVerbMenu && this.ignoreNextVerbMenuOutsideClick) {
         this.ignoreNextVerbMenuOutsideClick = false;
         return;
@@ -1165,9 +1346,50 @@ const PreviewCtrl = app => async params => {
       if (this.activeVerbMenu && !insideVerbMenu && !shouldSuppressVerbDismiss) {
         this.closeVerbMenu();
       }
+      if (this.runtimeState?.inventoryOverlayOpen && inventoryBackdrop) {
+        this.closeInventoryOverlay();
+        return;
+      }
       if (this.runtimeState?.inventoryOverlayOpen && !insideInventory) {
         this.closeInventoryOverlay();
       }
+    },
+
+    onPointerDown(event) {
+      if (!this.isTouchMode || !this.runtimeState?.inventoryOverlayOpen) return;
+      const inventoryBackdrop = event.target.closest?.('[data-inventory-overlay-backdrop]');
+      if (!inventoryBackdrop) return;
+      this.cancelInventoryBackdropHold();
+      this.inventoryBackdropHoldTimer = window.setTimeout(() => {
+        this.inventoryBackdropHoldTimer = null;
+        if (this.runtimeState?.inventoryOverlayOpen) this.closeInventoryOverlay();
+      }, 420);
+    },
+
+    onInventoryShellClick(event) {
+      if (!this.runtimeState?.inventoryOverlayOpen) return;
+      const insideInventory = isInventoryInteractionTarget(event.target)
+        || isPointerInsideInventorySurface(this.inventorySurfaceClientRect, event);
+      if (insideInventory) return;
+      event.preventDefault();
+      event.stopPropagation();
+      this.closeInventoryOverlay();
+    },
+
+    onInventoryShellPointerDown(event) {
+      if (!this.isTouchMode || !this.runtimeState?.inventoryOverlayOpen) return;
+      this.cancelInventoryBackdropHold();
+      this.inventoryBackdropHoldTimer = window.setTimeout(() => {
+        this.inventoryBackdropHoldTimer = null;
+        if (!this.runtimeState?.inventoryOverlayOpen) return;
+        this.closeInventoryOverlay();
+      }, 420);
+    },
+
+    cancelInventoryBackdropHold() {
+      if (!this.inventoryBackdropHoldTimer) return;
+      window.clearTimeout(this.inventoryBackdropHoldTimer);
+      this.inventoryBackdropHoldTimer = null;
     },
 
     onContextMenu(event) {
@@ -1304,8 +1526,11 @@ const PreviewCtrl = app => async params => {
         else this.showInteractionPulse('blocked', layer, objectId, event.detail ?? {});
         return;
       }
-      const matched = await this.triggerObjectClick(layer, objectId, event.detail ?? {});
-      if (matched) this.showInteractionPulse('accept', layer, objectId, event.detail ?? {});
+      if (this.isTouchMode) {
+        await this.handleTouchObjectTap(layer, objectId, event.detail ?? {});
+        return;
+      }
+      this.openVerbMenu(layer, objectId, event.detail ?? {});
     },
 
     async onPreviewObjectMenu(event, layer) {
@@ -1318,6 +1543,67 @@ const PreviewCtrl = app => async params => {
       const objectId = Number(event.detail?.objectId);
       if (!objectId) return;
       this.openVerbMenu(layer, objectId, event.detail ?? {});
+    },
+
+    async onPreviewStageLongPress(event, layer) {
+      if (!this.isTouchMode) return;
+      if (layer === 'base' && this.overlayPreviewData) return;
+      if (layer === 'overlay' && !this.overlayPreviewData) return;
+      await this.ensureTouchFullscreen();
+      if (this.activeVerbMenu) {
+        this.closeVerbMenu();
+        return;
+      }
+      if (this.runtimeState?.inventoryOverlayOpen) {
+        this.closeInventoryOverlay();
+        return;
+      }
+      if (this.getHeldInventoryItem()) {
+        this.clearHeldInventoryItem();
+        return;
+      }
+      if (this.overlayPreviewData) {
+        await this.closeOverlayScene();
+        return;
+      }
+      this.openInventoryOverlay();
+    },
+
+    async handleTouchObjectTap(layer, objectId, metadata = {}) {
+      await this.ensureTouchFullscreen();
+      const alreadyFocused = Number(this.getFocusedObjectId(layer)) === Number(objectId);
+      await this.applyTouchObjectFocus(layer, objectId);
+      if (alreadyFocused) {
+        this.openVerbMenu(layer, objectId, metadata);
+      }
+    },
+
+    async applyTouchObjectFocus(layer, objectId) {
+      const previousObjectId = layer === 'overlay' ? this.hoveredOverlayObjectId : this.hoveredBaseObjectId;
+      if (previousObjectId && Number(previousObjectId) !== Number(objectId)) {
+        await this.executeMatchingInteractionsForLayer(
+          layer,
+          interaction => (
+            interaction.trigger?.type === 'object_mouseout'
+            && Number(interaction.trigger?.object_id) === Number(previousObjectId)
+          ),
+          {reason: 'object_mouseout', objectId: Number(previousObjectId), touchDriven: true}
+        );
+      }
+      if (layer === 'overlay') this.hoveredOverlayObjectId = objectId;
+      else this.hoveredBaseObjectId = objectId;
+      this.setFocusedObjectId(layer, objectId);
+      this.syncCustomCursor();
+      const state = this.getLayerRuntimeState(layer)?.objects?.[objectId];
+      if (!state?.enabled || !state?.visible) return;
+      await this.executeMatchingInteractionsForLayer(
+        layer,
+        interaction => (
+          interaction.trigger?.type === 'object_mouseover'
+          && Number(interaction.trigger?.object_id) === Number(objectId)
+        ),
+        {reason: 'object_mouseover', objectId, touchDriven: true}
+      );
     },
 
     async triggerObjectClick(layer, objectId, metadata = {}) {
@@ -1352,6 +1638,7 @@ const PreviewCtrl = app => async params => {
     },
 
     async onPreviewObjectMouseover(event, layer) {
+      if (this.isTouchMode) return;
       if (layer === 'base' && this.overlayPreviewData) return;
       if (layer === 'overlay' && !this.overlayPreviewData) return;
       const objectId = Number(event.detail?.objectId);
@@ -1372,6 +1659,7 @@ const PreviewCtrl = app => async params => {
     },
 
     async onPreviewObjectMouseout(event, layer) {
+      if (this.isTouchMode) return;
       if (layer === 'base' && this.overlayPreviewData) return;
       if (layer === 'overlay' && !this.overlayPreviewData) return;
       const objectId = Number(event.detail?.objectId);
@@ -1430,6 +1718,42 @@ const PreviewCtrl = app => async params => {
       this.ignoreNextVerbMenuOutsideClick = true;
       this.bumpVerbMenuTimeout();
       this.syncVerbMenu();
+    },
+
+    async toggleFullscreen() {
+      if (!this.fullscreenSupported || !this.stageRoot) return;
+      if (this.isFullscreenActive) {
+        if (typeof document.exitFullscreen === 'function') {
+          try {
+            await document.exitFullscreen();
+          } catch {
+            return;
+          }
+        }
+      } else {
+        if (typeof this.stageRoot.requestFullscreen === 'function') {
+          try {
+            await this.stageRoot.requestFullscreen();
+            await this.tryLockLandscapeOrientation();
+          } catch {
+            return;
+          }
+        }
+      }
+      this.updateFullscreenState();
+      this.refreshInputModeFlags();
+    },
+
+    async ensureTouchFullscreen() {
+      if (!this.needsTouchFullscreenPrompt()) return;
+      await this.toggleFullscreen();
+    },
+
+    async tryLockLandscapeOrientation() {
+      if (!this.isTouchMode || typeof screen?.orientation?.lock !== 'function') return;
+      try {
+        await screen.orientation.lock('landscape');
+      } catch {}
     },
 
     closeVerbMenu() {
@@ -2052,6 +2376,14 @@ const PreviewCtrl = app => async params => {
       }
     },
 
+    primeAudioAssets() {
+      const urls = collectPreviewAudioUrls(this.previewData);
+      if (this.overlayPreviewData) {
+        urls.push(...collectPreviewAudioUrls(this.overlayPreviewData));
+      }
+      void previewAudioRuntime.preloadUrls(urls);
+    },
+
     resolveCustomCursorState() {
       if (this.loadingVisible && this.previewData?.global_settings?.cursor_states?.busy?.relative_path) {
         return {stateKey: CURSOR_STATE_BUSY};
@@ -2459,6 +2791,30 @@ function pickAudioCandidate(line, language) {
   const choicePool = selected.length ? selected : [candidates[0]];
   const choice = choicePool[Math.floor(Math.random() * choicePool.length)];
   return choice ? [{audioUrl: scriptAudioCandidateUrl(choice.id)}] : [];
+}
+
+function collectPreviewAudioUrls(previewData) {
+  const urls = [];
+  for (const asset of previewData?.audio_assets ?? []) {
+    if (!asset?.id) continue;
+    urls.push(audioAssetUrl(asset.id));
+  }
+  for (const line of previewData?.script_lines ?? []) {
+    for (const candidate of line?.audio_candidates ?? []) {
+      if (!candidate?.id || !candidate?.relative_path) continue;
+      urls.push(scriptAudioCandidateUrl(candidate.id));
+    }
+  }
+  return urls;
+}
+
+function detectTouchMode() {
+  if (typeof window === 'undefined') return false;
+  return Boolean(
+    navigator.maxTouchPoints > 0
+    || window.matchMedia?.('(pointer: coarse)')?.matches
+    || window.matchMedia?.('(hover: none)')?.matches
+  );
 }
 
 function formatRuntimeValue(value) {
@@ -3110,4 +3466,38 @@ async function preloadConnectedScenes(sceneIds) {
         }
       })
   );
+}
+
+function resolveInventorySurfaceClientRect(stage, surface) {
+  const stageRect = stage?.getBoundingClientRect?.();
+  if (!stageRect) return null;
+  if (!surface) {
+    return {
+      left: stageRect.left,
+      top: stageRect.top,
+      right: stageRect.right,
+      bottom: stageRect.bottom
+    };
+  }
+  const scale = Number(surface.scale || 1);
+  const width = Number(surface.width || 0) * scale;
+  const height = Number(surface.height || 0) * scale;
+  const left = stageRect.left + Number(surface.left || 0);
+  const top = stageRect.top + Number(surface.top || 0);
+  return {
+    left,
+    top,
+    right: left + width,
+    bottom: top + height
+  };
+}
+
+function isInventoryInteractionTarget(target) {
+  return target instanceof Element
+    && Boolean(target.closest('[data-action="select-inventory-item"]'));
+}
+
+function isPointerInsideInventorySurface(rect, event) {
+  if (!rect) return false;
+  return pointInsideRect(Number(event.clientX), Number(event.clientY), rect);
 }

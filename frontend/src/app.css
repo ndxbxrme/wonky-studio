@@ -19,6 +19,14 @@ body {
     #f7f8f3;
 }
 
+html.preview-touch-shell,
+html.preview-touch-stage-fullscreen,
+body.preview-touch-shell,
+body.preview-touch-stage-fullscreen {
+  background: #000000;
+  overflow: hidden;
+}
+
 button,
 input,
 select {
@@ -1869,6 +1877,25 @@ textarea {
   overflow: hidden;
 }
 
+.scene-runtime-page.is-touch-mode {
+  width: 100%;
+  height: 100dvh;
+  min-height: 100dvh;
+  margin: 0;
+  padding: 0;
+  gap: 0;
+  grid-template-rows: minmax(0, 1fr);
+  background: #000000;
+  position: fixed;
+  inset: 0;
+  z-index: 0;
+}
+
+.scene-runtime-page.is-touch-mode .preview-header,
+.scene-runtime-page.is-touch-mode .scene-runtime-sidebar {
+  display: none;
+}
+
 .scene-runtime-grid {
   min-height: 0;
   height: 100%;
@@ -1877,6 +1904,11 @@ textarea {
   grid-template-columns: minmax(0, 1fr) 332px;
   gap: 16px;
   align-items: stretch;
+}
+
+.scene-runtime-page.is-touch-mode .scene-runtime-grid {
+  grid-template-columns: minmax(0, 1fr);
+  gap: 0;
 }
 
 .scene-runtime-stage {
@@ -1891,6 +1923,35 @@ textarea {
   position: relative;
   overflow: hidden;
   align-items: stretch;
+}
+
+.scene-runtime-page.is-touch-mode .scene-runtime-stage {
+  width: 100%;
+  height: 100dvh;
+  min-height: 100dvh;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: #000000;
+  box-shadow: none;
+}
+
+.scene-runtime-stage:fullscreen,
+.scene-runtime-stage:-webkit-full-screen {
+  position: fixed;
+  inset: 0;
+  width: auto;
+  height: auto;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: #000000;
+  box-shadow: none;
+}
+
+.scene-runtime-stage:fullscreen::backdrop,
+.scene-runtime-stage:-webkit-full-screen::backdrop {
+  background: #000000;
 }
 
 .scene-runtime-loading-screen {
@@ -1916,6 +1977,14 @@ textarea {
   backdrop-filter: blur(5px);
 }
 
+.scene-runtime-page.is-touch-mode .scene-runtime-loading-overlay,
+.scene-runtime-page.is-touch-mode .scene-runtime-start-overlay,
+.scene-runtime-page.is-touch-mode .scene-runtime-overlay-shell,
+.scene-runtime-page.is-touch-mode .scene-runtime-inventory-shell,
+.scene-runtime-page.is-touch-mode .scene-runtime-fade {
+  inset: 0;
+}
+
 .scene-runtime-loading-overlay.is-hidden {
   display: none;
 }
@@ -1929,6 +1998,31 @@ textarea {
   padding: 24px;
   background: linear-gradient(180deg, rgba(248, 246, 239, 0.82) 0%, rgba(241, 236, 225, 0.8) 100%);
   backdrop-filter: blur(4px);
+}
+
+.scene-runtime-page.is-touch-mode .scene-runtime-start-overlay .scene-runtime-loading-card {
+  width: auto;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  box-shadow: none;
+}
+
+.scene-runtime-page.is-touch-mode .scene-runtime-start-overlay .eyebrow,
+.scene-runtime-page.is-touch-mode .scene-runtime-start-overlay h2,
+.scene-runtime-page.is-touch-mode .scene-runtime-start-overlay .muted {
+  display: none;
+}
+
+.scene-runtime-page.is-touch-mode .scene-runtime-start-overlay .form-actions {
+  margin: 0;
+}
+
+.scene-runtime-page.is-touch-mode .scene-runtime-start-overlay .button {
+  min-width: min(84vw, 320px);
+  min-height: 56px;
+  font-size: 1rem;
+  border-radius: 999px;
 }
 
 .scene-runtime-start-overlay.is-hidden {
@@ -2009,6 +2103,10 @@ textarea {
   opacity: 0;
 }
 
+.scene-runtime-page.is-touch-mode .scene-runtime-overlay-backdrop {
+  border-radius: 0;
+}
+
 .scene-runtime-overlay-frame {
   position: relative;
   z-index: 1;
@@ -2016,6 +2114,12 @@ textarea {
   height: min(100%, 760px);
   display: grid;
   opacity: 0;
+}
+
+.scene-runtime-page.is-touch-mode .scene-runtime-overlay-frame,
+.scene-runtime-page.is-touch-mode .scene-runtime-inventory-frame {
+  width: 100%;
+  height: 100%;
 }
 
 .scene-runtime-overlay-frame wonky-scene-preview {

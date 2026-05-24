@@ -20,7 +20,7 @@
       <div>
         <p class="eyebrow">Preview</p>
         <h1>{{previewData.title}}</h1>
-        <p>{{previewData.images.length}} frames · {{previewObjects.length}} objects · click the scene to trigger actions</p>
+        <p>{{previewData.images.length}} frames · {{previewObjects.length}} objects · {{previewControlHint}}</p>
       </div>
       <div class="scene-header__actions">
         <div class="scene-header__action-row">
@@ -39,6 +39,12 @@
         </div>
         <div class="scene-header__action-row">
           <div class="scene-header__button-group">
+            {{#if fullscreenSupported}}
+              <button class="button secondary compact" type="button" data-action="toggle-fullscreen">
+                {{#if isFullscreenActive}}Exit fullscreen{{/if}}
+                {{#if not isFullscreenActive}}Fullscreen{{/if}}
+              </button>
+            {{/if}}
             <button class="button secondary compact" type="button" data-action="refresh-preview">Refresh</button>
             <button class="button secondary compact" type="button" data-action="toggle-background">
               {{#if showBackground}}Hide background{{/if}}
@@ -70,7 +76,7 @@
           <div class="scene-runtime-loading-card">
             <p class="eyebrow">Preview</p>
             <h2>Ready to start</h2>
-            <p class="muted">Click once to begin scene audio and run the opening actions.</p>
+            <p class="muted">{{startPromptHint}}</p>
             <div class="form-actions">
               <button class="button primary" type="button" data-action="start-preview">Start preview</button>
             </div>

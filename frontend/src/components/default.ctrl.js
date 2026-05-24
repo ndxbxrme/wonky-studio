@@ -262,28 +262,28 @@ const DefaultCtrl = app => async () => {
     exportProject(button) {
       const status = document.querySelector('[data-project-archive-status]');
       button.disabled = true;
-      applyStatus(status, 'Preparing project export...');
+      applyStatus(status, 'Preparing project zip...');
       window.location.assign('/api/admin/export-project');
       window.setTimeout(() => {
         button.disabled = false;
-        applyStatus(status, 'Project export started.');
+        applyStatus(status, 'Project download started.');
       }, 800);
     },
 
     async exportRuntimeBundle(button) {
       const status = document.querySelector('[data-project-archive-status]');
       button.disabled = true;
-      applyStatus(status, 'Preparing runtime bundle...');
+      applyStatus(status, 'Preparing Godot project files...');
       try {
         const result = await apiFetch('/api/admin/export-runtime-bundle', {method: 'POST'});
         const sceneCount = Number(result.archive?.scene_count ?? 0);
         const scriptLineCount = Number(result.archive?.script_line_count ?? 0);
         applyStatus(
           status,
-          `Wrote ${result.output_path}. Included ${sceneCount} scene${sceneCount === 1 ? '' : 's'}, ${scriptLineCount} referenced script line${scriptLineCount === 1 ? '' : 's'}, and ${result.archive?.file_count ?? 0} asset file${Number(result.archive?.file_count ?? 0) === 1 ? '' : 's'}.`,
+          `Saved Godot project files to ${result.output_path}. Included ${sceneCount} scene${sceneCount === 1 ? '' : 's'}, ${scriptLineCount} script line${scriptLineCount === 1 ? '' : 's'}, and ${result.archive?.file_count ?? 0} asset file${Number(result.archive?.file_count ?? 0) === 1 ? '' : 's'}.`,
         );
       } catch (error) {
-        applyStatus(status, error?.message || 'Could not write runtime bundle.');
+        applyStatus(status, error?.message || 'Could not save Godot project files.');
       } finally {
         button.disabled = false;
       }
@@ -292,16 +292,16 @@ const DefaultCtrl = app => async () => {
     async exportGodotCodeFiles(button) {
       const status = document.querySelector('[data-project-archive-status]');
       button.disabled = true;
-      applyStatus(status, 'Exporting Godot code files...');
+      applyStatus(status, 'Updating Godot project files...');
       try {
         const result = await apiFetch('/api/admin/export-godot-code-files', {method: 'POST'});
         const fileCount = Number(result.file_count ?? 0);
         applyStatus(
           status,
-          `Updated Godot shell in ${result.output_path}. Copied ${fileCount} file${fileCount === 1 ? '' : 's'} without touching runtime assets.`,
+          `Updated the Godot project in ${result.output_path}. Copied ${fileCount} file${fileCount === 1 ? '' : 's'}.`,
         );
       } catch (error) {
-        applyStatus(status, error?.message || 'Could not export Godot code files.');
+        applyStatus(status, error?.message || 'Could not update the Godot project files.');
       } finally {
         button.disabled = false;
       }
@@ -318,7 +318,7 @@ const DefaultCtrl = app => async () => {
         const sizeMb = sizeBytes > 0 ? (sizeBytes / (1024 * 1024)).toFixed(1) : '0.0';
         applyStatus(
           status,
-          `Wrote ${result.output_path}. Packed ${fileCount} file${fileCount === 1 ? '' : 's'} from ${result.source_folder_path} into a ${sizeMb} MB zip. Starting download...`,
+          `Built ${sizeMb} MB zip at ${result.output_path}. Packed ${fileCount} file${fileCount === 1 ? '' : 's'}. Starting download...`,
         );
         window.location.assign(apiUrl(result.download_path || '/api/admin/export-runtime-bundle-zip/download'));
       } catch (error) {
@@ -335,7 +335,7 @@ const DefaultCtrl = app => async () => {
       try {
         const result = await apiFetch('/api/admin/export-database-backup', {method: 'POST'});
         const sceneCount = Number(result.archive?.table_counts?.scenes ?? 0);
-        applyStatus(status, `Wrote ${result.backup_path}. Included ${sceneCount} scene${sceneCount === 1 ? '' : 's'}.`);
+        applyStatus(status, `Saved ${result.backup_path}. Included ${sceneCount} scene${sceneCount === 1 ? '' : 's'}.`);
       } catch (error) {
         applyStatus(status, error?.message || 'Could not write backup.json.');
       } finally {
@@ -373,7 +373,7 @@ const DefaultCtrl = app => async () => {
 
     async resetDatabase(button) {
       const confirmed = window.confirm(
-        'Reset workspace data? This clears scenes, uploads, assets, prompts, masks, and invites, but keeps users.'
+        'Reset workspace data? This clears scenes, uploads, assets, prompts, masks, and invites, but keeps team accounts.'
       );
       if (!confirmed) return;
 
@@ -400,7 +400,7 @@ const DefaultCtrl = app => async () => {
     async importProject(file) {
       if (!(file instanceof File)) return;
       const confirmed = window.confirm(
-        'Import a project zip into this workspace? Import only works on an empty workspace and will fail if content already exists.'
+        'Import a project zip here? Import only works if there is no existing project data.'
       );
       if (!confirmed) return;
       const status = document.querySelector('[data-project-archive-status]');
@@ -427,7 +427,7 @@ const DefaultCtrl = app => async () => {
 
     async importDatabaseBackup(button) {
       const confirmed = window.confirm(
-        'Import /mnt/d/wonky-studio/backup.json into this workspace? Import only works on an empty workspace.'
+        'Import /mnt/d/wonky-studio/backup.json here? Import only works if there is no existing project data.'
       );
       if (!confirmed) return;
       const status = document.querySelector('[data-database-backup-status]');
