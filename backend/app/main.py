@@ -5627,6 +5627,38 @@ def _normalize_action_step(
             }
         )
         return normalized
+    if step_type == "tween_to":
+        character_id = _required_int(step.get("character_id"), "Character is required")
+        _require_character(db_path, organization_id, character_id)
+        property_name = _choice(step.get("property"), {"x", "y", "scale", "opacity"}, "")
+        value = step.get("value")
+        if not isinstance(value, (int, float)) or isinstance(value, bool):
+            raise HTTPException(status_code=400, detail="Tween value must be a number")
+        normalized.update(
+            {
+                "character_id": character_id,
+                "property": property_name,
+                "value": float(value),
+                "duration_seconds": _positive_float(step.get("duration_seconds"), "Tween duration is required"),
+                "curve": _choice(
+                    step.get("curve"),
+                    {
+                        "linear",
+                        "ease_in",
+                        "ease_out",
+                        "ease_in_out",
+                        "back_in",
+                        "back_out",
+                        "back_in_out",
+                        "bounce_out",
+                        "elastic_out",
+                    },
+                    "ease_in_out",
+                ),
+                "wait": _choice(step.get("wait"), {"wait", "continue"}, "wait"),
+            }
+        )
+        return normalized
     if step_type == "set_variable":
         variable = _require_variable(
             db_path,
@@ -5825,6 +5857,7 @@ def _normalize_action_step(
                 "x": float(step.get("x") if step.get("x") is not None else 960),
                 "y": float(step.get("y") if step.get("y") is not None else 540),
                 "scale": float(step.get("scale") if step.get("scale") is not None else 1.0),
+                "opacity": min(1.0, max(0.0, float(step.get("opacity") if step.get("opacity") is not None else 1.0))),
                 "pose_variant_key": pose_variant_key,
                 "animation_id": animation_id,
                 "wait": _choice(step.get("wait"), {"wait", "continue"}, "continue"),

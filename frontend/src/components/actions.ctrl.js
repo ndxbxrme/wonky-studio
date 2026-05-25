@@ -25,6 +25,7 @@ const ACTION_TYPES = [
   {value: 'show_character', label: 'Show character'},
   {value: 'hide_character', label: 'Hide character'},
   {value: 'set_character_transform', label: 'Set character transform'},
+  {value: 'tween_to', label: 'Tween to'},
   {value: 'play_character_animation', label: 'Play character animation'},
   {value: 'open_overlay_scene', label: 'Open overlay scene'},
   {value: 'close_overlay_scene', label: 'Close overlay scene'},
@@ -965,6 +966,7 @@ function readActionStepForm(form) {
       x: Number(formData.get('character_x') || 960),
       y: Number(formData.get('character_y') || 540),
       scale: Number(formData.get('character_scale') || 1),
+      opacity: Number(formData.get('character_opacity') || 1),
       pose_variant_key: String(formData.get('pose_variant_key') || '').trim() || null,
       animation_id: Number(formData.get('character_animation_id')) || null,
       wait
@@ -984,6 +986,17 @@ function readActionStepForm(form) {
       x: Number(formData.get('character_x') || 960),
       y: Number(formData.get('character_y') || 540),
       scale: Number(formData.get('character_scale') || 1),
+      wait
+    };
+  }
+  if (type === 'tween_to') {
+    return {
+      type,
+      character_id: Number(formData.get('character_id')),
+      property: String(formData.get('tween_property') || 'x'),
+      value: Number(formData.get('tween_value') || 0),
+      duration_seconds: Number(formData.get('duration_seconds') || 1),
+      curve: String(formData.get('tween_curve') || 'ease_in_out'),
       wait
     };
   }
@@ -1078,7 +1091,11 @@ function setActionStepFormValues(form, step) {
   if (form.elements.character_x) form.elements.character_x.value = step.x ?? 960;
   if (form.elements.character_y) form.elements.character_y.value = step.y ?? 540;
   if (form.elements.character_scale) form.elements.character_scale.value = step.scale ?? 1;
+  if (form.elements.character_opacity) form.elements.character_opacity.value = step.opacity ?? 1;
   if (form.elements.pose_variant_key) form.elements.pose_variant_key.value = step.pose_variant_key ?? '';
+  if (form.elements.tween_property) form.elements.tween_property.value = step.property ?? 'x';
+  if (form.elements.tween_value) form.elements.tween_value.value = step.value ?? 1;
+  if (form.elements.tween_curve) form.elements.tween_curve.value = step.curve ?? 'ease_in_out';
   if (form.elements.character_animation_id) form.elements.character_animation_id.value = step.animation_id ?? '';
   if (form.elements.fade_color) form.elements.fade_color.value = step.color ?? '#000000';
   if (form.elements.affect_audio) form.elements.affect_audio.checked = Boolean(step.affect_audio);
@@ -1321,9 +1338,10 @@ function actionMeta(step, context) {
   if (step.type === 'crossfade_bgm') return `${findAudioAssetName(context, step.audio_asset_id)} · ${step.duration_seconds}s`;
   if (step.type === 'play_sfx') return findAudioAssetName(context, step.audio_asset_id);
   if (step.type === 'change_scene') return findSceneName(context, step.scene_id);
-  if (step.type === 'show_character') return `${findCharacterName(context, step.character_id)} · ${step.x}, ${step.y} · ${step.scale}`;
+  if (step.type === 'show_character') return `${findCharacterName(context, step.character_id)} · ${step.x}, ${step.y} · ${step.scale}${step.opacity != null ? ` · α ${step.opacity}` : ''}`;
   if (step.type === 'hide_character') return findCharacterName(context, step.character_id);
   if (step.type === 'set_character_transform') return `${findCharacterName(context, step.character_id)} · ${step.x}, ${step.y} · ${step.scale}`;
+  if (step.type === 'tween_to') return `${findCharacterName(context, step.character_id)} · ${step.property} → ${step.value} · ${step.duration_seconds}s · ${step.curve}`;
   if (step.type === 'play_character_animation') return `${findCharacterAnimationName(context, step.character_id, step.animation_id)}`;
   if (step.type === 'open_overlay_scene') return `open overlay ${findSceneName(context, step.scene_id)}`;
   if (step.type === 'close_overlay_scene') return 'close overlay';
@@ -1359,6 +1377,7 @@ function actionTypeHelp(type) {
     show_character: 'Shows a character in the foreground and optionally starts it on a pose or animation.',
     hide_character: 'Hides a currently visible character.',
     set_character_transform: 'Moves or rescales a visible character.',
+    tween_to: 'Tweens a character numeric property such as x, y, scale, or opacity over time. Back out gives a nice overshoot-and-settle entrance.',
     play_character_animation: 'Plays a saved character animation.',
     open_overlay_scene: 'Opens an overlay scene on top of the current base scene.',
     close_overlay_scene: 'Closes the current overlay scene and resumes the base scene.',

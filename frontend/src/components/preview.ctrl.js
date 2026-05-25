@@ -1969,6 +1969,31 @@ const PreviewCtrl = app => async params => {
       }
     },
 
+    async tweenCharacterProperty(step, version) {
+      const characterState = this.getCharacterState(step.character_id);
+      if (!characterState) return;
+      const property = String(step.property || '');
+      if (!['x', 'y', 'scale', 'opacity'].includes(property)) return;
+      const fromValue = Number(characterState[property] ?? (property === 'opacity' ? 1 : 0));
+      const toValue = Number(step.value);
+      if (!Number.isFinite(toValue)) return;
+      const durationMs = Math.max(1, Math.round(Number(step.duration_seconds || 0) * 1000));
+      const startedAt = performance.now();
+      while (true) {
+        if (version !== this.executionVersion) return;
+        const elapsed = performance.now() - startedAt;
+        const rawProgress = Math.min(1, elapsed / durationMs);
+        const easedProgress = applyTweenCurve(step.curve, rawProgress);
+        const nextValue = fromValue + ((toValue - fromValue) * easedProgress);
+        characterState[property] = property === 'opacity'
+          ? clampNumber(nextValue, 0, 1)
+          : nextValue;
+        this.pushRuntimeToPreview('base');
+        if (rawProgress >= 1) break;
+        await nextAnimationFrame();
+      }
+    },
+
     async executeAnimationPreview(layer, objectId, animationId) {
       const version = ++this.executionVersion;
       this.setStatus('Playing animation...');
@@ -2098,6 +2123,7 @@ const PreviewCtrl = app => async params => {
         characterState.x = Number.isFinite(Number(step.x)) ? Number(step.x) : Number(definition.default_x ?? 960);
         characterState.y = Number.isFinite(Number(step.y)) ? Number(step.y) : Number(definition.default_y ?? 540);
         characterState.scale = Number.isFinite(Number(step.scale)) ? Number(step.scale) : Number(definition.default_scale ?? 1);
+        characterState.opacity = clampNumber(Number(step.opacity ?? 1), 0, 1);
         characterState.objects = createCharacterObjectRuntimeState(definition);
         this.pushRuntimeToPreview('base');
         this.syncCharacterModalState();
@@ -2127,6 +2153,13 @@ const PreviewCtrl = app => async params => {
         characterState.y = Number(step.y ?? characterState.y ?? 540);
         characterState.scale = Number(step.scale ?? characterState.scale ?? 1);
         this.pushRuntimeToPreview('base');
+        return;
+      }
+
+      if (step.type === 'tween_to') {
+        const runPromise = this.tweenCharacterProperty(step, version);
+        if (step.wait !== 'continue') await runPromise;
+        else void runPromise;
         return;
       }
 
@@ -2755,6 +2788,7 @@ function createRuntimeSnapshot(previewData) {
       x: Number(character.default_x ?? 960),
       y: Number(character.default_y ?? 540),
       scale: Number(character.default_scale ?? 1),
+      opacity: 1,
       objects: createCharacterObjectRuntimeState(character)
     })),
     inventory: [],
@@ -3346,6 +3380,71 @@ function waitMilliseconds(milliseconds) {
 
 function nextAnimationFrame() {
   return new Promise(resolve => window.requestAnimationFrame(() => resolve()));
+}
+
+function applyTweenCurve(curve, progress) {
+  const clamped = clampNumber(Number(progress), 0, 1);
+  switch (String(curve || 'ease_in_out')) {
+    case 'linear':
+      return clamped;
+    case 'ease_in':
+      return clamped * clamped * clamped;
+    case 'ease_out': {
+      const inverse = 1 - clamped;
+      return 1 - (inverse * inverse * inverse);
+    }
+    case 'back_in': {
+      const c1 = 1.70158;
+      const c3 = c1 + 1;
+      return c3 * clamped * clamped * clamped - c1 * clamped * clamped;
+    }
+    case 'back_out': {
+      const c1 = 1.70158;
+      const c3 = c1 + 1;
+      return 1 + (c3 * Math.pow(clamped - 1, 3)) + (c1 * Math.pow(clamped - 1, 2));
+    }
+    case 'back_in_out': {
+      const c1 = 1.70158;
+      const c2 = c1 * 1.525;
+      if (clamped < 0.5) {
+        return (Math.pow(2 * clamped, 2) * ((((c2 + 1) * 2) * clamped) - c2)) / 2;
+      }
+      return (
+        Math.pow((2 * clamped) - 2, 2) * (((c2 + 1) * ((clamped * 2) - 2)) + c2) + 2
+      ) / 2;
+    }
+    case 'bounce_out':
+      return easeOutBounce(clamped);
+    case 'elastic_out':
+      return easeOutElastic(clamped);
+    case 'ease_in_out':
+    default:
+      return clamped < 0.5
+        ? 4 * clamped * clamped * clamped
+        : 1 - Math.pow(-2 * clamped + 2, 3) / 2;
+  }
+}
+
+function easeOutBounce(t) {
+  const n1 = 7.5625;
+  const d1 = 2.75;
+  if (t < 1 / d1) return n1 * t * t;
+  if (t < 2 / d1) {
+    const value = t - (1.5 / d1);
+    return (n1 * value * value) + 0.75;
+  }
+  if (t < 2.5 / d1) {
+    const value = t - (2.25 / d1);
+    return (n1 * value * value) + 0.9375;
+  }
+  const value = t - (2.625 / d1);
+  return (n1 * value * value) + 0.984375;
+}
+
+function easeOutElastic(t) {
+  const c4 = (2 * Math.PI) / 3;
+  if (t === 0 || t === 1) return t;
+  return Math.pow(2, -10 * t) * Math.sin(((t * 10) - 0.75) * c4) + 1;
 }
 
 function pointInsideRect(x, y, rect) {

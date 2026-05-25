@@ -428,12 +428,13 @@ func _build_initial_character_states(characters: Array) -> Dictionary:
 		var character_id: int = int(character_data.get("id", 0))
 		if character_id <= 0:
 			continue
-		states[character_id] = {
+	states[character_id] = {
 			"id": character_id,
 			"visible": false,
 			"x": float(character_data.get("default_x", 960.0)),
 			"y": float(character_data.get("default_y", 540.0)),
 			"scale": float(character_data.get("default_scale", 1.0)),
+			"opacity": 1.0,
 			"base_image_id": _default_character_image_id(character_data, "base"),
 			"viseme_image_id": 0,
 		}
@@ -540,8 +541,11 @@ func _render_current_scene() -> void:
 
 	var visible_characters: Array = _visible_character_states()
 	if not visible_characters.is_empty():
+		var dim_alpha: float = 0.0
+		for visible_character in visible_characters:
+			dim_alpha = maxf(dim_alpha, clampf(float((visible_character as Dictionary).get("opacity", 1.0)), 0.0, 1.0))
 		var dimmer := Polygon2D.new()
-		dimmer.color = Color(0.11, 0.11, 0.11, 0.46)
+		dimmer.color = Color(0.11, 0.11, 0.11, 0.46 * dim_alpha)
 		dimmer.polygon = PackedVector2Array([
 			current_scene_offset,
 			current_scene_offset + Vector2(scaled_size.x, 0),
@@ -593,6 +597,9 @@ func _render_character_state(character_state: Dictionary) -> void:
 	var character_def: Dictionary = _find_character_definition(character_id)
 	if character_def.is_empty():
 		return
+	var character_opacity: float = clampf(float(character_state.get("opacity", 1.0)), 0.0, 1.0)
+	if character_opacity <= 0.0:
+		return
 	var base_image: Dictionary = _find_character_image(character_def, int(character_state.get("base_image_id", 0)))
 	if base_image.is_empty():
 		return
@@ -611,6 +618,7 @@ func _render_character_state(character_state: Dictionary) -> void:
 	base_sprite.texture = base_texture
 	base_sprite.position = Vector2(left, top)
 	base_sprite.scale = Vector2(draw_width / float(base_texture.get_width()), draw_height / float(base_texture.get_height()))
+	base_sprite.modulate = Color(1, 1, 1, character_opacity)
 	scene_canvas.add_child(base_sprite)
 	var viseme_image_id: int = int(character_state.get("viseme_image_id", 0))
 	if viseme_image_id <= 0:
@@ -626,6 +634,7 @@ func _render_character_state(character_state: Dictionary) -> void:
 	viseme_sprite.texture = viseme_texture
 	viseme_sprite.position = Vector2(left, top)
 	viseme_sprite.scale = Vector2(draw_width / float(viseme_texture.get_width()), draw_height / float(viseme_texture.get_height()))
+	viseme_sprite.modulate = Color(1, 1, 1, character_opacity)
 	scene_canvas.add_child(viseme_sprite)
 
 
@@ -1066,6 +1075,12 @@ func _execute_step(step_data: Dictionary, metadata: Dictionary = {}) -> void:
 			_apply_hide_character(step_data)
 		"set_character_transform":
 			_apply_set_character_transform(step_data)
+		"tween_to":
+			if str(step_data.get("wait", "wait")) == "continue":
+				_tween_character_property(step_data)
+			else:
+				await _tween_character_property(step_data)
+			return
 		"play_character_animation":
 			await _play_character_animation(step_data)
 		"add_inventory_item":
@@ -1184,6 +1199,7 @@ func _apply_show_character(step_data: Dictionary) -> void:
 	character_state["x"] = float(step_data.get("x", character_def.get("default_x", 960.0)))
 	character_state["y"] = float(step_data.get("y", character_def.get("default_y", 540.0)))
 	character_state["scale"] = float(step_data.get("scale", character_def.get("default_scale", 1.0)))
+	character_state["opacity"] = clampf(float(step_data.get("opacity", 1.0)), 0.0, 1.0)
 	character_state["base_image_id"] = _resolve_character_base_image_id(character_def, str(step_data.get("pose_variant_key", "")))
 	character_state["viseme_image_id"] = 0
 	current_character_states[character_id] = character_state
@@ -1217,6 +1233,60 @@ func _apply_set_character_transform(step_data: Dictionary) -> void:
 	character_state["scale"] = float(step_data.get("scale", character_state.get("scale", 1.0)))
 	current_character_states[character_id] = character_state
 	_render_current_scene()
+
+
+func _tween_character_property(step_data: Dictionary) -> void:
+	var character_id: int = int(step_data.get("character_id", 0))
+	var character_state: Dictionary = current_character_states.get(character_id, {})
+	if character_state.is_empty():
+		return
+	var property_name: String = str(step_data.get("property", ""))
+	if property_name not in ["x", "y", "scale", "opacity"]:
+		return
+	var from_value: float = float(character_state.get(property_name, 1.0 if property_name == "opacity" else 0.0))
+	var to_value: float = float(step_data.get("value", from_value))
+	var duration_seconds: float = maxf(0.001, float(step_data.get("duration_seconds", 0.25)))
+	var tween: Tween = create_tween()
+	var curve: String = str(step_data.get("curve", "ease_in_out"))
+	tween.set_trans(Tween.TRANS_CUBIC)
+	match curve:
+		"linear":
+			tween.set_trans(Tween.TRANS_LINEAR)
+			tween.set_ease(Tween.EASE_IN_OUT)
+		"ease_in":
+			tween.set_ease(Tween.EASE_IN)
+		"ease_out":
+			tween.set_ease(Tween.EASE_OUT)
+		"back_in":
+			tween.set_trans(Tween.TRANS_BACK)
+			tween.set_ease(Tween.EASE_IN)
+		"back_out":
+			tween.set_trans(Tween.TRANS_BACK)
+			tween.set_ease(Tween.EASE_OUT)
+		"back_in_out":
+			tween.set_trans(Tween.TRANS_BACK)
+			tween.set_ease(Tween.EASE_IN_OUT)
+		"bounce_out":
+			tween.set_trans(Tween.TRANS_BOUNCE)
+			tween.set_ease(Tween.EASE_OUT)
+		"elastic_out":
+			tween.set_trans(Tween.TRANS_ELASTIC)
+			tween.set_ease(Tween.EASE_OUT)
+		_:
+			tween.set_ease(Tween.EASE_IN_OUT)
+	tween.tween_method(
+		func(interpolated_value: float) -> void:
+			var next_state: Dictionary = current_character_states.get(character_id, {})
+			if next_state.is_empty():
+				return
+			next_state[property_name] = clampf(interpolated_value, 0.0, 1.0) if property_name == "opacity" else interpolated_value
+			current_character_states[character_id] = next_state
+			_render_current_scene()
+		from_value,
+		to_value,
+		duration_seconds
+	)
+	await tween.finished
 
 
 func _play_character_animation(step_data: Dictionary) -> void:

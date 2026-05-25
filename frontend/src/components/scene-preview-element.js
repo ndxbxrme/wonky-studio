@@ -470,14 +470,17 @@ class WonkyScenePreviewElement extends HTMLElement {
         );
       });
     if (visibleCharacters.length) {
+      const dimAlpha = Math.max(...visibleCharacters.map(character => clampAlpha(character?.opacity ?? 1)), 0) * 0.46;
       ctx.save();
-      ctx.fillStyle = 'rgba(28, 28, 28, 0.46)';
+      ctx.fillStyle = `rgba(28, 28, 28, ${dimAlpha.toFixed(4)})`;
       ctx.fillRect(fittedRect.left, fittedRect.top, fittedRect.width, fittedRect.height);
       ctx.restore();
     }
     for (const characterState of visibleCharacters) {
       const definition = (this.preview.characters ?? []).find(item => Number(item.id) === Number(characterState.id));
       if (!definition) continue;
+      const characterOpacity = clampAlpha(characterState.opacity ?? 1);
+      if (characterOpacity <= 0) continue;
       const characterSceneWidth = Math.max(1, Number(definition.width || sceneWidth || 1));
       const characterSceneHeight = Math.max(1, Number(definition.height || sceneHeight || 1));
       const scale = Number(characterState.scale ?? definition.default_scale ?? 1) || 1;
@@ -509,7 +512,10 @@ class WonkyScenePreviewElement extends HTMLElement {
         const objectWidth = (Number(render.width ?? 0) / characterSceneWidth) * drawWidth;
         const objectHeight = (Number(render.height ?? 0) / characterSceneHeight) * drawHeight;
         if (objectWidth <= 0 || objectHeight <= 0) continue;
+        ctx.save();
+        ctx.globalAlpha = characterOpacity;
         ctx.drawImage(image, objectLeft, objectTop, objectWidth, objectHeight);
+        ctx.restore();
       }
     }
   }
@@ -880,6 +886,10 @@ function resolvePreviewUrl(url) {
 function wait(durationSeconds) {
   const milliseconds = Math.max(1, Math.round(Number(durationSeconds || 0) * 1000));
   return new Promise(resolve => window.setTimeout(resolve, milliseconds));
+}
+
+function clampAlpha(value) {
+  return Math.max(0, Math.min(1, Number(value) || 0));
 }
 
 function previewBounds(render, sceneWidth, sceneHeight, canvasWidth, canvasHeight) {
