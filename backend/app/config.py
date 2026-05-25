@@ -50,6 +50,15 @@ class Settings:
     inventory_image_output_root: Path = Path("/mnt/d/AI/ComfyUI_windows_portable/ComfyUI/output")
     inventory_image_timeout_seconds: float = 300.0
     scene_removal_workflow_path: Path = Path("temp/inventory-image-generator/remove_item_workflow.json")
+    character_image_provider: str = "comfyui"
+    character_image_workflow_path: Path = Path("temp/viseme_pose_workflow.json")
+    character_image_input_root: Path = Path("/mnt/d/wonky-studio/temp")
+    character_viseme_source_root: Path = Path("/mnt/d/wonky-studio/visemes")
+    character_pose_source_root: Path = Path("/mnt/d/wonky-studio/poses")
+    viseme_extraction_provider: str = "subprocess"
+    viseme_extraction_python_path: Path = Path("/mnt/d/wonky-studio/audio/xtts-env/Scripts/python.exe")
+    viseme_extraction_script_path: Path = Path("/mnt/d/wonky-studio/audio/extract_visemes.py")
+    viseme_extraction_timeout_seconds: float = 300.0
 
 
 def get_settings() -> Settings:
@@ -186,6 +195,44 @@ def get_settings() -> Settings:
                 "WONKY_STUDIO_SCENE_REMOVAL_WORKFLOW_PATH",
                 str(Path(__file__).resolve().parents[2] / "temp" / "inventory-image-generator" / "remove_item_workflow.json"),
             )
+        ),
+        character_image_provider=os.environ.get(
+            "WONKY_STUDIO_CHARACTER_IMAGE_PROVIDER",
+            "comfyui",
+        ),
+        character_image_workflow_path=Path(
+            os.environ.get(
+                "WONKY_STUDIO_CHARACTER_IMAGE_WORKFLOW_PATH",
+                str(Path(__file__).resolve().parents[2] / "temp" / "viseme_pose_workflow.json"),
+            )
+        ),
+        character_image_input_root=Path(
+            os.environ.get("WONKY_STUDIO_CHARACTER_IMAGE_INPUT_ROOT", "/mnt/d/wonky-studio/temp")
+        ),
+        character_viseme_source_root=Path(
+            os.environ.get("WONKY_STUDIO_CHARACTER_VISEME_SOURCE_ROOT", "/mnt/d/wonky-studio/visemes")
+        ),
+        character_pose_source_root=Path(
+            os.environ.get("WONKY_STUDIO_CHARACTER_POSE_SOURCE_ROOT", "/mnt/d/wonky-studio/poses")
+        ),
+        viseme_extraction_provider=os.environ.get(
+            "WONKY_STUDIO_VISEME_EXTRACTION_PROVIDER",
+            "subprocess",
+        ),
+        viseme_extraction_python_path=Path(
+            os.environ.get(
+                "WONKY_STUDIO_VISEME_EXTRACTION_PYTHON_PATH",
+                "/mnt/d/wonky-studio/audio/xtts-env/Scripts/python.exe",
+            )
+        ),
+        viseme_extraction_script_path=Path(
+            os.environ.get(
+                "WONKY_STUDIO_VISEME_EXTRACTION_SCRIPT_PATH",
+                "/mnt/d/wonky-studio/audio/extract_visemes.py",
+            )
+        ),
+        viseme_extraction_timeout_seconds=float(
+            os.environ.get("WONKY_STUDIO_VISEME_EXTRACTION_TIMEOUT_SECONDS", "300")
         ),
     )
 

@@ -194,6 +194,24 @@ const SceneCtrl = app => async params => {
     async loadSceneWithActions() {
       if (!this.scenes.length) await loadScenes();
       const latestScene = replaceScene(await loadScene(this.sceneId));
+      if (
+        latestScene?.presentation_mode === 'character'
+        && typeof window !== 'undefined'
+        && window.location.pathname.startsWith('/scene/')
+      ) {
+        try {
+          const characters = await apiFetch('/api/characters');
+          const character = Array.isArray(characters)
+            ? characters.find(item => Number(item.scene_id) === Number(latestScene.id))
+            : null;
+          if (character) {
+            app.goto(`/character/${character.id}`);
+            return null;
+          }
+        } catch {
+          // Fall through and render the backing scene if character lookup fails.
+        }
+      }
       this.interactions = await loadSceneInteractions(this.sceneId);
       this.scene = annotateSceneActions(latestScene, this.interactions);
       this.prepareSceneNavigation();
@@ -627,6 +645,8 @@ const SceneCtrl = app => async params => {
       const prompt = String(formData.get('prompt') ?? '').trim();
       const inventoryImagePrompt = String(formData.get('inventory_image_prompt') ?? '').trim();
       const previousInventoryImagePrompt = String(form.dataset.inventoryImagePrompt ?? '').trim();
+      const visible = formData.get('visible') === 'on';
+      const enabled = formData.get('enabled') === 'on';
       const keyboardTargetEnabled = formData.get('keyboard_target_enabled') === 'on';
       if (!prompt) return;
       applyStatus(status, 'Saving...');
@@ -636,11 +656,15 @@ const SceneCtrl = app => async params => {
           body: JSON.stringify({
             prompt,
             inventory_image_prompt: inventoryImagePrompt,
+            visible,
+            enabled,
             keyboard_target_enabled: keyboardTargetEnabled
           })
         });
         form.elements.prompt.value = updatedObject.prompt ?? prompt;
         form.elements.inventory_image_prompt.value = updatedObject.inventory_image_prompt ?? inventoryImagePrompt;
+        form.elements.visible.checked = updatedObject.visible ?? visible;
+        form.elements.enabled.checked = updatedObject.enabled ?? enabled;
         form.elements.keyboard_target_enabled.checked = Boolean(updatedObject.keyboard_target_enabled);
         form.dataset.inventoryImagePrompt = updatedObject.inventory_image_prompt ?? inventoryImagePrompt;
         const objectIndex = (this.scene?.objects ?? []).findIndex(sceneObject => Number(sceneObject.id) === numericObjectId);
@@ -651,6 +675,8 @@ const SceneCtrl = app => async params => {
             ...updatedObject,
             prompt: updatedObject.prompt ?? prompt,
             inventory_image_prompt: updatedObject.inventory_image_prompt ?? inventoryImagePrompt,
+            visible: updatedObject.visible ?? visible,
+            enabled: updatedObject.enabled ?? enabled,
             keyboard_target_enabled: Boolean(updatedObject.keyboard_target_enabled)
           };
         }

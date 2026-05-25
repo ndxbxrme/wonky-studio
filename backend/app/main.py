@@ -26,6 +26,9 @@ from .config import Settings, get_settings
 from .database import (
     assign_uploaded_file_to_scene,
     add_uploaded_file,
+    create_character,
+    create_character_animation,
+    create_character_object,
     create_audio_asset,
     create_asset,
     create_empty_scene,
@@ -46,6 +49,10 @@ from .database import (
     delete_audio_asset,
     delete_game_variable,
     delete_overlay_scene_binding,
+    delete_character,
+    delete_character_animation,
+    delete_character_image,
+    delete_character_object,
     delete_verb,
     delete_script_line,
     delete_scene_mask_prompt,
@@ -63,6 +70,10 @@ from .database import (
     get_global_settings,
     get_overlay_scene_binding_by_key,
     get_script_audio_candidate_by_id,
+    get_character_by_id,
+    get_character_image_by_id,
+    get_character_animation_by_id,
+    get_character_object_by_id,
     get_script_line_detail,
     get_scene_interaction,
     get_scene_object_for_organization,
@@ -82,6 +93,10 @@ from .database import (
     link_identity,
     list_assets,
     list_audio_assets,
+    list_characters,
+    list_character_animations,
+    list_character_images,
+    list_character_objects,
     list_game_variables,
     list_overlay_scene_bindings,
     list_object_animations_for_object,
@@ -91,6 +106,7 @@ from .database import (
     list_script_line_ids,
     list_script_lines,
     list_script_path_options,
+    list_script_audio_candidate_viseme_events,
     list_uploaded_image_files,
     list_scene_objects_for_scene,
     list_scene_images_for_scene,
@@ -120,6 +136,9 @@ from .database import (
     update_global_settings,
     update_scene,
     update_audio_asset,
+    update_character,
+    update_character_animation,
+    update_character_object,
     update_scene_interaction,
     update_script_audio_candidate,
     update_script_translation_review,
@@ -130,11 +149,21 @@ from .database import (
     update_scene_description,
     update_processing_job_progress,
     update_verb,
+    upsert_character_image,
     upsert_script_translation,
     upsert_user,
     upsert_script_audio_candidate,
+    replace_script_audio_candidate_viseme_events,
     create_verb,
     get_verb_by_id,
+)
+from .characters import (
+    CharacterImageProvider,
+    CharacterImageProviderUnavailable,
+    VisemeExtractionProvider,
+    VisemeExtractionProviderUnavailable,
+    build_character_image_provider,
+    build_viseme_extraction_provider,
 )
 from .object_rendering import render_masked_object_crop
 from .inventory_images import (
@@ -295,6 +324,8 @@ class SceneObject(BaseModel):
     category: str
     source: str
     sort_order: int = 0
+    visible: bool = True
+    enabled: bool = True
     keyboard_target_enabled: bool = False
     default_uploaded_file_id: int | None = None
     pickup_uploaded_file_id: int | None = None
@@ -439,6 +470,8 @@ class SceneObjectUpdate(BaseModel):
     prompt: str | None = Field(default=None, min_length=1, max_length=160)
     inventory_image_prompt: str | None = Field(default=None, max_length=240)
     sort_order: int | None = Field(default=None, ge=1, le=100000)
+    visible: bool | None = None
+    enabled: bool | None = None
     keyboard_target_enabled: bool | None = None
 
 
@@ -453,7 +486,7 @@ class SceneObjectMaskCreateRequest(BaseModel):
 class SceneUpdate(BaseModel):
     title: str | None = Field(default=None, min_length=1, max_length=160)
     description: str | None = Field(default=None, max_length=5000)
-    presentation_mode: str | None = Field(default=None, pattern="^(base|overlay)$")
+    presentation_mode: str | None = Field(default=None, pattern="^(base|overlay|character)$")
     background_frame_index: int | None = Field(default=None, ge=0)
 
 
@@ -678,6 +711,7 @@ class ScriptAudioCandidate(BaseModel):
     source_file: str
     start_seconds: float | None
     end_seconds: float | None
+    viseme_events: list[ScriptAudioCandidateVisemeEvent] = []
     created_at: str
     updated_at: str
 
@@ -933,6 +967,145 @@ class SceneInteractionsExport(BaseModel):
     interactions: list[SceneInteraction]
 
 
+class CharacterImage(BaseModel):
+    id: int
+    character_id: int
+    component_key: str
+    variant_key: str
+    kind: str
+    source_group: str = ""
+    source_name: str = ""
+    relative_path: str
+    original_filename: str = ""
+    width: int = 0
+    height: int = 0
+    is_default: bool = False
+    sort_order: int = 0
+    created_at: str
+    updated_at: str
+
+
+class CharacterAnimationFrameInput(BaseModel):
+    character_image_id: int = Field(ge=1)
+    duration_seconds: float = Field(gt=0, le=60)
+
+
+class CharacterAnimationFrame(BaseModel):
+    id: int
+    character_animation_id: int
+    character_image_id: int
+    duration_seconds: float
+    sort_order: int
+    created_at: str
+    updated_at: str
+    image: CharacterImage
+
+
+class CharacterAnimationCreate(BaseModel):
+    name: str = Field(min_length=1, max_length=120)
+    frames: list[CharacterAnimationFrameInput] = Field(default_factory=list, max_length=200)
+
+
+class CharacterAnimation(CharacterAnimationCreate):
+    id: int
+    character_id: int
+    created_at: str
+    updated_at: str
+    frames: list[CharacterAnimationFrame] = []
+
+
+class CharacterCreate(BaseModel):
+    name: str = Field(min_length=1, max_length=120)
+    description: str = Field(default="", max_length=1000)
+    sort_order: int = Field(default=0, ge=0, le=100000)
+    default_x: float = 960
+    default_y: float = 540
+    default_scale: float = Field(default=1.0, gt=0, le=20)
+
+
+class CharacterUpdate(BaseModel):
+    name: str | None = Field(default=None, min_length=1, max_length=120)
+    description: str | None = Field(default=None, max_length=1000)
+    mouth_scene_object_id: int | None = Field(default=None, ge=1)
+    clear_mouth_scene_object_id: bool = False
+    sort_order: int | None = Field(default=None, ge=0, le=100000)
+    default_x: float | None = None
+    default_y: float | None = None
+    default_scale: float | None = Field(default=None, gt=0, le=20)
+
+
+class Character(BaseModel):
+    id: int
+    organization_id: str
+    name: str
+    description: str
+    scene_id: int | None = None
+    mouth_scene_object_id: int | None = None
+    sort_order: int = 0
+    default_x: float = 960
+    default_y: float = 540
+    default_scale: float = 1.0
+    created_at: str
+    updated_at: str
+    scene: Scene | None = None
+    images: list[CharacterImage] = []
+    objects: list["CharacterObject"] = []
+    animations: list[CharacterAnimation] = []
+
+
+class CharacterImageCreate(BaseModel):
+    component_key: str = Field(pattern="^(base|viseme_mouth)$")
+    variant_key: str = Field(min_length=1, max_length=160)
+    kind: str = Field(pattern="^(default|pose|viseme)$")
+    source_group: str = Field(default="", max_length=160)
+    source_name: str = Field(default="", max_length=240)
+    is_default: bool = False
+    sort_order: int = Field(default=0, ge=0, le=100000)
+
+
+class CharacterObjectCreate(BaseModel):
+    name: str = Field(min_length=1, max_length=120)
+    description: str = Field(default="", max_length=1000)
+    prompt: str = Field(default="", max_length=2000)
+    sort_order: int = Field(default=0, ge=0, le=100000)
+    is_viseme_target: bool = False
+
+
+class CharacterObjectUpdate(BaseModel):
+    name: str | None = Field(default=None, min_length=1, max_length=120)
+    description: str | None = Field(default=None, max_length=1000)
+    prompt: str | None = Field(default=None, max_length=2000)
+    sort_order: int | None = Field(default=None, ge=0, le=100000)
+    is_viseme_target: bool | None = None
+
+
+class CharacterObject(BaseModel):
+    id: int
+    character_id: int
+    name: str
+    description: str = ""
+    prompt: str = ""
+    sort_order: int = 0
+    is_viseme_target: bool = False
+    mask_count: int = 0
+    created_at: str
+    updated_at: str
+
+
+class CharacterGenerateRequest(BaseModel):
+    pose_subfolder: str | None = Field(default=None, max_length=240)
+
+
+class ScriptAudioCandidateVisemeEvent(BaseModel):
+    id: int | None = None
+    script_audio_candidate_id: int
+    viseme_key: str
+    start_seconds: float
+    end_seconds: float
+    sort_order: int = 0
+    created_at: str | None = None
+
+
 class PreviewImageFrame(BaseModel):
     frame_index: int
     uploaded_file_id: int
@@ -981,6 +1154,50 @@ class PreviewObjectState(BaseModel):
     animations: list[PreviewObjectAnimation] = []
 
 
+class PreviewCharacterImage(BaseModel):
+    id: int
+    component_key: str
+    variant_key: str
+    kind: str
+    source_group: str = ""
+    source_name: str = ""
+    width: int = 0
+    height: int = 0
+    url: str
+
+
+class PreviewCharacterAnimationFrame(BaseModel):
+    id: int
+    character_image_id: int
+    duration_seconds: float
+    image: PreviewCharacterImage
+
+
+class PreviewCharacterAnimation(BaseModel):
+    id: int
+    name: str
+    frames: list[PreviewCharacterAnimationFrame] = []
+
+
+class PreviewCharacterState(BaseModel):
+    id: int
+    name: str
+    description: str = ""
+    scene_id: int | None = None
+    mouth_scene_object_id: int | None = None
+    sort_order: int = 0
+    default_x: float = 960
+    default_y: float = 540
+    default_scale: float = 1.0
+    width: int = 0
+    height: int = 0
+    background_frame_index: int = 0
+    objects: list[PreviewObjectState] = []
+    viseme_frame_renders: dict[str, PreviewObjectRender] = {}
+    images: list[PreviewCharacterImage] = []
+    animations: list[PreviewCharacterAnimation] = []
+
+
 class ScenePreview(BaseModel):
     scene_id: int
     title: str
@@ -998,6 +1215,7 @@ class ScenePreview(BaseModel):
     audio_assets: list[AudioAsset] = []
     variables: list[GameVariable] = []
     verbs: list[Verb] = []
+    characters: list[PreviewCharacterState] = []
     interactions: list[SceneInteraction] = []
     script_lines: list[ScriptLineDetail] = []
 
@@ -1019,6 +1237,8 @@ def create_app(
     inventory_image_provider: InventoryImageProvider | None = None,
     scene_removal_provider: InventoryImageProvider | None = None,
     script_localization_provider: ScriptLocalizationProvider | None = None,
+    character_image_provider: CharacterImageProvider | None = None,
+    viseme_extraction_provider: VisemeExtractionProvider | None = None,
 ) -> FastAPI:
     database_path = db_path or get_database_path()
     app_settings = settings or get_settings()
@@ -1057,6 +1277,20 @@ def create_app(
             line_localization_provider = build_script_localization_provider(app_settings)
         except ValueError as exc:
             line_localization_provider_error = str(exc)
+    scene_character_image_provider = character_image_provider
+    character_image_provider_error = None
+    if scene_character_image_provider is None:
+        try:
+            scene_character_image_provider = build_character_image_provider(app_settings)
+        except ValueError as exc:
+            character_image_provider_error = str(exc)
+    scene_viseme_extraction_provider = viseme_extraction_provider
+    viseme_extraction_provider_error = None
+    if scene_viseme_extraction_provider is None:
+        try:
+            scene_viseme_extraction_provider = build_viseme_extraction_provider(app_settings)
+        except ValueError as exc:
+            viseme_extraction_provider_error = str(exc)
 
     @asynccontextmanager
     async def lifespan(_: FastAPI):
@@ -2080,6 +2314,573 @@ def create_app(
         delete_verb(database_path, user["organization_id"], verb_id)
         return Response(status_code=204)
 
+    @app.get("/api/characters", response_model=list[Character])
+    def get_characters(user: dict[str, Any] = Depends(current_user)) -> list[dict[str, Any]]:
+        characters = []
+        for row in list_characters(database_path, user["organization_id"]):
+            if row.get("scene_id") is None:
+                backing_scene = create_empty_scene(
+                    database_path,
+                    organization_id=user["organization_id"],
+                    created_by_user_id=user["id"],
+                    title=str(row["name"]).strip(),
+                    description=f"Backing scene for character {str(row['name']).strip()}",
+                    presentation_mode="character",
+                )
+                row = update_character(
+                    database_path,
+                    organization_id=user["organization_id"],
+                    character_id=int(row["id"]),
+                    scene_id=int(backing_scene["id"]),
+                    update_scene_id=True,
+                ) or row
+            detail = _load_character_detail(database_path, user["organization_id"], int(row["id"]))
+            if detail is not None:
+                characters.append(detail)
+        return characters
+
+    @app.post("/api/characters", response_model=Character, status_code=201)
+    def post_character(
+        payload: CharacterCreate,
+        user: dict[str, Any] = Depends(current_user),
+    ) -> dict[str, Any]:
+        try:
+            backing_scene = create_empty_scene(
+                database_path,
+                organization_id=user["organization_id"],
+                created_by_user_id=user["id"],
+                title=payload.name.strip(),
+                description=f"Backing scene for character {payload.name.strip()}",
+                presentation_mode="character",
+            )
+            character = create_character(
+                database_path,
+                organization_id=user["organization_id"],
+                name=payload.name,
+                description=payload.description,
+                scene_id=int(backing_scene["id"]),
+                sort_order=payload.sort_order,
+                default_x=payload.default_x,
+                default_y=payload.default_y,
+                default_scale=payload.default_scale,
+            )
+        except sqlite3.IntegrityError as exc:
+            raise HTTPException(status_code=409, detail="Character name already exists") from exc
+        return _load_character_detail(database_path, user["organization_id"], int(character["id"]))
+
+    @app.get("/api/characters/{character_id}", response_model=Character)
+    def get_character(
+        character_id: int,
+        user: dict[str, Any] = Depends(current_user),
+    ) -> dict[str, Any]:
+        character_record = get_character_by_id(database_path, user["organization_id"], character_id)
+        if character_record is None:
+            raise HTTPException(status_code=404, detail="Character not found")
+        if character_record.get("scene_id") is None:
+            backing_scene = create_empty_scene(
+                database_path,
+                organization_id=user["organization_id"],
+                created_by_user_id=user["id"],
+                title=str(character_record["name"]).strip(),
+                description=f"Backing scene for character {str(character_record['name']).strip()}",
+                presentation_mode="character",
+            )
+            update_character(
+                database_path,
+                organization_id=user["organization_id"],
+                character_id=character_id,
+                scene_id=int(backing_scene["id"]),
+                update_scene_id=True,
+            )
+        character = _load_character_detail(database_path, user["organization_id"], character_id)
+        if not character:
+            raise HTTPException(status_code=404, detail="Character not found")
+        return character
+
+    @app.get("/api/character-pose-folders", response_model=list[str])
+    def get_character_pose_folders(user: dict[str, Any] = Depends(current_user)) -> list[str]:
+        root = app_settings.character_pose_source_root
+        if not root.exists() or not root.is_dir():
+            return []
+        return [entry.name for entry in sorted(root.iterdir()) if entry.is_dir()]
+
+    @app.patch("/api/characters/{character_id}", response_model=Character)
+    def patch_character(
+        character_id: int,
+        payload: CharacterUpdate,
+        user: dict[str, Any] = Depends(current_user),
+    ) -> dict[str, Any]:
+        existing = get_character_by_id(database_path, user["organization_id"], character_id)
+        if existing is None:
+            raise HTTPException(status_code=404, detail="Character not found")
+        mouth_scene_object_id = payload.mouth_scene_object_id
+        update_mouth_scene_object_id = payload.clear_mouth_scene_object_id or mouth_scene_object_id is not None
+        if mouth_scene_object_id is not None:
+            scene_object = get_scene_object_for_organization(
+                database_path,
+                object_id=mouth_scene_object_id,
+                organization_id=user["organization_id"],
+            )
+            if scene_object is None or int(scene_object["scene_id"]) != int(existing.get("scene_id") or 0):
+                raise HTTPException(status_code=400, detail="Mouth target must belong to this character")
+        try:
+            updated = update_character(
+                database_path,
+                organization_id=user["organization_id"],
+                character_id=character_id,
+                name=payload.name,
+                description=payload.description,
+                mouth_scene_object_id=mouth_scene_object_id,
+                update_mouth_scene_object_id=update_mouth_scene_object_id,
+                sort_order=payload.sort_order,
+                default_x=payload.default_x,
+                default_y=payload.default_y,
+                default_scale=payload.default_scale,
+            )
+        except sqlite3.IntegrityError as exc:
+            raise HTTPException(status_code=409, detail="Character name already exists") from exc
+        if updated is None:
+            raise HTTPException(status_code=404, detail="Character not found")
+        if updated.get("scene_id") is not None and (payload.name is not None or payload.description is not None):
+            update_scene(
+                database_path,
+                scene_id=int(updated["scene_id"]),
+                organization_id=user["organization_id"],
+                title=payload.name.strip() if isinstance(payload.name, str) else None,
+                description=payload.description if payload.description is not None else None,
+            )
+        return _load_character_detail(database_path, user["organization_id"], character_id)
+
+    @app.delete("/api/characters/{character_id}", status_code=204)
+    def delete_character_endpoint(
+        character_id: int,
+        user: dict[str, Any] = Depends(current_user),
+    ) -> Response:
+        character = get_character_by_id(database_path, user["organization_id"], character_id)
+        if character is None:
+            raise HTTPException(status_code=404, detail="Character not found")
+        scene_id = int(character["scene_id"]) if character.get("scene_id") is not None else None
+        image_rows = list_character_images(database_path, user["organization_id"], character_id)
+        if not delete_character(database_path, user["organization_id"], character_id):
+            raise HTTPException(status_code=404, detail="Character not found")
+        for image in image_rows:
+            image_path = app_settings.storage_root / image["relative_path"]
+            image_path.unlink(missing_ok=True)
+        if scene_id is not None:
+            deleted_scene = delete_scene_and_unhook_references(
+                database_path,
+                scene_id=scene_id,
+                organization_id=user["organization_id"],
+            )
+            if deleted_scene is not None:
+                for relative_path in deleted_scene.get("deleted_uploaded_file_relative_paths") or []:
+                    try:
+                        file_path = _safe_child_path(app_settings.storage_root, relative_path)
+                    except HTTPException:
+                        continue
+                    file_path.unlink(missing_ok=True)
+                _clear_scene_derived_cache(app_settings.storage_root, user["organization_id"], scene_id)
+                _invalidate_scene_preview_manifest_cache(app_settings.storage_root, user["organization_id"], scene_id)
+        return Response(status_code=204)
+
+    @app.post("/api/characters/{character_id}/images", response_model=CharacterImage, status_code=201)
+    async def post_character_image(
+        character_id: int,
+        file: UploadFile = File(...),
+        component_key: str = Form(...),
+        variant_key: str = Form(...),
+        kind: str = Form(...),
+        source_group: str = Form(""),
+        source_name: str = Form(""),
+        is_default: bool = Form(False),
+        sort_order: int = Form(0),
+        user: dict[str, Any] = Depends(current_user),
+    ) -> dict[str, Any]:
+        character = get_character_by_id(database_path, user["organization_id"], character_id)
+        if character is None:
+            raise HTTPException(status_code=404, detail="Character not found")
+        suffix = Path(file.filename or "").suffix.lower()
+        if suffix not in {".png", ".jpg", ".jpeg", ".webp"}:
+            raise HTTPException(status_code=400, detail="Unsupported image type")
+        safe_variant_key = _safe_path_segment(variant_key)
+        relative_path = str(
+            Path(_safe_path_segment(user["organization_id"]))
+            / "characters"
+            / str(character_id)
+            / _safe_path_segment(component_key)
+            / f"{safe_variant_key}{suffix}"
+        )
+        output_path = app_settings.storage_root / relative_path
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        await _write_upload(file, output_path)
+        width, height = _image_dimensions(output_path)
+        image = upsert_character_image(
+            database_path,
+            organization_id=user["organization_id"],
+            character_id=character_id,
+            component_key=component_key,
+            variant_key=variant_key.strip(),
+            kind=kind,
+            source_group=source_group.strip(),
+            source_name=source_name.strip() or (Path(file.filename or "").name),
+            relative_path=relative_path,
+            original_filename=str(file.filename or ""),
+            width=width,
+            height=height,
+            is_default=is_default,
+            sort_order=sort_order,
+        )
+        return image
+
+    @app.delete("/api/character-images/{image_id}", status_code=204)
+    def delete_character_image_endpoint(
+        image_id: int,
+        user: dict[str, Any] = Depends(current_user),
+    ) -> Response:
+        image = get_character_image_by_id(database_path, user["organization_id"], image_id)
+        if image is None:
+            raise HTTPException(status_code=404, detail="Character image not found")
+        delete_character_image(database_path, user["organization_id"], image_id)
+        (app_settings.storage_root / image["relative_path"]).unlink(missing_ok=True)
+        return Response(status_code=204)
+
+    @app.get("/api/character-images/{image_id}/content")
+    def get_character_image_content(
+        image_id: int,
+        user: dict[str, Any] = Depends(current_user),
+    ) -> FileResponse:
+        image = get_character_image_by_id(database_path, user["organization_id"], image_id)
+        if image is None:
+            raise HTTPException(status_code=404, detail="Character image not found")
+        file_path = app_settings.storage_root / image["relative_path"]
+        if not file_path.exists():
+            raise HTTPException(status_code=404, detail="Character image file not found")
+        return FileResponse(
+            file_path,
+            media_type=_content_type_for_suffix(file_path.suffix),
+            headers={"Cache-Control": "no-store, max-age=0"},
+        )
+
+    @app.get("/api/characters/{character_id}/objects", response_model=list[CharacterObject])
+    def get_character_objects_endpoint(
+        character_id: int,
+        user: dict[str, Any] = Depends(current_user),
+    ) -> list[dict[str, Any]]:
+        return list_character_objects(database_path, user["organization_id"], character_id)
+
+    @app.post("/api/characters/{character_id}/objects", response_model=CharacterObject, status_code=201)
+    def post_character_object(
+        character_id: int,
+        payload: CharacterObjectCreate,
+        user: dict[str, Any] = Depends(current_user),
+    ) -> dict[str, Any]:
+        try:
+            return create_character_object(
+                database_path,
+                organization_id=user["organization_id"],
+                character_id=character_id,
+                name=payload.name,
+                description=payload.description,
+                prompt=payload.prompt,
+                sort_order=payload.sort_order,
+                is_viseme_target=payload.is_viseme_target,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+    @app.patch("/api/character-objects/{character_object_id}", response_model=CharacterObject)
+    def patch_character_object(
+        character_object_id: int,
+        payload: CharacterObjectUpdate,
+        user: dict[str, Any] = Depends(current_user),
+    ) -> dict[str, Any]:
+        updated = update_character_object(
+            database_path,
+            organization_id=user["organization_id"],
+            character_object_id=character_object_id,
+            name=payload.name,
+            description=payload.description,
+            prompt=payload.prompt,
+            sort_order=payload.sort_order,
+            is_viseme_target=payload.is_viseme_target,
+        )
+        if updated is None:
+            raise HTTPException(status_code=404, detail="Character object not found")
+        return updated
+
+    @app.delete("/api/character-objects/{character_object_id}", status_code=204)
+    def delete_character_object_endpoint(
+        character_object_id: int,
+        user: dict[str, Any] = Depends(current_user),
+    ) -> Response:
+        if not delete_character_object(database_path, user["organization_id"], character_object_id):
+            raise HTTPException(status_code=404, detail="Character object not found")
+        return Response(status_code=204)
+
+    @app.post("/api/characters/{character_id}/animations", response_model=CharacterAnimation, status_code=201)
+    def post_character_animation(
+        character_id: int,
+        payload: CharacterAnimationCreate,
+        user: dict[str, Any] = Depends(current_user),
+    ) -> dict[str, Any]:
+        try:
+            return create_character_animation(
+                database_path,
+                organization_id=user["organization_id"],
+                character_id=character_id,
+                name=payload.name,
+                frames=[frame.model_dump() for frame in payload.frames],
+            )
+        except sqlite3.IntegrityError as exc:
+            raise HTTPException(status_code=409, detail="Character animation name already exists") from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    @app.patch("/api/character-animations/{animation_id}", response_model=CharacterAnimation)
+    def patch_character_animation(
+        animation_id: int,
+        payload: CharacterAnimationCreate,
+        user: dict[str, Any] = Depends(current_user),
+    ) -> dict[str, Any]:
+        try:
+            updated = update_character_animation(
+                database_path,
+                organization_id=user["organization_id"],
+                animation_id=animation_id,
+                name=payload.name,
+                frames=[frame.model_dump() for frame in payload.frames],
+            )
+        except sqlite3.IntegrityError as exc:
+            raise HTTPException(status_code=409, detail="Character animation name already exists") from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        if updated is None:
+            raise HTTPException(status_code=404, detail="Character animation not found")
+        return updated
+
+    @app.delete("/api/character-animations/{animation_id}", status_code=204)
+    def delete_character_animation_endpoint(
+        animation_id: int,
+        user: dict[str, Any] = Depends(current_user),
+    ) -> Response:
+        if not delete_character_animation(database_path, user["organization_id"], animation_id):
+            raise HTTPException(status_code=404, detail="Character animation not found")
+        return Response(status_code=204)
+
+    @app.post("/api/characters/{character_id}/generate-visemes", response_model=Character)
+    async def post_generate_character_visemes(
+        character_id: int,
+        user: dict[str, Any] = Depends(current_user),
+    ) -> dict[str, Any]:
+        character = _load_character_detail(database_path, user["organization_id"], character_id)
+        if character is None:
+            raise HTTPException(status_code=404, detail="Character not found")
+        scene = character.get("scene")
+        if not scene or not scene.get("images"):
+            raise HTTPException(status_code=400, detail="Character needs at least one frame first")
+        default_image = _character_default_scene_image(character)
+        if default_image is None:
+            raise HTTPException(status_code=400, detail="Character needs a default frame first")
+        if character_image_provider_error:
+            raise HTTPException(status_code=503, detail=character_image_provider_error)
+        if scene_character_image_provider is None:
+            raise HTTPException(status_code=503, detail="Character image generation is not configured")
+        source_folder = app_settings.character_viseme_source_root
+        prompt_text = (
+            "please apply the exact (paying attention to teeth and tongue) mouth shape from image 2 "
+            "to the character in image 1 keeping everything else intact,  especially any mustache and beard"
+        )
+        batch = create_upload_batch(
+            database_path,
+            organization_id=user["organization_id"],
+            created_by_user_id=user["id"],
+        )
+        batch_root = _batch_storage_root(
+            app_settings.storage_root,
+            user["organization_id"],
+            batch["id"],
+        )
+        batch_root.mkdir(parents=True, exist_ok=True)
+        output_root = batch_root / _safe_path_segment(source_folder.name)
+        try:
+            results = await scene_character_image_provider.generate_variants(
+                base_image_path=app_settings.storage_root / default_image["relative_path"],
+                source_folder=source_folder,
+                prompt_text=prompt_text,
+                output_root=output_root,
+                filename_prefix_root=f"characters/{character_id}/visemes/{_safe_path_segment(source_folder.name)}",
+            )
+        except CharacterImageProviderUnavailable as exc:
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
+        for sort_order, (source_path, output_path) in enumerate(results):
+            original_filename = f"{source_folder.name}-{source_path.name}"
+            stored_filename = f"{sort_order:03d}-{_safe_filename(original_filename)}"
+            stored_path = batch_root / stored_filename
+            shutil.move(output_path, stored_path)
+            file_size = stored_path.stat().st_size
+            uploaded_file = add_uploaded_file(
+                database_path,
+                batch_id=batch["id"],
+                organization_id=user["organization_id"],
+                uploaded_by_user_id=user["id"],
+                original_filename=original_filename,
+                stored_filename=stored_filename,
+                relative_path=str(Path(user["organization_id"]) / str(batch["id"]) / stored_filename),
+                content_type=_content_type_for_suffix(stored_path.suffix),
+                file_size=file_size,
+            )
+            fingerprint = fingerprint_image(stored_path)
+            assign_uploaded_file_to_scene(
+                database_path,
+                scene_id=int(character["scene_id"]),
+                uploaded_file_id=int(uploaded_file["id"]),
+                perceptual_hash=fingerprint.perceptual_hash,
+                width=fingerprint.width,
+                height=fingerprint.height,
+            )
+            del sort_order
+        _invalidate_scene_preview_manifest_cache(
+            app_settings.storage_root,
+            user["organization_id"],
+            int(character["scene_id"]),
+        )
+        return _load_character_detail(database_path, user["organization_id"], character_id)
+
+    @app.post("/api/characters/{character_id}/generate-poses", response_model=Character)
+    async def post_generate_character_poses(
+        character_id: int,
+        payload: CharacterGenerateRequest,
+        user: dict[str, Any] = Depends(current_user),
+    ) -> dict[str, Any]:
+        character = _load_character_detail(database_path, user["organization_id"], character_id)
+        if character is None:
+            raise HTTPException(status_code=404, detail="Character not found")
+        scene = character.get("scene")
+        if not scene or not scene.get("images"):
+            raise HTTPException(status_code=400, detail="Character needs at least one frame first")
+        default_image = _character_default_scene_image(character)
+        if default_image is None:
+            raise HTTPException(status_code=400, detail="Character needs a default frame first")
+        if character_image_provider_error:
+            raise HTTPException(status_code=503, detail=character_image_provider_error)
+        if scene_character_image_provider is None:
+            raise HTTPException(status_code=503, detail="Character image generation is not configured")
+        pose_folder = _resolve_pose_subfolder(app_settings.character_pose_source_root, payload.pose_subfolder)
+        prompt_text = (
+            "please apply the pose from image 2 to the character in image 1 being sure to retain "
+            "the same clothing, facial features or objects"
+        )
+        batch = create_upload_batch(
+            database_path,
+            organization_id=user["organization_id"],
+            created_by_user_id=user["id"],
+        )
+        batch_root = _batch_storage_root(
+            app_settings.storage_root,
+            user["organization_id"],
+            batch["id"],
+        )
+        batch_root.mkdir(parents=True, exist_ok=True)
+        output_root = batch_root / _safe_path_segment(pose_folder.name)
+        try:
+            results = await scene_character_image_provider.generate_variants(
+                base_image_path=app_settings.storage_root / default_image["relative_path"],
+                source_folder=pose_folder,
+                prompt_text=prompt_text,
+                output_root=output_root,
+                filename_prefix_root=f"characters/{character_id}/poses/{_safe_path_segment(pose_folder.name)}",
+            )
+        except CharacterImageProviderUnavailable as exc:
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
+        for sort_order, (source_path, output_path) in enumerate(results):
+            original_filename = f"{pose_folder.name}-{source_path.name}"
+            stored_filename = f"{sort_order:03d}-{_safe_filename(original_filename)}"
+            stored_path = batch_root / stored_filename
+            shutil.move(output_path, stored_path)
+            file_size = stored_path.stat().st_size
+            uploaded_file = add_uploaded_file(
+                database_path,
+                batch_id=batch["id"],
+                organization_id=user["organization_id"],
+                uploaded_by_user_id=user["id"],
+                original_filename=original_filename,
+                stored_filename=stored_filename,
+                relative_path=str(Path(user["organization_id"]) / str(batch["id"]) / stored_filename),
+                content_type=_content_type_for_suffix(stored_path.suffix),
+                file_size=file_size,
+            )
+            fingerprint = fingerprint_image(stored_path)
+            assign_uploaded_file_to_scene(
+                database_path,
+                scene_id=int(character["scene_id"]),
+                uploaded_file_id=int(uploaded_file["id"]),
+                perceptual_hash=fingerprint.perceptual_hash,
+                width=fingerprint.width,
+                height=fingerprint.height,
+            )
+            del sort_order
+        _invalidate_scene_preview_manifest_cache(
+            app_settings.storage_root,
+            user["organization_id"],
+            int(character["scene_id"]),
+        )
+        return _load_character_detail(database_path, user["organization_id"], character_id)
+
+    @app.post("/api/script-audio-candidates/{candidate_id}/extract-visemes", response_model=ScriptAudioCandidate)
+    async def post_extract_script_audio_candidate_visemes(
+        candidate_id: int,
+        user: dict[str, Any] = Depends(current_user),
+    ) -> dict[str, Any]:
+        candidate = get_script_audio_candidate_by_id(database_path, user["organization_id"], candidate_id)
+        if candidate is None:
+            raise HTTPException(status_code=404, detail="Audio candidate not found")
+        if not candidate.get("relative_path"):
+            raise HTTPException(status_code=400, detail="Audio candidate does not have a file yet")
+        if viseme_extraction_provider_error:
+            raise HTTPException(status_code=503, detail=viseme_extraction_provider_error)
+        if scene_viseme_extraction_provider is None:
+            raise HTTPException(status_code=503, detail="Viseme extraction is not configured")
+        script_line = get_script_line_detail(
+            database_path,
+            user["organization_id"],
+            int(candidate["script_line_id"]),
+        )
+        if script_line is None:
+            raise HTTPException(status_code=404, detail="Script line not found")
+        language = str(candidate.get("language") or "").strip().lower() or "en"
+        text = str(script_line.get("source_text") or "").strip()
+        if language != "en":
+            translation = next(
+                (
+                    item
+                    for item in (script_line.get("translations") or [])
+                    if str(item.get("language") or "").strip().lower() == language
+                    and str(item.get("text") or "").strip()
+                ),
+                None,
+            )
+            if translation is not None:
+                text = str(translation.get("text") or "").strip()
+        try:
+            events = await scene_viseme_extraction_provider.extract_visemes(
+                audio_path=app_settings.script_audio_root / candidate["relative_path"],
+                language=language,
+                text=text,
+            )
+        except VisemeExtractionProviderUnavailable as exc:
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
+        replace_script_audio_candidate_viseme_events(
+            database_path,
+            organization_id=user["organization_id"],
+            candidate_id=candidate_id,
+            events=events,
+        )
+        updated = get_script_audio_candidate_by_id(database_path, user["organization_id"], candidate_id)
+        if updated is None:
+            raise HTTPException(status_code=404, detail="Audio candidate not found")
+        updated["viseme_events"] = list_script_audio_candidate_viseme_events(database_path, user["organization_id"], candidate_id)
+        return updated
+
     @app.get("/api/global-settings", response_model=GlobalSettings)
     def get_global_settings_endpoint(user: dict[str, Any] = Depends(current_user)) -> dict[str, Any]:
         return get_global_settings(database_path, user["organization_id"])
@@ -2790,6 +3591,8 @@ def create_app(
             prompt=scene_object.prompt,
             inventory_image_prompt=scene_object.inventory_image_prompt,
             sort_order=scene_object.sort_order,
+            visible=scene_object.visible,
+            enabled=scene_object.enabled,
             keyboard_target_enabled=scene_object.keyboard_target_enabled,
         )
         if updated_object is None:
@@ -4668,6 +5471,21 @@ def _normalize_action_tree(
     ]
 
 
+def _static_action_target_object_allowed(
+    db_path: Path,
+    scene_id: int,
+    object_id: int,
+    organization_id: str,
+) -> bool:
+    if scene_object_belongs_to_scene(db_path, scene_id, object_id, organization_id):
+        return True
+    scene_object = get_scene_object_for_organization(db_path, object_id, organization_id)
+    if scene_object is None:
+        return False
+    owner_scene = get_scene_with_images(db_path, int(scene_object["scene_id"]))
+    return bool(owner_scene) and str(owner_scene.get("presentation_mode") or "") == "character"
+
+
 def _normalize_action_step(
     db_path: Path,
     scene_id: int,
@@ -4731,8 +5549,8 @@ def _normalize_action_step(
         )
         if target_object_mode == "static":
             object_id = _required_int(step.get("target_object_id"), "Property target object is required")
-            if not scene_object_belongs_to_scene(db_path, scene_id, object_id, organization_id):
-                raise HTTPException(status_code=400, detail="Property target object is not in this scene")
+            if not _static_action_target_object_allowed(db_path, scene_id, object_id, organization_id):
+                raise HTTPException(status_code=400, detail="Property target object is not available to this scene")
             normalized["target_object_id"] = object_id
         return normalized
     if step_type == "go_to_frame":
@@ -4796,10 +5614,15 @@ def _normalize_action_step(
         ]
         if not script_line_ids_exist(db_path, organization_id, line_ids):
             raise HTTPException(status_code=400, detail="One or more script lines do not exist")
+        speaker_character_id = None
+        if step.get("speaker_character_id") is not None:
+            speaker_character_id = _required_int(step.get("speaker_character_id"), "Speaker character is invalid")
+            _require_character(db_path, organization_id, speaker_character_id)
         normalized.update(
             {
                 "script_line_ids": sorted(set(line_ids)),
                 "selection": "random" if len(set(line_ids)) > 1 else "single",
+                "speaker_character_id": speaker_character_id,
                 "wait": _choice(step.get("wait"), {"wait", "continue"}, "wait"),
             }
         )
@@ -4988,6 +5811,62 @@ def _normalize_action_step(
             }
         )
         return normalized
+    if step_type == "show_character":
+        character_id = _required_int(step.get("character_id"), "Character is required")
+        _require_character(db_path, organization_id, character_id)
+        pose_variant_key = str(step.get("pose_variant_key") or "").strip() or None
+        animation_id = None
+        if step.get("animation_id") is not None:
+            animation_id = _required_int(step.get("animation_id"), "Character animation is invalid")
+            _require_character_animation(db_path, organization_id, animation_id, character_id)
+        normalized.update(
+            {
+                "character_id": character_id,
+                "x": float(step.get("x") if step.get("x") is not None else 960),
+                "y": float(step.get("y") if step.get("y") is not None else 540),
+                "scale": float(step.get("scale") if step.get("scale") is not None else 1.0),
+                "pose_variant_key": pose_variant_key,
+                "animation_id": animation_id,
+                "wait": _choice(step.get("wait"), {"wait", "continue"}, "continue"),
+            }
+        )
+        return normalized
+    if step_type == "hide_character":
+        character_id = _required_int(step.get("character_id"), "Character is required")
+        _require_character(db_path, organization_id, character_id)
+        normalized.update(
+            {
+                "character_id": character_id,
+                "wait": _choice(step.get("wait"), {"wait", "continue"}, "continue"),
+            }
+        )
+        return normalized
+    if step_type == "set_character_transform":
+        character_id = _required_int(step.get("character_id"), "Character is required")
+        _require_character(db_path, organization_id, character_id)
+        normalized.update(
+            {
+                "character_id": character_id,
+                "x": float(step.get("x") if step.get("x") is not None else 960),
+                "y": float(step.get("y") if step.get("y") is not None else 540),
+                "scale": float(step.get("scale") if step.get("scale") is not None else 1.0),
+                "wait": _choice(step.get("wait"), {"wait", "continue"}, "continue"),
+            }
+        )
+        return normalized
+    if step_type == "play_character_animation":
+        character_id = _required_int(step.get("character_id"), "Character is required")
+        animation_id = _required_int(step.get("animation_id"), "Character animation is required")
+        _require_character(db_path, organization_id, character_id)
+        _require_character_animation(db_path, organization_id, animation_id, character_id)
+        normalized.update(
+            {
+                "character_id": character_id,
+                "animation_id": animation_id,
+                "wait": _choice(step.get("wait"), {"wait", "continue"}, "wait"),
+            }
+        )
+        return normalized
     raise HTTPException(status_code=400, detail="Unsupported action type")
 
 
@@ -5003,6 +5882,25 @@ def _require_audio_asset(db_path: Path, organization_id: str, audio_asset_id: in
     if asset is None:
         raise HTTPException(status_code=400, detail="Audio asset does not exist")
     return asset
+
+
+def _require_character(db_path: Path, organization_id: str, character_id: int) -> dict[str, Any]:
+    character = get_character_by_id(db_path, organization_id, character_id)
+    if character is None:
+        raise HTTPException(status_code=400, detail="Character does not exist")
+    return character
+
+
+def _require_character_animation(
+    db_path: Path,
+    organization_id: str,
+    animation_id: int,
+    character_id: int,
+) -> dict[str, Any]:
+    animation = get_character_animation_by_id(db_path, organization_id, animation_id)
+    if animation is None or int(animation["character_id"]) != int(character_id):
+        raise HTTPException(status_code=400, detail="Character animation does not belong to the chosen character")
+    return animation
 
 
 def _require_overlay_scene(
@@ -5299,6 +6197,10 @@ def _build_scene_preview_payload(
     ]
     overlay_bindings = list_overlay_scene_bindings(database_path, organization_id)
     global_settings = get_global_settings(database_path, organization_id)
+    preview_characters = [
+        _character_preview_payload(database_path, storage_root, organization_id, int(character["id"]))
+        for character in list_characters(database_path, organization_id)
+    ]
     preview_interactions = scene_manifest["interactions"]
     preview_script_lines = [
         line
@@ -5314,6 +6216,7 @@ def _build_scene_preview_payload(
         "audio_assets": preview_audio_assets,
         "variables": preview_variables,
         "verbs": preview_verbs,
+        "characters": preview_characters,
         "script_lines": preview_script_lines,
     }
 
@@ -5475,10 +6378,10 @@ def _build_scene_preview_manifest(
                 "id": scene_object["id"],
                 "name": scene_object["name"],
                 "sort_order": int(scene_object.get("sort_order", 0) or 0),
+                "visible": bool(scene_object.get("visible", True)),
+                "enabled": bool(scene_object.get("enabled", True)),
                 "keyboard_target_enabled": bool(scene_object.get("keyboard_target_enabled")),
                 "pickup_uploaded_file_id": scene_object.get("pickup_uploaded_file_id"),
-                "visible": True,
-                "enabled": True,
                 "label": scene_object["name"],
                 "default_render": default_render,
                 "frame_renders": frame_renders,
@@ -6421,6 +7324,200 @@ def _normalize_verb_labels(labels: dict[str, str]) -> dict[str, str]:
     if not normalized:
         raise HTTPException(status_code=400, detail="At least one verb label is required")
     return normalized
+
+
+def _variant_key_from_folder_file(folder_name: str, file_stem: str) -> str:
+    return f"{_safe_path_segment(folder_name)}__{_safe_path_segment(file_stem)}"
+
+
+def _character_component_output_dir(
+    organization_id: str,
+    character_id: int,
+    component_key: str,
+    group_name: str,
+) -> Path:
+    return (
+        Path(_safe_path_segment(organization_id))
+        / "characters"
+        / str(character_id)
+        / _safe_path_segment(component_key)
+        / _safe_path_segment(group_name)
+    )
+
+
+def _resolve_pose_subfolder(root: Path, subfolder_name: str | None) -> Path:
+    if not subfolder_name:
+        raise HTTPException(status_code=400, detail="Choose a pose folder first")
+    candidate = _safe_child_path(root, subfolder_name)
+    if not candidate.exists() or not candidate.is_dir():
+        raise HTTPException(status_code=404, detail="Pose folder not found")
+    return candidate
+
+
+def _image_dimensions(path: Path) -> tuple[int, int]:
+    with Image.open(path) as image:
+        return int(image.width), int(image.height)
+
+
+def _character_asset_url(image_id: int) -> str:
+    return f"/api/character-images/{image_id}/content"
+
+
+def _character_preview_image_payload(image: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "id": int(image["id"]),
+        "component_key": str(image["component_key"]),
+        "variant_key": str(image["variant_key"]),
+        "kind": str(image["kind"]),
+        "source_group": str(image.get("source_group") or ""),
+        "source_name": str(image.get("source_name") or ""),
+        "width": int(image.get("width") or 0),
+        "height": int(image.get("height") or 0),
+        "url": _character_asset_url(int(image["id"])),
+    }
+
+
+def _character_preview_payload(
+    db_path: Path,
+    storage_root: Path,
+    organization_id: str,
+    character_id: int,
+) -> dict[str, Any]:
+    character = _load_character_detail(db_path, organization_id, character_id)
+    if character is None:
+        raise HTTPException(status_code=404, detail="Character not found")
+    scene = character.get("scene") or None
+    scene_manifest = None
+    mouth_scene_object_id = (
+        int(character["mouth_scene_object_id"])
+        if character.get("mouth_scene_object_id") is not None
+        else None
+    )
+    viseme_frame_renders: dict[str, Any] = {}
+    if scene is not None:
+        scene_manifest = _build_scene_preview_manifest(
+            database_path=db_path,
+            storage_root=storage_root,
+            organization_id=organization_id,
+            scene=scene,
+        )
+        if mouth_scene_object_id is not None:
+            mouth_object = next(
+                (
+                    item
+                    for item in scene_manifest.get("objects", [])
+                    if int(item.get("id") or 0) == mouth_scene_object_id
+                ),
+                None,
+            )
+            if mouth_object is not None:
+                frame_index_by_uploaded_file_id = {
+                    int(image["uploaded_file_id"]): index
+                    for index, image in enumerate(scene.get("images", []))
+                }
+                mouth_object_masks = list_object_masks_for_object(
+                    db_path,
+                    scene_object_id=mouth_scene_object_id,
+                    organization_id=organization_id,
+                )
+                for object_mask in mouth_object_masks:
+                    render = _preview_render_payload_for_mask(
+                        storage_root=storage_root,
+                        organization_id=organization_id,
+                        object_mask=object_mask,
+                        frame_index=frame_index_by_uploaded_file_id.get(int(object_mask["uploaded_file_id"])),
+                    )
+                    if render is None:
+                        continue
+                    original_filename = str(render.get("original_filename") or "")
+                    stem = Path(original_filename).stem
+                    if "-" in stem:
+                        folder_name, file_stem = stem.split("-", 1)
+                        viseme_frame_renders[_variant_key_from_folder_file(folder_name, file_stem)] = render
+
+    return {
+        "id": int(character["id"]),
+        "name": str(character["name"]),
+        "description": str(character.get("description") or ""),
+        "scene_id": int(character["scene_id"]) if character.get("scene_id") is not None else None,
+        "mouth_scene_object_id": mouth_scene_object_id,
+        "sort_order": int(character.get("sort_order") or 0),
+        "default_x": float(character.get("default_x") or 0),
+        "default_y": float(character.get("default_y") or 0),
+        "default_scale": float(character.get("default_scale") or 1.0),
+        "width": int(scene_manifest.get("width") or 0) if scene_manifest else 0,
+        "height": int(scene_manifest.get("height") or 0) if scene_manifest else 0,
+        "background_frame_index": int(scene_manifest.get("background_frame_index") or 0) if scene_manifest else 0,
+        "objects": scene_manifest.get("objects", []) if scene_manifest else [],
+        "viseme_frame_renders": viseme_frame_renders,
+        "images": [_character_preview_image_payload(image) for image in character.get("images", [])],
+        "animations": [
+            {
+                "id": int(animation["id"]),
+                "name": str(animation["name"]),
+                "frames": [
+                    {
+                        "id": int(frame["id"]),
+                        "character_image_id": int(frame["character_image_id"]),
+                        "duration_seconds": float(frame["duration_seconds"]),
+                        "image": _character_preview_image_payload(frame["image"]),
+                    }
+                    for frame in animation.get("frames", [])
+                ],
+            }
+            for animation in character.get("animations", [])
+        ],
+    }
+
+
+def _load_character_detail(
+    db_path: Path,
+    organization_id: str,
+    character_id: int,
+) -> dict[str, Any] | None:
+    character = get_character_by_id(db_path, organization_id, character_id)
+    if character is None:
+        return None
+    images = list_character_images(db_path, organization_id, character_id)
+    objects = list_character_objects(db_path, organization_id, character_id)
+    animations = list_character_animations(db_path, organization_id, character_id)
+    scene_id = character.get("scene_id")
+    scene = None
+    if scene_id is not None:
+        scene_record = get_scene_with_images(db_path, int(scene_id))
+        if scene_record is not None and scene_record.get("organization_id") == organization_id:
+            scene = scene_record
+    return {
+        **character,
+        "scene": scene,
+        "images": images,
+        "objects": objects,
+        "animations": animations,
+    }
+
+
+def _get_default_character_component_image(
+    character: dict[str, Any],
+    component_key: str,
+) -> dict[str, Any] | None:
+    images = [
+        image
+        for image in character.get("images", [])
+        if str(image.get("component_key") or "") == component_key
+    ]
+    default_image = next((image for image in images if image.get("is_default")), None)
+    return default_image or (images[0] if images else None)
+
+
+def _character_default_scene_image(character: dict[str, Any]) -> dict[str, Any] | None:
+    scene = character.get("scene") or {}
+    images = scene.get("images") or []
+    if not images:
+        return None
+    background_frame_index = int(scene.get("background_frame_index") or 0)
+    if 0 <= background_frame_index < len(images):
+        return images[background_frame_index]
+    return images[0]
 
 
 def _content_type_for_suffix(suffix: str) -> str:

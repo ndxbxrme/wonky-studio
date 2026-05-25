@@ -6,7 +6,7 @@
         <p>{{object.maskCount}} mask frames · {{animations.length}} animations</p>
       </div>
       <div class="mask-editor-header__actions">
-        <a class="back-link" href="/scene/{{scene.id}}">Scene {{scene.id}}</a>
+        <a class="back-link" href="{{backLinkHref}}">{{backLinkLabel}}</a>
         <a class="button secondary compact" href="/mask-editor/{{scene.id}}/{{object.id}}/{{object.firstMaskId}}">Open mask editor</a>
         <p class="form-status" data-animation-status aria-live="polite"></p>
       </div>

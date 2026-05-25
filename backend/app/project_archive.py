@@ -20,8 +20,15 @@ EXPORT_TABLE_ORDER = [
     "script_lines",
     "script_translations",
     "script_audio_candidates",
+    "script_audio_candidate_viseme_events",
     "game_variables",
     "verbs",
+    "characters",
+    "character_images",
+    "character_objects",
+    "character_object_masks",
+    "character_animations",
+    "character_animation_frames",
     "scenes",
     "scene_images",
     "scene_objects",
@@ -55,8 +62,54 @@ TABLE_SELECTS = {
         WHERE sl.organization_id = ?
         ORDER BY sac.id ASC
     """,
+    "script_audio_candidate_viseme_events": """
+        SELECT save.*
+        FROM script_audio_candidate_viseme_events save
+        JOIN script_audio_candidates sac ON sac.id = save.script_audio_candidate_id
+        JOIN script_lines sl ON sl.id = sac.script_line_id
+        WHERE sl.organization_id = ?
+        ORDER BY save.id ASC
+    """,
     "game_variables": "SELECT * FROM game_variables WHERE organization_id = ? ORDER BY id ASC",
     "verbs": "SELECT * FROM verbs WHERE organization_id = ? ORDER BY id ASC",
+    "characters": "SELECT * FROM characters WHERE organization_id = ? ORDER BY id ASC",
+    "character_images": """
+        SELECT ci.*
+        FROM character_images ci
+        JOIN characters c ON c.id = ci.character_id
+        WHERE c.organization_id = ?
+        ORDER BY ci.id ASC
+    """,
+    "character_objects": """
+        SELECT co.*
+        FROM character_objects co
+        JOIN characters c ON c.id = co.character_id
+        WHERE c.organization_id = ?
+        ORDER BY co.id ASC
+    """,
+    "character_object_masks": """
+        SELECT com.*
+        FROM character_object_masks com
+        JOIN character_objects co ON co.id = com.character_object_id
+        JOIN characters c ON c.id = co.character_id
+        WHERE c.organization_id = ?
+        ORDER BY com.id ASC
+    """,
+    "character_animations": """
+        SELECT ca.*
+        FROM character_animations ca
+        JOIN characters c ON c.id = ca.character_id
+        WHERE c.organization_id = ?
+        ORDER BY ca.id ASC
+    """,
+    "character_animation_frames": """
+        SELECT caf.*
+        FROM character_animation_frames caf
+        JOIN character_animations ca ON ca.id = caf.character_animation_id
+        JOIN characters c ON c.id = ca.character_id
+        WHERE c.organization_id = ?
+        ORDER BY caf.id ASC
+    """,
     "scenes": "SELECT * FROM scenes WHERE organization_id = ? ORDER BY id ASC",
     "scene_images": """
         SELECT si.*
@@ -133,6 +186,8 @@ PATH_FIELDS = {
     "uploaded_files": {"relative_path"},
     "audio_assets": {"relative_path"},
     "script_audio_candidates": {"relative_path"},
+    "character_images": {"relative_path"},
+    "character_object_masks": {"relative_path", "soft_relative_path"},
     "scene_objects": {"inventory_image_relative_path"},
     "object_masks": {"relative_path", "soft_relative_path"},
     "mask_candidates": {"raw_relative_path", "soft_relative_path"},

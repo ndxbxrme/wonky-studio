@@ -295,11 +295,14 @@
           <section class="actions-panel">
             <div>
               <p class="eyebrow">Sequence</p>
-              <h2>Action steps</h2>
-              <p class="panel-intro">Add a step to the selected branch, then reorder or remove steps below.</p>
+              <h2>{{#if selectedStep}}Edit action step{{/if}}{{#if not selectedStep}}Action steps{{/if}}</h2>
+              <p class="panel-intro">
+                {{#if selectedStep}}Update the selected step, or cancel to go back to adding a new one.{{/if}}
+                {{#if not selectedStep}}Add a step to the selected branch, then reorder or remove steps below.{{/if}}
+              </p>
             </div>
             <form class="action-step-form" data-action-step-form>
-              <label data-form-field="branch">
+              <label data-form-field="branch" {{#if selectedStep}}hidden{{/if}}>
                 Add to
                 <select name="branch">
                   {{#each branchOptions as branch}}
@@ -315,7 +318,7 @@
                   {{/each}}
                 </select>
               </label>
-              <label data-form-field="wait" data-visible-for="play_animation go_to_frame set_object_property show_subtitle play_audio set_variable increment_variable toggle_variable add_inventory_item remove_inventory_item clear_held_inventory_item fade_out fade_in crossfade_bgm play_sfx">
+              <label data-form-field="wait" data-visible-for="play_animation go_to_frame set_object_property show_subtitle play_audio set_variable increment_variable toggle_variable add_inventory_item remove_inventory_item clear_held_inventory_item fade_out fade_in crossfade_bgm play_sfx show_character hide_character set_character_transform play_character_animation">
                 Wait
                 <select name="wait">
                   <option value="wait">Wait for completion</option>
@@ -342,7 +345,7 @@
                 Target object
                 <select name="target_object_id">
                   <option value="">Choose object</option>
-                  {{#each objectOptions as object}}
+                  {{#each targetObjectOptions as object}}
                     <option value="{{object.id}}">{{object.name}}</option>
                   {{/each}}
                 </select>
@@ -485,6 +488,49 @@
                   {{/each}}
                 </select>
               </label>
+              <label data-form-field="speaker-character" data-visible-for="play_audio">
+                Speaker character
+                <select name="speaker_character_id">
+                  <option value="">None</option>
+                  {{#each characterOptions as character}}
+                    <option value="{{character.id}}">{{character.name}}</option>
+                  {{/each}}
+                </select>
+              </label>
+              <label data-form-field="character" data-visible-for="show_character hide_character set_character_transform play_character_animation">
+                Character
+                <select name="character_id">
+                  <option value="">Choose character</option>
+                  {{#each characterOptions as character}}
+                    <option value="{{character.id}}">{{character.name}}</option>
+                  {{/each}}
+                </select>
+              </label>
+              <label data-form-field="character-x" data-visible-for="show_character set_character_transform">
+                Character X
+                <input name="character_x" type="number" step="1" value="960" />
+              </label>
+              <label data-form-field="character-y" data-visible-for="show_character set_character_transform">
+                Character Y
+                <input name="character_y" type="number" step="1" value="540" />
+              </label>
+              <label data-form-field="character-scale" data-visible-for="show_character set_character_transform">
+                Character scale
+                <input name="character_scale" type="number" min="0.01" step="0.01" value="1" />
+              </label>
+              <label data-form-field="character-pose" data-visible-for="show_character">
+                Starting pose
+                <input name="pose_variant_key" type="text" placeholder="idle__neutral" />
+              </label>
+              <label data-form-field="character-animation" data-visible-for="show_character play_character_animation">
+                Character animation
+                <select name="character_animation_id">
+                  <option value="">Choose character animation</option>
+                  {{#each characterAnimationOptions as animation}}
+                    <option value="{{animation.animationId}}">{{animation.label}}</option>
+                  {{/each}}
+                </select>
+              </label>
               <label data-form-field="fade-color" data-visible-for="fade_out fade_in">
                 Fade color
                 <input name="fade_color" type="text" value="#000000" />
@@ -501,17 +547,23 @@
                   <option value="immediate">Immediate</option>
                 </select>
               </label>
-              <button class="button secondary compact" type="submit">Add step</button>
+              <div class="action-step-form__actions">
+                <button class="button secondary compact" type="submit">{{#if selectedStep}}Update step{{/if}}{{#if not selectedStep}}Add step{{/if}}</button>
+                {{#if selectedStep}}
+                  <button class="button secondary compact" type="button" data-action="cancel-step-edit">Cancel</button>
+                {{/if}}
+              </div>
             </form>
 
             <div class="action-step-list">
               {{#each actionRows as row}}
-                <article class="action-step-row" style="margin-left: {{row.indent}}">
+                <article class="action-step-row {{#if row.isSelected}}is-selected{{/if}}" style="margin-left: {{row.indent}}">
                   <div>
                     <strong>{{row.index}}. {{row.label}}</strong>
                     <p>{{row.branch}} {{row.meta}}</p>
                   </div>
                   <div class="action-step-row__actions">
+                    <button class="button secondary compact" type="button" data-action="select-step" data-step-id="{{row.id}}">Edit</button>
                     <button class="button secondary compact icon-button" type="button" data-action="move-step" data-direction="up" data-step-id="{{row.id}}" title="Move up" aria-label="Move step up"><span class="ui-icon" data-icon="arrow-up"></span></button>
                     <button class="button secondary compact icon-button" type="button" data-action="move-step" data-direction="down" data-step-id="{{row.id}}" title="Move down" aria-label="Move step down"><span class="ui-icon" data-icon="arrow-down"></span></button>
                     <button class="button danger compact" type="button" data-action="remove-step" data-step-id="{{row.id}}"><span class="ui-icon" data-icon="trash-2"></span><span>Remove</span></button>

@@ -11,6 +11,9 @@ from .database import (
     get_scene_with_images,
     get_script_line_detail,
     list_audio_assets,
+    list_character_animations,
+    list_character_images,
+    list_characters,
     list_game_variables,
     list_object_animations_for_object,
     list_object_masks_for_object,
@@ -21,7 +24,7 @@ from .database import (
 )
 from .object_rendering import render_masked_object_crop
 
-RUNTIME_BUNDLE_FORMAT_VERSION = 2
+RUNTIME_BUNDLE_FORMAT_VERSION = 3
 
 
 def runtime_bundle_output_path(storage_root: Path, organization_id: str) -> Path:
@@ -223,6 +226,13 @@ def _build_runtime_bundle(
         for line_id in sorted(referenced_script_line_ids)
     ]
     script_lines = [line for line in script_line_details if line is not None]
+    referenced_character_ids = _collect_character_ids_from_scene_documents(scene_documents.values())
+    characters = _build_runtime_characters(
+        db_path=db_path,
+        organization_id=organization_id,
+        referenced_character_ids=referenced_character_ids,
+        asset_relative_paths=storage_asset_relative_paths,
+    )
     referenced_audio_asset_ids = _collect_audio_asset_ids_from_scene_documents(scene_documents.values())
     audio_assets = []
     for asset in list_audio_assets(db_path, organization_id):
@@ -240,6 +250,7 @@ def _build_runtime_bundle(
         "verbs": verbs,
         "audio_assets": audio_assets,
         "overlay_bindings": overlay_bindings,
+        "characters": characters,
         "script_lines": script_lines,
         "scenes": scene_refs,
     }
@@ -664,6 +675,86 @@ def _collect_audio_asset_ids_from_steps(interactions_or_steps: list[dict[str, An
                 pass
         _collect_audio_asset_ids_from_steps(item.get("then_steps") or [], audio_asset_ids)
         _collect_audio_asset_ids_from_steps(item.get("else_steps") or [], audio_asset_ids)
+
+
+def _collect_character_ids_from_scene_documents(scene_documents: Any) -> set[int]:
+    character_ids: set[int] = set()
+    for scene_document in scene_documents:
+        _collect_character_ids_from_steps(scene_document.get("interactions") or [], character_ids)
+    return character_ids
+
+
+def _collect_character_ids_from_steps(interactions_or_steps: list[dict[str, Any]], character_ids: set[int]) -> None:
+    for item in interactions_or_steps:
+        steps = item.get("action_tree") if "action_tree" in item else None
+        if isinstance(steps, list):
+            _collect_character_ids_from_steps(steps, character_ids)
+            continue
+        if item.get("type") in {"show_character", "hide_character", "set_character_transform", "play_character_animation"}:
+            try:
+                character_ids.add(int(item.get("character_id")))
+            except (TypeError, ValueError):
+                pass
+        if item.get("type") == "play_audio" and item.get("speaker_character_id") is not None:
+            try:
+                character_ids.add(int(item.get("speaker_character_id")))
+            except (TypeError, ValueError):
+                pass
+        _collect_character_ids_from_steps(item.get("then_steps") or [], character_ids)
+        _collect_character_ids_from_steps(item.get("else_steps") or [], character_ids)
+
+
+def _build_runtime_characters(
+    *,
+    db_path: Path,
+    organization_id: str,
+    referenced_character_ids: set[int],
+    asset_relative_paths: set[str],
+) -> list[dict[str, Any]]:
+    runtime_characters: list[dict[str, Any]] = []
+    for character in list_characters(db_path, organization_id):
+        character_id = int(character["id"])
+        if character_id not in referenced_character_ids:
+            continue
+        images = list_character_images(db_path, organization_id, character_id)
+        animations = list_character_animations(db_path, organization_id, character_id)
+        for image in images:
+            _collect_relative_path(asset_relative_paths, image.get("relative_path"))
+        runtime_characters.append(
+            {
+                "id": character_id,
+                "name": str(character.get("name") or ""),
+                "description": str(character.get("description") or ""),
+                "sort_order": int(character.get("sort_order") or 0),
+                "default_x": float(character.get("default_x") or 0),
+                "default_y": float(character.get("default_y") or 0),
+                "default_scale": float(character.get("default_scale") or 1.0),
+                "images": [
+                    {
+                        **image,
+                        "asset_path": _asset_export_path(image.get("relative_path")),
+                    }
+                    for image in images
+                ],
+                "animations": [
+                    {
+                        "id": int(animation["id"]),
+                        "name": str(animation.get("name") or ""),
+                        "frames": [
+                            {
+                                "id": int(frame["id"]),
+                                "character_image_id": int(frame["character_image_id"]),
+                                "duration_seconds": float(frame["duration_seconds"]),
+                                "sort_order": int(frame.get("sort_order") or 0),
+                            }
+                            for frame in animation.get("frames", [])
+                        ],
+                    }
+                    for animation in animations
+                ],
+            }
+        )
+    return runtime_characters
 
 
 def _map_script_line_detail(detail: dict[str, Any] | None, asset_relative_paths: set[str]) -> dict[str, Any] | None:

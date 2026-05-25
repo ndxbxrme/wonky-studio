@@ -22,6 +22,10 @@ const ACTION_TYPES = [
   {value: 'crossfade_bgm', label: 'Crossfade BGM'},
   {value: 'play_sfx', label: 'Play SFX'},
   {value: 'change_scene', label: 'Change scene'},
+  {value: 'show_character', label: 'Show character'},
+  {value: 'hide_character', label: 'Hide character'},
+  {value: 'set_character_transform', label: 'Set character transform'},
+  {value: 'play_character_animation', label: 'Play character animation'},
   {value: 'open_overlay_scene', label: 'Open overlay scene'},
   {value: 'close_overlay_scene', label: 'Close overlay scene'},
   {value: 'change_overlay_scene', label: 'Change overlay scene'},
@@ -60,6 +64,7 @@ const ActionsCtrl = app => async params => {
     preselectedObjectId: routeOptions.objectId,
     selectedInteraction: null,
     objectOptions: [],
+    targetObjectOptions: [],
     sceneOptions: [],
     baseSceneOptions: [],
     audioAssetOptions: [],
@@ -67,6 +72,8 @@ const ActionsCtrl = app => async params => {
     sfxOptions: [],
     overlayBindings: [],
     overlaySceneOptions: [],
+    characterOptions: [],
+    characterAnimationOptions: [],
     verbs: [],
     inventoryObjectOptions: [],
     keyCodeOptions: KEY_CODE_OPTIONS,
@@ -77,6 +84,8 @@ const ActionsCtrl = app => async params => {
     actionTypes: ACTION_TYPES,
     branchOptions: [],
     actionRows: [],
+    selectedStepId: null,
+    selectedStep: null,
     scriptLineSummaryById: {},
     scriptSearchResults: [],
     scriptSearchLanguage: 'en',
@@ -128,6 +137,7 @@ const ActionsCtrl = app => async params => {
         this.sceneOptions = await apiFetch('/api/scenes');
         this.overlayBindings = await apiFetch('/api/overlay-bindings');
         this.verbs = await apiFetch('/api/verbs');
+        this.characterOptions = await apiFetch('/api/characters');
         this.inventoryObjectOptions = await apiFetch('/api/scene-objects');
         this.audioAssetOptions = await apiFetch('/api/audio-assets');
         this.bgmOptions = this.audioAssetOptions.filter(asset => asset.kind === 'bgm');
@@ -157,6 +167,13 @@ const ActionsCtrl = app => async params => {
     async loadAnimations() {
       const objects = this.scene?.objects ?? [];
       this.objectOptions = objects.map(object => ({id: object.id, name: object.name}));
+      const characterObjectOptions = (this.characterOptions ?? []).flatMap(character => (
+        (character.scene?.objects ?? []).map(object => ({
+          id: object.id,
+          name: `${character.name} / ${object.name}`
+        }))
+      ));
+      this.targetObjectOptions = [...this.objectOptions, ...characterObjectOptions];
       const animationGroups = await Promise.all(
         objects.map(async object => {
           try {
@@ -179,6 +196,13 @@ const ActionsCtrl = app => async params => {
         .filter(Boolean)
         .sort((left, right) => left.localeCompare(right))
         .map(name => ({value: name, label: name}));
+      this.characterAnimationOptions = (this.characterOptions ?? []).flatMap(character => (
+        (character.animations ?? []).map(animation => ({
+          characterId: character.id,
+          animationId: animation.id,
+          label: `${character.name} / ${animation.name}`
+        }))
+      ));
     },
 
     async loadReferencedScriptLineSummaries() {
@@ -257,6 +281,10 @@ const ActionsCtrl = app => async params => {
       this.selectedInteraction = this.interactions.find(
         interaction => interaction.id === this.selectedInteractionId
       ) ?? null;
+      this.selectedStep = this.selectedInteraction
+        ? findStepById(this.selectedInteraction.action_tree ?? [], this.selectedStepId)
+        : null;
+      if (!this.selectedStep) this.selectedStepId = null;
       this.hasInteractions = Boolean(this.interactions.length);
       this.hasVisibleInteractions = Boolean(this.visibleInteractions.length);
       this.hasSelectedInteraction = Boolean(this.selectedInteraction);
@@ -284,6 +312,22 @@ const ActionsCtrl = app => async params => {
       const removeStepButton = event.target.closest('[data-action="remove-step"]');
       if (removeStepButton) {
         await this.removeStep(removeStepButton.dataset.stepId);
+        return;
+      }
+
+      const selectStepButton = event.target.closest('[data-action="select-step"]');
+      if (selectStepButton) {
+        this.selectedStepId = String(selectStepButton.dataset.stepId || '');
+        this.prepareState();
+        this.refreshView();
+        return;
+      }
+
+      const cancelStepEditButton = event.target.closest('[data-action="cancel-step-edit"]');
+      if (cancelStepEditButton) {
+        this.clearSelectedStep();
+        this.prepareState();
+        this.refreshView();
         return;
       }
 
@@ -329,7 +373,8 @@ const ActionsCtrl = app => async params => {
       const actionForm = event.target.closest('[data-action-step-form]');
       if (actionForm) {
         event.preventDefault();
-        await this.addActionStep(actionForm);
+        if (this.selectedStep) await this.updateActionStep(actionForm);
+        else await this.addActionStep(actionForm);
         return;
       }
 
@@ -470,6 +515,24 @@ const ActionsCtrl = app => async params => {
         action_tree: nextTree
       });
       form.reset();
+      this.clearSelectedStep();
+    },
+
+    async updateActionStep(form) {
+      if (!this.selectedInteraction || !this.selectedStep) return;
+      const updatedStep = {
+        ...this.selectedStep,
+        ...readActionStepForm(form),
+        id: this.selectedStep.id,
+        then_steps: this.selectedStep.then_steps ?? [],
+        else_steps: this.selectedStep.else_steps ?? []
+      };
+      const nextTree = replaceStepById(this.selectedInteraction.action_tree ?? [], this.selectedStepId, updatedStep);
+      await this.saveSelectedInteraction({
+        ...interactionPayload(this.selectedInteraction),
+        action_tree: nextTree
+      });
+      this.clearSelectedStep();
     },
 
     async removeStep(stepId) {
@@ -479,6 +542,7 @@ const ActionsCtrl = app => async params => {
         ...interactionPayload(this.selectedInteraction),
         action_tree: nextTree
       });
+      if (String(this.selectedStepId) === String(stepId)) this.clearSelectedStep();
     },
 
     async moveStep(stepId, direction) {
@@ -568,6 +632,7 @@ const ActionsCtrl = app => async params => {
         this.updateInteractionFormVisibility(editForm);
       }
       this.root?.querySelectorAll('[data-action-step-form]').forEach(form => {
+        setActionStepFormValues(form, this.selectedStep);
         this.updateActionFormVisibility(form);
       });
     },
@@ -664,6 +729,11 @@ const ActionsCtrl = app => async params => {
     refreshView() {
       app.refresh();
       requestAnimationFrame(() => this.setControlValues());
+    },
+
+    clearSelectedStep() {
+      this.selectedStepId = null;
+      this.selectedStep = null;
     },
 
     goToScene(form) {
@@ -804,6 +874,7 @@ function readActionStepForm(form) {
     return {
       type,
       script_line_ids: readLineIds(formData),
+      speaker_character_id: Number(formData.get('speaker_character_id') || 0) || null,
       wait
     };
   }
@@ -887,6 +958,43 @@ function readActionStepForm(form) {
       wait: 'wait'
     };
   }
+  if (type === 'show_character') {
+    return {
+      type,
+      character_id: Number(formData.get('character_id')),
+      x: Number(formData.get('character_x') || 960),
+      y: Number(formData.get('character_y') || 540),
+      scale: Number(formData.get('character_scale') || 1),
+      pose_variant_key: String(formData.get('pose_variant_key') || '').trim() || null,
+      animation_id: Number(formData.get('character_animation_id')) || null,
+      wait
+    };
+  }
+  if (type === 'hide_character') {
+    return {
+      type,
+      character_id: Number(formData.get('character_id')),
+      wait
+    };
+  }
+  if (type === 'set_character_transform') {
+    return {
+      type,
+      character_id: Number(formData.get('character_id')),
+      x: Number(formData.get('character_x') || 960),
+      y: Number(formData.get('character_y') || 540),
+      scale: Number(formData.get('character_scale') || 1),
+      wait
+    };
+  }
+  if (type === 'play_character_animation') {
+    return {
+      type,
+      character_id: Number(formData.get('character_id')),
+      animation_id: Number(formData.get('character_animation_id')),
+      wait
+    };
+  }
   if (type === 'open_overlay_scene' || type === 'change_overlay_scene') {
     return {
       type,
@@ -931,6 +1039,64 @@ function setInteractionFormValues(form, interaction) {
   }
 }
 
+function setActionStepFormValues(form, step) {
+  if (!form) return;
+  form.reset();
+  form.elements.branch.value = 'root';
+  form.elements.action_type.value = step?.type ?? 'play_animation';
+  form.elements.wait.value = step?.wait ?? 'wait';
+  if (!step) return;
+
+  if (form.elements.target_scope) form.elements.target_scope.value = step.target_scope ?? 'object';
+  if (form.elements.target_object_mode) form.elements.target_object_mode.value = step.target_object_mode ?? 'static';
+  if (form.elements.scene_object_mode) form.elements.scene_object_mode.value = step.scene_object_mode ?? 'static';
+  if (form.elements.target_object_id) form.elements.target_object_id.value = step.target_object_id ?? '';
+  if (form.elements.frame_index) form.elements.frame_index.value = step.frame_index ?? 0;
+  if (form.elements.animation_ref) {
+    form.elements.animation_ref.value = step.animation_id && step.target_object_id
+      ? `${step.target_object_id}:${step.animation_id}`
+      : '';
+  }
+  if (form.elements.animation_name) form.elements.animation_name.value = step.animation_name ?? '';
+  if (form.elements.property) form.elements.property.value = step.property ?? 'visible';
+  if (form.elements.value_bool) form.elements.value_bool.value = String(Boolean(step.value));
+  if (form.elements.value_text) form.elements.value_text.value = typeof step.value === 'string' ? step.value : '';
+  if (form.elements.duration_seconds) form.elements.duration_seconds.value = step.duration_seconds ?? 1;
+  if (form.elements.script_line_ids) form.elements.script_line_ids.value = (step.script_line_ids ?? []).join(', ');
+  if (form.elements.variable_id) form.elements.variable_id.value = step.variable_id ?? '';
+  if (form.elements.variable_value_type) form.elements.variable_value_type.value = inferValueType(step.value);
+  if (form.elements.variable_value) form.elements.variable_value.value = formatTypedValue(step.value);
+  if (form.elements.variable_delta) form.elements.variable_delta.value = step.amount ?? 1;
+  if (form.elements.inventory_scene_object_id) form.elements.inventory_scene_object_id.value = step.scene_object_id ?? '';
+  if (form.elements.operator) form.elements.operator.value = step.operator ?? 'equals';
+  if (form.elements.scene_id) form.elements.scene_id.value = step.scene_id ?? '';
+  if (form.elements.overlay_scene_id) form.elements.overlay_scene_id.value = step.scene_id ?? '';
+  if (form.elements.bgm_audio_asset_id) form.elements.bgm_audio_asset_id.value = step.audio_asset_id ?? '';
+  if (form.elements.sfx_audio_asset_id) form.elements.sfx_audio_asset_id.value = step.audio_asset_id ?? '';
+  if (form.elements.speaker_character_id) form.elements.speaker_character_id.value = step.speaker_character_id ?? '';
+  if (form.elements.character_id) form.elements.character_id.value = step.character_id ?? '';
+  if (form.elements.character_x) form.elements.character_x.value = step.x ?? 960;
+  if (form.elements.character_y) form.elements.character_y.value = step.y ?? 540;
+  if (form.elements.character_scale) form.elements.character_scale.value = step.scale ?? 1;
+  if (form.elements.pose_variant_key) form.elements.pose_variant_key.value = step.pose_variant_key ?? '';
+  if (form.elements.character_animation_id) form.elements.character_animation_id.value = step.animation_id ?? '';
+  if (form.elements.fade_color) form.elements.fade_color.value = step.color ?? '#000000';
+  if (form.elements.affect_audio) form.elements.affect_audio.checked = Boolean(step.affect_audio);
+  if (form.elements.animation_mode) form.elements.animation_mode.value = step.mode ?? 'queued';
+}
+
+function inferValueType(value) {
+  if (typeof value === 'boolean') return 'bool';
+  if (typeof value === 'number') return 'number';
+  return 'string';
+}
+
+function formatTypedValue(value) {
+  if (typeof value === 'boolean') return value ? 'true' : 'false';
+  if (value == null) return '';
+  return String(value);
+}
+
 function parseTypedValue(type, rawValue) {
   if (type === 'bool') return rawValue === 'true' || rawValue === 'on';
   if (type === 'number') return Number(rawValue || 0);
@@ -953,6 +1119,29 @@ function insertStep(tree, branchValue, step) {
     parent[key] = [...(parent[key] ?? []), step];
   });
   return nextTree;
+}
+
+function findStepById(tree, stepId) {
+  if (!stepId) return null;
+  for (const step of tree ?? []) {
+    if (String(step.id) === String(stepId)) return structuredClone(step);
+    const inThen = findStepById(step.then_steps ?? [], stepId);
+    if (inThen) return inThen;
+    const inElse = findStepById(step.else_steps ?? [], stepId);
+    if (inElse) return inElse;
+  }
+  return null;
+}
+
+function replaceStepById(tree, stepId, nextStep) {
+  return (tree ?? []).map(step => {
+    if (String(step.id) === String(stepId)) return nextStep;
+    return {
+      ...step,
+      then_steps: replaceStepById(step.then_steps ?? [], stepId, nextStep),
+      else_steps: replaceStepById(step.else_steps ?? [], stepId, nextStep)
+    };
+  });
 }
 
 function removeStepById(tree, stepId) {
@@ -1046,6 +1235,7 @@ function flattenActionRows(tree, context, depth = 0, branch = '') {
       depth,
       index: index + 1,
       branch,
+      isSelected: String(step.id) === String(context?.selectedStepId ?? ''),
       label: actionLabel(step),
       meta: actionMeta(step, context),
       indent: `${depth * 18}px`
@@ -1105,7 +1295,10 @@ function actionLabel(step) {
 }
 
 function actionMeta(step, context) {
-  if (step.type === 'play_audio') return `audio ${formatScriptLineIds(step.script_line_ids, context)}`;
+  if (step.type === 'play_audio') {
+    const speaker = step.speaker_character_id ? ` · ${findCharacterName(context, step.speaker_character_id)}` : '';
+    return `audio ${formatScriptLineIds(step.script_line_ids, context)}${speaker}`;
+  }
   if (step.type === 'show_subtitle') return `subtitle ${formatScriptLineIds(step.script_line_ids, context)}`;
   if (step.type === 'go_to_frame') {
     if (step.target_scope === 'background') {
@@ -1128,6 +1321,10 @@ function actionMeta(step, context) {
   if (step.type === 'crossfade_bgm') return `${findAudioAssetName(context, step.audio_asset_id)} · ${step.duration_seconds}s`;
   if (step.type === 'play_sfx') return findAudioAssetName(context, step.audio_asset_id);
   if (step.type === 'change_scene') return findSceneName(context, step.scene_id);
+  if (step.type === 'show_character') return `${findCharacterName(context, step.character_id)} · ${step.x}, ${step.y} · ${step.scale}`;
+  if (step.type === 'hide_character') return findCharacterName(context, step.character_id);
+  if (step.type === 'set_character_transform') return `${findCharacterName(context, step.character_id)} · ${step.x}, ${step.y} · ${step.scale}`;
+  if (step.type === 'play_character_animation') return `${findCharacterAnimationName(context, step.character_id, step.animation_id)}`;
   if (step.type === 'open_overlay_scene') return `open overlay ${findSceneName(context, step.scene_id)}`;
   if (step.type === 'close_overlay_scene') return 'close overlay';
   if (step.type === 'change_overlay_scene') return `change overlay ${findSceneName(context, step.scene_id)}`;
@@ -1159,6 +1356,10 @@ function actionTypeHelp(type) {
     crossfade_bgm: 'Crossfades looping background music to a target BGM asset.',
     play_sfx: 'Plays a one-shot sound effect asset.',
     change_scene: 'Uses a target scene and transfers preview flow into that scene.',
+    show_character: 'Shows a character in the foreground and optionally starts it on a pose or animation.',
+    hide_character: 'Hides a currently visible character.',
+    set_character_transform: 'Moves or rescales a visible character.',
+    play_character_animation: 'Plays a saved character animation.',
     open_overlay_scene: 'Opens an overlay scene on top of the current base scene.',
     close_overlay_scene: 'Closes the current overlay scene and resumes the base scene.',
     change_overlay_scene: 'Switches from the current overlay scene to another overlay scene.',
@@ -1204,6 +1405,8 @@ function findVariableName(context, variableId) {
 }
 
 function findObjectName(context, objectId) {
+  const targetOption = context?.targetObjectOptions?.find(object => Number(object.id) === Number(objectId));
+  if (targetOption) return targetOption.name;
   return context?.scene?.objects?.find(object => Number(object.id) === Number(objectId))?.name ?? `object ${objectId}`;
 }
 
@@ -1223,6 +1426,16 @@ function findSceneName(context, sceneId) {
 
 function findAnimationName(context, animationId) {
   return context?.animationOptions?.find(animation => Number(animation.animationId) === Number(animationId))?.label ?? `animation ${animationId}`;
+}
+
+function findCharacterName(context, characterId) {
+  return context?.characterOptions?.find(character => Number(character.id) === Number(characterId))?.name ?? `character ${characterId}`;
+}
+
+function findCharacterAnimationName(context, characterId, animationId) {
+  return context?.characterAnimationOptions?.find(
+    animation => Number(animation.characterId) === Number(characterId) && Number(animation.animationId) === Number(animationId)
+  )?.label ?? `character animation ${animationId}`;
 }
 
 function formatTriggerLabelPrefix(triggerType, matchMode, objectName) {

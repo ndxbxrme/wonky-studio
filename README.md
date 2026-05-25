@@ -175,9 +175,11 @@ Scene preview:
 - Preserves carried inventory and held inventory item across authored scene transitions.
 - Preserves looping BGM across preview scene transitions.
 - Preloads directly connected destination scenes in the background to reduce transition latency.
+- Preloads global UI assets such as the inventory background, verb tag background, custom cursors, BGM/SFX, and referenced voice lines so first use feels less abrupt over the network.
 - Background can be toggled on/off for object inspection.
 - The currently playing object is drawn on top of the stack during playback.
 - Preview subtitles are bilingual and rendered inside the visible scene frame, not below the stage.
+- Desktop preview uses click/right-click verbs and keyboard controls; touch preview switches to a mobile full-screen player with touch-specific focus, verbs, inventory, and close gestures.
 - Supports global inventory UI, pickup-frame driven object swaps, radial verb menus, local-only preview master/music volume sliders, and custom runtime cursors.
 - Listens for editor updates in the same browser via `BroadcastChannel` and refreshes automatically.
 

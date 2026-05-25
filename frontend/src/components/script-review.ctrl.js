@@ -109,6 +109,12 @@ const ScriptReviewCtrl = app => async () => {
         return;
       }
 
+      const extractVisemesButton = event.target.closest('[data-action="extract-visemes"]');
+      if (extractVisemesButton) {
+        await this.extractVisemes(extractVisemesButton);
+        return;
+      }
+
       const toggleSelection = event.target.closest('[data-action="toggle-script-line-selection"]');
       if (toggleSelection) {
         event.stopPropagation();
@@ -520,6 +526,24 @@ const ScriptReviewCtrl = app => async () => {
       }
     },
 
+    async extractVisemes(button) {
+      const candidateId = Number(button.dataset.candidateId || 0);
+      if (!candidateId) return;
+      button.disabled = true;
+      this.setStatus('Extracting visemes...');
+      try {
+        await apiFetch(`/api/script-audio-candidates/${candidateId}/extract-visemes`, {
+          method: 'POST'
+        });
+        if (this.selectedLineId) await this.selectLine(this.selectedLineId, {skipListRefresh: true});
+        this.setStatus('Visemes extracted.');
+      } catch (error) {
+        this.setStatus(await readErrorDetail(error, 'Could not extract visemes.'));
+      } finally {
+        button.disabled = false;
+      }
+    },
+
     toggleLineSelection(lineId) {
       if (this.selectedLineIds.includes(lineId)) {
         this.selectedLineIds = this.selectedLineIds.filter(id => id !== lineId);
@@ -709,7 +733,8 @@ function prepareLineDetail(line, activeLanguage) {
           ? `${Number(candidate.duration_seconds).toFixed(2)}s`
           : '',
         scoreLabel: candidate.score ? `${Number(candidate.score).toFixed(1)}` : '',
-        hasAudio: Boolean(candidate.relative_path)
+        hasAudio: Boolean(candidate.relative_path),
+        visemeEventCount: Array.isArray(candidate.viseme_events) ? candidate.viseme_events.length : 0
       })),
     hasAudioCandidates: line.audio_candidates.some(candidate => candidate.language === activeLanguage),
     preferredAudioLabel: describePreferredAudio(line, activeLanguage)

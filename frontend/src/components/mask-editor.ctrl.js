@@ -25,6 +25,8 @@ const MaskEditorCtrl = app => async params => {
     masks: [],
     currentMask: null,
     currentIndex: 0,
+    backLinkHref: `/scene/${sceneId}`,
+    backLinkLabel: `Scene ${sceneId}`,
     editorReady: false,
     editorMissing: false,
     unloadHandlers: [],
@@ -55,6 +57,7 @@ const MaskEditorCtrl = app => async params => {
 
     async refreshScene() {
       this.scene = replaceScene(await loadScene(this.sceneId));
+      await this.resolveBackLink();
       this.object = this.scene.objects.find(sceneObject => sceneObject.id === this.objectId) ?? null;
       this.masks = this.object?.masks ?? [];
       this.currentIndex = this.masks.findIndex(mask => mask.id === this.maskId);
@@ -62,6 +65,12 @@ const MaskEditorCtrl = app => async params => {
       this.currentMask = this.masks[this.currentIndex] ?? null;
       this.editorReady = Boolean(this.currentMask);
       this.editorMissing = !this.editorReady;
+    },
+
+    async resolveBackLink() {
+      const backLink = await buildBackLink(this.scene);
+      this.backLinkHref = backLink.href;
+      this.backLinkLabel = backLink.label;
     },
 
     async configureEditor() {
@@ -260,6 +269,7 @@ const MaskEditorCtrl = app => async params => {
 
   try {
     controller.scene = replaceScene(await loadScene(sceneId));
+    await controller.resolveBackLink();
     controller.object = controller.scene.objects.find(sceneObject => sceneObject.id === objectId) ?? null;
     controller.masks = controller.object?.masks ?? [];
     controller.currentIndex = controller.masks.findIndex(mask => mask.id === maskId);
@@ -272,6 +282,33 @@ const MaskEditorCtrl = app => async params => {
   }
   return controller;
 };
+
+async function buildBackLink(scene) {
+  if (scene?.presentation_mode !== 'character') {
+    return {
+      href: `/scene/${scene?.id}`,
+      label: `Scene ${scene?.id}`
+    };
+  }
+  try {
+    const characters = await apiFetch('/api/characters');
+    const character = Array.isArray(characters)
+      ? characters.find(item => Number(item.scene_id) === Number(scene.id))
+      : null;
+    if (character) {
+      return {
+        href: `/character/${character.id}`,
+        label: character.name ? `Character ${character.name}` : `Character ${character.id}`
+      };
+    }
+  } catch {
+    // Fall back to the backing scene route if character lookup fails.
+  }
+  return {
+    href: `/scene/${scene?.id}`,
+    label: `Scene ${scene?.id}`
+  };
+}
 
 async function uploadMaskBlob(maskId, blob) {
   return apiFetch(`/api/object-masks/${maskId}/content`, {

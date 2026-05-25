@@ -1,15 +1,14 @@
-<main class="scene-layout" data-scene-page>
+<main class="scene-layout" data-scene-page data-character-editor-page>
   <nav class="app-topbar" aria-label="Primary">
     <a class="app-topbar__brand" href="/">Wonky Studio</a>
     <div class="app-topbar__links">
       <a class="app-topbar__link" href="/"><span class="ui-icon" data-icon="clapperboard"></span><span>Scenes</span></a>
+      <a class="app-topbar__link" href="/characters"><span class="ui-icon" data-icon="workflow"></span><span>Characters</span></a>
       <a class="app-topbar__link" href="/images"><span class="ui-icon" data-icon="images"></span><span>Images</span></a>
       <a class="app-topbar__link" href="/variables"><span class="ui-icon" data-icon="sliders-horizontal"></span><span>Variables</span></a>
       <a class="app-topbar__link" href="/script-review"><span class="ui-icon" data-icon="captions"></span><span>Transcript library</span></a>
       <a class="app-topbar__link" href="/audio-library"><span class="ui-icon" data-icon="audio-lines"></span><span>Audio library</span></a>
       <a class="app-topbar__link" href="/global-settings"><span class="ui-icon" data-icon="settings-2"></span><span>Global settings</span></a>
-      <a class="app-topbar__link" href="/artist-guide"><span class="ui-icon" data-icon="book-open"></span><span>Guide</span></a>
-      <a class="app-topbar__link" href="/system-health"><span class="ui-icon" data-icon="activity"></span><span>Health</span></a>
       <button class="app-topbar__link app-topbar__link--primary" type="button" data-action="open-game-preview"><span class="ui-icon" data-icon="play"></span><span>Preview game</span></button>
     </div>
   </nav>
@@ -17,40 +16,30 @@
   {{#if sceneFound}}
     <header class="scene-header">
       <div>
-        <a class="back-link" href="/">Scenes</a>
-        <p class="eyebrow">Scene {{scene.id}}</p>
-        <h1>{{scene.title}}</h1>
-        <p>{{scene.description}}</p>
+        <a class="back-link" href="/characters">Characters</a>
+        <p class="eyebrow">Character {{character.id}}</p>
+        <h1>{{character.name}}</h1>
+        <p>{{character.description}}</p>
       </div>
       <div class="scene-header__actions">
-        <div class="scene-header__action-row">
-          <div class="scene-switcher">
-            {{#if previousSceneId}}<a class="button secondary compact" href="/scene/{{previousSceneId}}">Prev scene</a>{{/if}}
-            <form class="scene-switcher__form" data-scene-jump-form>
-              <select name="scene_id">
-                {{#each sceneOptions as sceneOption}}
-                  <option value="{{sceneOption.id}}" {{#if sceneOption.isCurrent}}selected{{/if}}>Scene {{sceneOption.id}}</option>
-                {{/each}}
-              </select>
-              <button class="button secondary compact" type="submit">Go</button>
-            </form>
-            {{#if nextSceneId}}<a class="button secondary compact" href="/scene/{{nextSceneId}}">Next scene</a>{{/if}}
-          </div>
-          <div class="scene-header__button-group">
-            <a class="button secondary compact" href="/actions/{{scene.id}}"><span class="ui-icon" data-icon="workflow"></span><span>Edit actions</span></a>
-            <button class="button secondary compact" type="button" data-action="open-preview"><span class="ui-icon" data-icon="external-link"></span><span>Open preview</span></button>
-            <button class="button secondary compact" type="button" data-action="logout"><span class="ui-icon" data-icon="log-out"></span><span>Sign out</span></button>
-          </div>
-        </div>
         <div class="scene-header__action-row scene-header__action-row--tools">
           <div class="scene-header__button-group scene-header__button-group--tools">
             <button class="button secondary compact" type="button" data-action="analyze-vlm"><span class="ui-icon" data-icon="sparkles"></span><span>Analyze with VLM</span></button>
             <button class="button primary compact" type="button" data-action="extract-masks"><span class="ui-icon" data-icon="scan-search"></span><span>Extract masks</span></button>
-            <button class="button secondary compact" type="button" data-action="browse-scene-images"><span class="ui-icon" data-icon="upload"></span><span>Upload images</span></button>
-            <button class="button secondary compact" type="button" data-action="generate-inventory-images"><span class="ui-icon" data-icon="package"></span><span>Generate inventory art</span></button>
-            <button class="button secondary compact" type="button" data-action="generate-removal-frames"><span class="ui-icon" data-icon="image-minus"></span><span>Generate pickup frames</span></button>
+            <button class="button secondary compact" type="button" data-action="browse-scene-images"><span class="ui-icon" data-icon="upload"></span><span>Upload frames</span></button>
+            <button class="button secondary compact" type="button" data-action="generate-character-visemes"><span class="ui-icon" data-icon="audio-lines"></span><span>Generate visemes</span></button>
           </div>
+          <form class="scene-header__button-group scene-header__button-group--tools" data-generate-character-poses-form>
+            <select name="pose_subfolder">
+              <option value="">Choose pose folder</option>
+              {{#each poseFolders as poseFolder}}
+                <option value="{{poseFolder}}">{{poseFolder}}</option>
+              {{/each}}
+            </select>
+            <button class="button secondary compact" type="button" data-action="generate-character-poses"><span class="ui-icon" data-icon="person-standing"></span><span>Generate poses</span></button>
+          </form>
         </div>
+        <p class="form-status scene-form-status" data-character-generation-status aria-live="polite"></p>
       </div>
     </header>
 
@@ -58,22 +47,13 @@
       <article class="scene-preview-panel">
         <input class="file-input" type="file" accept="image/*" multiple data-scene-image-input />
         {{#if scene.thumbnailUrl}}
-          <img class="scene-preview" src="{{scene.thumbnailUrl}}" alt="{{scene.title}}" />
+          <img class="scene-preview" src="{{scene.thumbnailUrl}}" alt="{{character.name}}" />
         {{/if}}
         <div class="scene-metadata">
-          <span>{{scene.images.length}} images</span>
+          <span>{{scene.images.length}} frames</span>
           <span>{{scene.objects.length}} objects</span>
           <span>{{scene.objectMaskCount}} masks</span>
-          <span>{{scene.actionCount}} actions</span>
         </div>
-        {{#if scene.hasSceneActionSummaries}}
-          <div class="scene-action-summary" aria-label="Scene-level actions">
-            <p class="eyebrow">Scene actions</p>
-            {{#each scene.sceneActionSummaries as action}}
-              <a href="{{action.href}}">{{action.label}}</a>
-            {{/each}}
-          </div>
-        {{/if}}
         {{#if hasExtractionJob}}
           <div class="job-status">
             <strong>{{extractionJob.status}}</strong>
@@ -88,34 +68,61 @@
         <p class="form-status scene-form-status" data-vlm-analysis-status aria-live="polite"></p>
         <p class="form-status scene-form-status" data-mask-extraction-status aria-live="polite"></p>
         <p class="form-status scene-form-status" data-scene-image-status aria-live="polite"></p>
-        <p class="form-status scene-form-status" data-inventory-image-status aria-live="polite"></p>
-        <p class="form-status scene-form-status" data-scene-removal-status aria-live="polite"></p>
       </article>
 
       <aside class="objects-panel">
         <div class="panel-stack">
           <div>
-            <p class="eyebrow">Scene settings</p>
-            <h2>Presentation</h2>
+            <p class="eyebrow">Character settings</p>
+            <h2>Placement and visemes</h2>
           </div>
-          <form class="object-form" data-scene-settings-form>
+          <form class="object-form" data-character-settings-form>
             <label>
-              Title
-              <input name="title" type="text" value="{{scene.title}}" required />
+              Character name
+              <input name="character_name" type="text" value="{{character.name}}" required />
             </label>
             <label>
               Description
-              <input name="description" type="text" value="{{scene.description}}" />
+              <input name="character_description" type="text" value="{{character.description}}" />
             </label>
+            <div class="object-prompt-fields">
+              <label>
+                X
+                <input name="default_x" type="number" step="1" value="{{character.default_x}}" />
+              </label>
+              <label>
+                Y
+                <input name="default_y" type="number" step="1" value="{{character.default_y}}" />
+              </label>
+            </div>
+            <div class="object-prompt-fields">
+              <label>
+                Scale
+                <input name="default_scale" type="number" step="0.01" value="{{character.default_scale}}" />
+              </label>
+              <label>
+                Mouth object
+                <select name="mouth_scene_object_id">
+                  <option value="">No mouth target</option>
+                  {{#each scene.objects as object}}
+                    <option value="{{object.id}}" {{#if object.isMouthTarget}}selected{{/if}}>{{object.name}}</option>
+                  {{/each}}
+                </select>
+              </label>
+            </div>
+            <button class="button secondary compact" type="submit">Save character settings</button>
+            <p class="form-status scene-form-status" data-character-settings-status aria-live="polite"></p>
+          </form>
+
+          <div>
+            <h2>Character frame stack</h2>
+          </div>
+          <form class="object-form" data-scene-settings-form>
+            <input type="hidden" name="title" value="{{scene.title}}" />
+            <input type="hidden" name="description" value="{{scene.description}}" />
+            <input type="hidden" name="presentation_mode" value="character" />
             <label>
-              Presentation mode
-              <select name="presentation_mode">
-                <option value="base" {{#if scene.isBasePresentation}}selected{{/if}}>Base scene</option>
-                <option value="overlay" {{#if scene.isOverlayPresentation}}selected{{/if}}>Overlay scene</option>
-              </select>
-            </label>
-            <label>
-              Background frame
+              Default frame
               <input
                 name="background_frame_index"
                 type="number"
@@ -125,17 +132,17 @@
                 value="{{scene.background_frame_index}}"
               />
             </label>
-            <button class="button secondary compact" type="submit">Save scene settings</button>
+            <button class="button secondary compact" type="submit">Save default frame</button>
             <p class="form-status scene-form-status" data-scene-settings-status aria-live="polite"></p>
           </form>
 
           <div>
-            <h2>New Object</h2>
+            <h2>New object</h2>
           </div>
           <form class="object-form" data-object-form>
             <label>
               Object name
-              <input name="name" type="text" placeholder="lamp" required />
+              <input name="name" type="text" placeholder="Mouth" required />
             </label>
             <label>
               Description
@@ -144,11 +151,11 @@
             <div class="object-prompt-fields">
               <label>
                 Segmentation prompt
-                <input name="prompt" type="text" placeholder="bed with covers and pillow" />
+                <input name="prompt" type="text" placeholder="Mustached mouth" />
               </label>
               <label>
                 Inventory image prompt
-                <input name="inventory_image_prompt" type="text" placeholder="storybook bedside table icon" />
+                <input name="inventory_image_prompt" type="text" placeholder="Unused for characters" />
               </label>
             </div>
             <button class="button secondary compact" type="submit">Add object</button>
@@ -158,7 +165,7 @@
       </aside>
     </section>
 
-    <section class="object-masks scene-section" aria-label="Object masks">
+    <section class="object-masks scene-section" aria-label="Character objects and masks">
       <div class="object-masks__header">
         <div>
           <p class="eyebrow">Segmentation</p>
@@ -184,26 +191,11 @@
                     <strong>{{object.name}}</strong>
                     <p>
                       {{object.source}} · {{object.maskCount}} masks ·
-                      <a class="inline-link" href="/animations/{{scene.id}}/{{object.id}}">{{object.animationCount}} animations</a> ·
-                      <a class="inline-link" href="/actions/{{scene.id}}?objectId={{object.id}}">New action</a> ·
-                      {{#if object.keyboard_target_enabled}}keyboard target{{/if}}
-                      {{#if not object.keyboard_target_enabled}}pointer only{{/if}}
+                      <a class="inline-link" href="/animations/{{scene.id}}/{{object.id}}">{{object.animationCount}} animations</a>
+                      {{#if object.isMouthTarget}} · mouth target{{/if}}
                     </p>
                     {{#if object.description}}
                       <p>{{object.description}}</p>
-                    {{/if}}
-                    {{#if object.inventory_image_failed}}
-                      <p class="object-warning">Inventory art generation failed. Showing mask thumbnail instead.</p>
-                    {{/if}}
-                    {{#if object.pickup_frame_failed}}
-                      <p class="object-warning">Pickup frame generation failed for this object.</p>
-                    {{/if}}
-                    {{#if object.hasActionSummaries}}
-                      <div class="object-action-summary" aria-label="{{object.name}} actions">
-                        {{#each object.actionSummaries as action}}
-                          <a href="{{action.href}}">{{action.label}}</a>
-                        {{/each}}
-                      </div>
                     {{/if}}
                   </div>
                   <button
@@ -227,7 +219,7 @@
                     </label>
                     <label>
                       Inventory image prompt
-                      <input name="inventory_image_prompt" type="text" value="{{object.inventory_image_prompt}}" placeholder="storybook bedside table icon" />
+                      <input name="inventory_image_prompt" type="text" value="{{object.inventory_image_prompt}}" placeholder="Unused for characters" />
                     </label>
                   </div>
                   <div class="object-prompt-form__footer">
@@ -258,38 +250,27 @@
                         </div>
                       </div>
                       <label class="checkbox-label">
-                        <input
-                          name="visible"
-                          type="checkbox"
-                          {{#if object.visible}}checked{{/if}}
-                        />
+                        <input name="visible" type="checkbox" {{#if object.visible}}checked{{/if}} />
                         Visible
                       </label>
                       <label class="checkbox-label">
-                        <input
-                          name="enabled"
-                          type="checkbox"
-                          {{#if object.enabled}}checked{{/if}}
-                        />
+                        <input name="enabled" type="checkbox" {{#if object.enabled}}checked{{/if}} />
                         Enabled
                       </label>
                       <label class="checkbox-label">
-                        <input
-                          name="keyboard_target_enabled"
-                          type="checkbox"
-                          {{#if object.keyboard_target_enabled}}checked{{/if}}
-                        />
+                        <input name="keyboard_target_enabled" type="checkbox" {{#if object.keyboard_target_enabled}}checked{{/if}} />
                         Keyboard target
                       </label>
                     </div>
-                  <div class="form-actions object-row-actions">
-                      <button class="button secondary compact" type="submit">Save</button>
-                      <button class="button secondary compact" type="button" data-action="generate-object-inventory-image" data-object-id="{{object.id}}"><span class="ui-icon" data-icon="package"></span><span>Generate inventory art</span></button>
-                      <button class="button secondary compact" type="button" data-action="generate-object-removal-frame" data-object-id="{{object.id}}"><span class="ui-icon" data-icon="image-minus"></span><span>Generate pickup frame</span></button>
+                    <div class="object-prompt-form__actions">
+                      {{#if object.hasMasks}}
+                        <a class="button secondary compact" href="/mask-editor/{{scene.id}}/{{object.id}}/{{object.firstMaskId}}">Edit masks</a>
+                      {{/if}}
+                      <a class="button secondary compact" href="/animations/{{scene.id}}/{{object.id}}">Edit animations</a>
+                      <button class="button secondary compact" type="submit">Save object</button>
                     </div>
                   </div>
                   <p class="form-status scene-form-status" data-object-prompt-status aria-live="polite"></p>
-                  <p class="form-status scene-form-status" data-object-action-status="{{object.id}}" aria-live="polite"></p>
                 </form>
               </div>
             </article>
@@ -297,19 +278,12 @@
         </div>
       {{/if}}
       {{#if not scene.hasObjects}}
-        <div class="editor-empty-state editor-empty-state--large">
-          <strong>No objects yet.</strong>
-          <p>Add your first object from the scene settings panel, then run mask extraction when you are ready.</p>
+        <div class="empty-state">
+          <h3>No character objects yet</h3>
+          <p>Add your first object, then run mask extraction when you are ready.</p>
         </div>
       {{/if}}
       <p class="form-status scene-form-status" data-object-list-status aria-live="polite"></p>
-    </section>
-  {{/if}}
-
-  {{#if sceneMissing}}
-    <section class="empty-state">
-      <p>Scene not found.</p>
-      <a class="button secondary" href="/">Back to scenes</a>
     </section>
   {{/if}}
 </main>

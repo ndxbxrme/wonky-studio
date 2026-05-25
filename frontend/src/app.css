@@ -1754,6 +1754,13 @@ textarea {
   align-self: end;
 }
 
+.action-step-form__actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+}
+
 .action-step-row,
 .script-line-search-row {
   min-width: 0;
@@ -1765,6 +1772,12 @@ textarea {
   grid-template-columns: minmax(0, 1fr) auto;
   gap: 12px;
   align-items: center;
+}
+
+.action-step-row.is-selected {
+  border-color: #8eb6a0;
+  background: #eef6f0;
+  box-shadow: inset 0 0 0 1px #b9d2c0;
 }
 
 .action-step-row__actions {

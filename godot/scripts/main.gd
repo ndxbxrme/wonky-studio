@@ -29,6 +29,7 @@ var current_scene_ref: Dictionary = {}
 var current_scene: Dictionary = {}
 var current_variables: Dictionary = {}
 var current_object_states: Dictionary = {}
+var current_character_states: Dictionary = {}
 var current_inventory_object_ids: Array[int] = []
 var current_inventory_details: Dictionary = {}
 var current_held_inventory_object_id: int = -1
@@ -37,6 +38,9 @@ var current_scene_scale: float = 1.0
 var current_scene_offset: Vector2 = Vector2.ZERO
 var scene_info_message: String = "No scene loaded yet."
 var runtime_message: String = ""
+var texture_cache: Dictionary = {}
+var audio_stream_cache: Dictionary = {}
+var scene_data_cache: Dictionary = {}
 var pending_object_id: int = -1
 var hovered_object_id: int = -1
 var active_verb_menu: Dictionary = {}
@@ -145,6 +149,8 @@ func _handle_left_press(global_position: Vector2) -> void:
 		return
 	if _click_hits_ui(global_position):
 		return
+	if _has_visible_characters():
+		return
 	var stage_rect: Rect2 = scene_stage.get_global_rect()
 	if not stage_rect.has_point(global_position):
 		return
@@ -166,6 +172,8 @@ func _handle_left_release(global_position: Vector2) -> void:
 	if resolved_object_id <= 0:
 		return
 	if _click_hits_ui(global_position):
+		return
+	if _has_visible_characters():
 		return
 	var stage_rect: Rect2 = scene_stage.get_global_rect()
 	if not stage_rect.has_point(global_position):
@@ -216,6 +224,8 @@ func _handle_right_click(global_position: Vector2) -> void:
 		return
 	if _click_hits_ui(global_position):
 		return
+	if _has_visible_characters():
+		return
 	if current_held_inventory_object_id > 0:
 		current_held_inventory_object_id = -1
 		_refresh_inventory_panel()
@@ -264,6 +274,8 @@ func _handle_key_press(event: InputEventKey) -> void:
 			open_inventory_overlay()
 			_set_runtime_message("Opened inventory.")
 		return
+	if _has_visible_characters():
+		return
 	var interactions: Array = _resolve_key_press_interactions(key_code)
 	if interactions.is_empty():
 		return
@@ -306,10 +318,14 @@ func _load_runtime_bundle(path: String) -> void:
 	current_runtime = runtime
 	current_runtime_root = path.get_base_dir()
 	current_variables = _build_initial_variables(runtime.get("variables", []))
+	current_character_states = _build_initial_character_states(runtime.get("characters", []))
 	current_inventory_object_ids = []
 	current_inventory_details = {}
 	current_held_inventory_object_id = -1
 	inventory_overlay_open = false
+	texture_cache.clear()
+	audio_stream_cache.clear()
+	scene_data_cache.clear()
 	pending_object_id = -1
 	hovered_object_id = -1
 	pressed_object_id = -1
@@ -355,23 +371,16 @@ func _load_first_scene(runtime: Dictionary) -> void:
 func _load_scene_from_ref(scene_ref: Dictionary) -> void:
 	current_scene_ref = scene_ref
 	var scene_path: String = _resolve_runtime_path(str(scene_ref.get("scene_path", "")))
-	var file: FileAccess = FileAccess.open(scene_path, FileAccess.READ)
-	if file == null:
-		scene_info_message = "Could not open scene file: %s" % scene_path
-		_clear_scene_stage()
-		_refresh_status_label()
-		return
-
-	var parsed: Variant = JSON.parse_string(file.get_as_text())
-	file.close()
-	if typeof(parsed) != TYPE_DICTIONARY:
-		scene_info_message = "Scene file is not a valid object: %s" % scene_path
+	var parsed: Dictionary = _load_scene_data(scene_path)
+	if parsed.is_empty():
+		scene_info_message = "Could not load scene file: %s" % scene_path
 		_clear_scene_stage()
 		_refresh_status_label()
 		return
 
 	current_scene = parsed
 	current_object_states = _build_initial_object_states(current_scene.get("objects", []))
+	current_character_states = _build_initial_character_states(current_runtime.get("characters", []))
 	inventory_overlay_open = false
 	pending_object_id = -1
 	hovered_object_id = -1
@@ -384,8 +393,10 @@ func _load_scene_from_ref(scene_ref: Dictionary) -> void:
 	_clear_subtitle()
 	_hide_verb_menu()
 	_refresh_inventory_panel()
+	_warmup_assets_for_current_runtime_state()
 	_update_scene_info()
 	_render_current_scene()
+	call_deferred("_warmup_connected_scene_refs")
 	call_deferred("_run_scene_enter_interactions")
 
 
@@ -400,11 +411,31 @@ func _build_initial_object_states(objects: Array) -> Dictionary:
 			"name": str(object_data.get("name", "")),
 			"label": str(object_data.get("name", "")),
 			"sort_order": int(object_data.get("sort_order", 0)),
-			"visible": true,
-			"enabled": true,
+			"visible": bool(object_data.get("visible", true)),
+			"enabled": bool(object_data.get("enabled", true)),
 			"source": object_data,
 			"current_render": object_data.get("default_render", {}),
 			"screen_rect": Rect2(),
+		}
+	return states
+
+
+func _build_initial_character_states(characters: Array) -> Dictionary:
+	var states: Dictionary = {}
+	for character_data in characters:
+		if typeof(character_data) != TYPE_DICTIONARY:
+			continue
+		var character_id: int = int(character_data.get("id", 0))
+		if character_id <= 0:
+			continue
+		states[character_id] = {
+			"id": character_id,
+			"visible": false,
+			"x": float(character_data.get("default_x", 960.0)),
+			"y": float(character_data.get("default_y", 540.0)),
+			"scale": float(character_data.get("default_scale", 1.0)),
+			"base_image_id": _default_character_image_id(character_data, "base"),
+			"viseme_image_id": 0,
 		}
 	return states
 
@@ -507,6 +538,20 @@ func _render_current_scene() -> void:
 		object_state["screen_rect"] = Rect2(target_position, target_size)
 		current_object_states[int(object_state.get("id", 0))] = object_state
 
+	var visible_characters: Array = _visible_character_states()
+	if not visible_characters.is_empty():
+		var dimmer := Polygon2D.new()
+		dimmer.color = Color(0.11, 0.11, 0.11, 0.46)
+		dimmer.polygon = PackedVector2Array([
+			current_scene_offset,
+			current_scene_offset + Vector2(scaled_size.x, 0),
+			current_scene_offset + scaled_size,
+			current_scene_offset + Vector2(0, scaled_size.y),
+		])
+		scene_canvas.add_child(dimmer)
+	for character_state in visible_characters:
+		_render_character_state(character_state)
+
 
 func _select_background_image(scene_data: Dictionary) -> Dictionary:
 	var images: Array = scene_data.get("images", [])
@@ -524,6 +569,152 @@ func _select_background_image(scene_data: Dictionary) -> Dictionary:
 	return {}
 
 
+func _visible_character_states() -> Array:
+	var characters: Array = current_character_states.values()
+	characters = characters.filter(func(character_state: Dictionary) -> bool:
+		return bool(character_state.get("visible", false))
+	)
+	characters.sort_custom(func(a: Dictionary, b: Dictionary) -> bool:
+		var character_a: Dictionary = _find_character_definition(int(a.get("id", 0)))
+		var character_b: Dictionary = _find_character_definition(int(b.get("id", 0)))
+		if int(character_a.get("sort_order", 0)) == int(character_b.get("sort_order", 0)):
+			return int(a.get("id", 0)) < int(b.get("id", 0))
+		return int(character_a.get("sort_order", 0)) < int(character_b.get("sort_order", 0))
+	)
+	return characters
+
+
+func _has_visible_characters() -> bool:
+	return not _visible_character_states().is_empty()
+
+
+func _render_character_state(character_state: Dictionary) -> void:
+	var character_id: int = int(character_state.get("id", 0))
+	var character_def: Dictionary = _find_character_definition(character_id)
+	if character_def.is_empty():
+		return
+	var base_image: Dictionary = _find_character_image(character_def, int(character_state.get("base_image_id", 0)))
+	if base_image.is_empty():
+		return
+	var base_texture: Texture2D = _load_texture(_resolve_runtime_path(str(base_image.get("asset_path", ""))))
+	if base_texture == null:
+		return
+	var character_scale: float = float(character_state.get("scale", character_def.get("default_scale", 1.0)))
+	var center_x: float = current_scene_offset.x + (float(character_state.get("x", character_def.get("default_x", 0.0))) * current_scene_scale)
+	var center_y: float = current_scene_offset.y + (float(character_state.get("y", character_def.get("default_y", 0.0))) * current_scene_scale)
+	var draw_width: float = float(base_texture.get_width()) * character_scale * current_scene_scale
+	var draw_height: float = float(base_texture.get_height()) * character_scale * current_scene_scale
+	var left: float = center_x - (draw_width * 0.5)
+	var top: float = center_y - draw_height
+	var base_sprite := Sprite2D.new()
+	base_sprite.centered = false
+	base_sprite.texture = base_texture
+	base_sprite.position = Vector2(left, top)
+	base_sprite.scale = Vector2(draw_width / float(base_texture.get_width()), draw_height / float(base_texture.get_height()))
+	scene_canvas.add_child(base_sprite)
+	var viseme_image_id: int = int(character_state.get("viseme_image_id", 0))
+	if viseme_image_id <= 0:
+		return
+	var viseme_image: Dictionary = _find_character_image(character_def, viseme_image_id)
+	if viseme_image.is_empty():
+		return
+	var viseme_texture: Texture2D = _load_texture(_resolve_runtime_path(str(viseme_image.get("asset_path", ""))))
+	if viseme_texture == null:
+		return
+	var viseme_sprite := Sprite2D.new()
+	viseme_sprite.centered = false
+	viseme_sprite.texture = viseme_texture
+	viseme_sprite.position = Vector2(left, top)
+	viseme_sprite.scale = Vector2(draw_width / float(viseme_texture.get_width()), draw_height / float(viseme_texture.get_height()))
+	scene_canvas.add_child(viseme_sprite)
+
+
+func _find_character_definition(character_id: int) -> Dictionary:
+	for character_data in current_runtime.get("characters", []):
+		if typeof(character_data) != TYPE_DICTIONARY:
+			continue
+		if int(character_data.get("id", 0)) == character_id:
+			return character_data
+	return {}
+
+
+func _find_character_image(character_data: Dictionary, image_id: int) -> Dictionary:
+	for image_data in character_data.get("images", []):
+		if typeof(image_data) != TYPE_DICTIONARY:
+			continue
+		if int(image_data.get("id", 0)) == image_id:
+			return image_data
+	return {}
+
+
+func _find_character_animation(character_id: int, animation_id: int) -> Dictionary:
+	var character_data: Dictionary = _find_character_definition(character_id)
+	if character_data.is_empty():
+		return {}
+	for animation_data in character_data.get("animations", []):
+		if typeof(animation_data) != TYPE_DICTIONARY:
+			continue
+		if int(animation_data.get("id", 0)) == animation_id:
+			return animation_data
+	return {}
+
+
+func _resolve_character_base_image_id(character_data: Dictionary, pose_variant_key: String) -> int:
+	var normalized_key: String = pose_variant_key.strip_edges().to_lower()
+	if normalized_key != "":
+		for image_data in character_data.get("images", []):
+			if typeof(image_data) != TYPE_DICTIONARY:
+				continue
+			if str(image_data.get("component_key", "")) != "base":
+				continue
+			if str(image_data.get("variant_key", "")).strip_edges().to_lower() == normalized_key:
+				return int(image_data.get("id", 0))
+	return _default_character_image_id(character_data, "base")
+
+
+func _resolve_character_viseme_image_id(character_id: int, viseme_key: String) -> int:
+	var character_data: Dictionary = _find_character_definition(character_id)
+	if character_data.is_empty():
+		return 0
+	var normalized_key: String = viseme_key.strip_edges().to_lower()
+	if normalized_key == "":
+		return 0
+	for image_data in character_data.get("images", []):
+		if typeof(image_data) != TYPE_DICTIONARY:
+			continue
+		if str(image_data.get("component_key", "")) != "viseme_mouth":
+			continue
+		if str(image_data.get("variant_key", "")).strip_edges().to_lower() == normalized_key:
+			return int(image_data.get("id", 0))
+	for image_data in character_data.get("images", []):
+		if typeof(image_data) != TYPE_DICTIONARY:
+			continue
+		if str(image_data.get("component_key", "")) != "viseme_mouth":
+			continue
+		var variant_key: String = str(image_data.get("variant_key", "")).strip_edges().to_lower()
+		var segments := variant_key.split("__")
+		if not segments.is_empty() and str(segments[segments.size() - 1]) == normalized_key:
+			return int(image_data.get("id", 0))
+		var source_name: String = str(image_data.get("source_name", "")).get_basename().strip_edges().to_lower()
+		if source_name == normalized_key:
+			return int(image_data.get("id", 0))
+	return 0
+
+
+func _default_character_image_id(character_data: Dictionary, component_key: String) -> int:
+	var first_image_id: int = 0
+	for image_data in character_data.get("images", []):
+		if typeof(image_data) != TYPE_DICTIONARY:
+			continue
+		if str(image_data.get("component_key", "")) != component_key:
+			continue
+		if first_image_id <= 0:
+			first_image_id = int(image_data.get("id", 0))
+		if bool(image_data.get("is_default", false)):
+			return int(image_data.get("id", 0))
+	return first_image_id
+
+
 func _resolve_runtime_path(relative_path: String) -> String:
 	if relative_path.begins_with("res://") or relative_path.begins_with("user://"):
 		return relative_path
@@ -532,13 +723,157 @@ func _resolve_runtime_path(relative_path: String) -> String:
 	return current_runtime_root.path_join(relative_path)
 
 
+func _load_scene_data(path: String) -> Dictionary:
+	if path.is_empty():
+		return {}
+	if scene_data_cache.has(path):
+		return scene_data_cache[path]
+	var file: FileAccess = FileAccess.open(path, FileAccess.READ)
+	if file == null:
+		return {}
+	var parsed: Variant = JSON.parse_string(file.get_as_text())
+	file.close()
+	if typeof(parsed) != TYPE_DICTIONARY:
+		return {}
+	scene_data_cache[path] = parsed
+	return parsed
+
+
+func _warmup_assets_for_current_runtime_state() -> void:
+	_warmup_assets_for_scene_state(current_scene, current_object_states, current_character_states)
+
+
+func _warmup_assets_for_scene_state(scene_data: Dictionary, object_states: Dictionary, character_states: Dictionary) -> void:
+	if scene_data.is_empty():
+		return
+	var background: Dictionary = _select_background_image(scene_data)
+	if not background.is_empty():
+		_preload_texture(_resolve_runtime_path(str(background.get("asset_path", ""))))
+	for object_state in object_states.values():
+		if typeof(object_state) != TYPE_DICTIONARY:
+			continue
+		var render: Dictionary = object_state.get("current_render", {})
+		if not render.is_empty():
+			_preload_texture(_resolve_runtime_path(str(render.get("asset_path", ""))))
+	for object_data in scene_data.get("objects", []):
+		if typeof(object_data) != TYPE_DICTIONARY:
+			continue
+		var default_render: Dictionary = object_data.get("default_render", {})
+		if not default_render.is_empty():
+			_preload_texture(_resolve_runtime_path(str(default_render.get("asset_path", ""))))
+		for render_data in object_data.get("frame_renders", []):
+			if typeof(render_data) == TYPE_DICTIONARY:
+				_preload_texture(_resolve_runtime_path(str(render_data.get("asset_path", ""))))
+		for animation_data in object_data.get("animations", []):
+			if typeof(animation_data) != TYPE_DICTIONARY:
+				continue
+			for frame_data in animation_data.get("frames", []):
+				if typeof(frame_data) != TYPE_DICTIONARY:
+					continue
+				var animation_render: Dictionary = frame_data.get("render", {})
+				if not animation_render.is_empty():
+					_preload_texture(_resolve_runtime_path(str(animation_render.get("asset_path", ""))))
+	var global_settings: Dictionary = current_runtime.get("global_settings", {})
+	var inventory_background_path: String = str(global_settings.get("inventory_background_asset_path", ""))
+	if inventory_background_path != "":
+		_preload_texture(_resolve_runtime_path(inventory_background_path))
+	for item_data in current_inventory_details.values():
+		if typeof(item_data) != TYPE_DICTIONARY:
+			continue
+		var thumbnail_path: String = str(item_data.get("inventory_image_asset_path", ""))
+		if thumbnail_path != "":
+			_preload_texture(_resolve_runtime_path(thumbnail_path))
+	for character_state in character_states.values():
+		if typeof(character_state) != TYPE_DICTIONARY:
+			continue
+		if not bool(character_state.get("visible", false)):
+			continue
+		var character_def: Dictionary = _find_character_definition(int(character_state.get("id", 0)))
+		if character_def.is_empty():
+			continue
+		for image_data in character_def.get("images", []):
+			if typeof(image_data) != TYPE_DICTIONARY:
+				continue
+			_preload_texture(_resolve_runtime_path(str(image_data.get("asset_path", ""))))
+		for animation_data in character_def.get("animations", []):
+			if typeof(animation_data) != TYPE_DICTIONARY:
+				continue
+			for frame_data in animation_data.get("frames", []):
+				if typeof(frame_data) != TYPE_DICTIONARY:
+					continue
+				var image_data: Dictionary = frame_data.get("image", {})
+				if not image_data.is_empty():
+					_preload_texture(_resolve_runtime_path(str(image_data.get("asset_path", ""))))
+	for line_data in scene_data.get("script_lines", []):
+		if typeof(line_data) != TYPE_DICTIONARY:
+			continue
+		for candidate_data in line_data.get("audio_candidates", []):
+			if typeof(candidate_data) != TYPE_DICTIONARY:
+				continue
+			var candidate_path: String = str(candidate_data.get("asset_path", ""))
+			if candidate_path != "":
+				_preload_audio_stream(_resolve_runtime_path(candidate_path), false)
+	for asset_data in current_runtime.get("audio_assets", []):
+		if typeof(asset_data) != TYPE_DICTIONARY:
+			continue
+		var asset_path: String = str(asset_data.get("asset_path", ""))
+		if asset_path == "":
+			continue
+		var should_loop: bool = str(asset_data.get("kind", "")) == "bgm"
+		_preload_audio_stream(_resolve_runtime_path(asset_path), should_loop)
+
+
+func _warmup_connected_scene_refs() -> void:
+	var warmed_scene_ids: Dictionary = {}
+	for interaction_data in current_scene.get("interactions", []):
+		if typeof(interaction_data) != TYPE_DICTIONARY:
+			continue
+		_collect_warmup_scene_ids_from_steps(interaction_data.get("action_tree", []), warmed_scene_ids)
+	for scene_id in warmed_scene_ids.keys():
+		var scene_ref: Dictionary = _find_scene_ref_by_id(int(scene_id))
+		if scene_ref.is_empty():
+			continue
+		var scene_path: String = _resolve_runtime_path(str(scene_ref.get("scene_path", "")))
+		var connected_scene: Dictionary = _load_scene_data(scene_path)
+		if connected_scene.is_empty():
+			continue
+		_warmup_assets_for_scene_state(
+			connected_scene,
+			_build_initial_object_states(connected_scene.get("objects", [])),
+			current_character_states
+		)
+
+
+func _collect_warmup_scene_ids_from_steps(steps: Array, scene_ids: Dictionary) -> void:
+	for step_data in steps:
+		if typeof(step_data) != TYPE_DICTIONARY:
+			continue
+		var step_type: String = str(step_data.get("type", ""))
+		if step_type == "change_scene" or step_type == "open_overlay_scene" or step_type == "change_overlay_scene":
+			var scene_id: int = int(step_data.get("scene_id", 0))
+			if scene_id > 0:
+				scene_ids[scene_id] = true
+		_collect_warmup_scene_ids_from_steps(step_data.get("then_steps", []), scene_ids)
+		_collect_warmup_scene_ids_from_steps(step_data.get("else_steps", []), scene_ids)
+
+
 func _load_texture(path: String) -> Texture2D:
 	if path.is_empty():
 		return null
+	if texture_cache.has(path):
+		return texture_cache[path]
 	var image: Image = Image.load_from_file(path)
 	if image == null or image.is_empty():
 		return null
-	return ImageTexture.create_from_image(image)
+	var texture := ImageTexture.create_from_image(image)
+	texture_cache[path] = texture
+	return texture
+
+
+func _preload_texture(path: String) -> void:
+	if path.is_empty():
+		return
+	_load_texture(path)
 
 
 func _clear_scene_stage() -> void:
@@ -725,6 +1060,14 @@ func _execute_step(step_data: Dictionary, metadata: Dictionary = {}) -> void:
 			_apply_set_object_property(step_data, metadata)
 		"go_to_frame":
 			_apply_go_to_frame(step_data, metadata)
+		"show_character":
+			await _apply_show_character(step_data)
+		"hide_character":
+			_apply_hide_character(step_data)
+		"set_character_transform":
+			_apply_set_character_transform(step_data)
+		"play_character_animation":
+			await _play_character_animation(step_data)
 		"add_inventory_item":
 			_apply_add_inventory_item(step_data, metadata)
 		"remove_inventory_item":
@@ -757,10 +1100,11 @@ func _execute_step(step_data: Dictionary, metadata: Dictionary = {}) -> void:
 			var line_for_audio: Dictionary = _pick_script_line(step_data.get("script_line_ids", []))
 			if line_for_audio.is_empty():
 				return
+			var speaker_character_id: int = int(step_data.get("speaker_character_id", 0))
 			if str(step_data.get("wait", "continue")) == "continue":
-				_play_audio_for_line(line_for_audio)
+				_play_audio_for_line(line_for_audio, speaker_character_id)
 			else:
-				await _play_audio_for_line(line_for_audio)
+				await _play_audio_for_line(line_for_audio, speaker_character_id)
 			return
 		"show_subtitle":
 			var line_for_subtitle: Dictionary = _pick_script_line(step_data.get("script_line_ids", []))
@@ -828,6 +1172,67 @@ func _apply_go_to_frame(step_data: Dictionary, metadata: Dictionary = {}) -> voi
 	object_state["current_render"] = next_render
 	current_object_states[int(object_state.get("id", 0))] = object_state
 	_render_current_scene()
+
+
+func _apply_show_character(step_data: Dictionary) -> void:
+	var character_id: int = int(step_data.get("character_id", 0))
+	var character_state: Dictionary = current_character_states.get(character_id, {})
+	var character_def: Dictionary = _find_character_definition(character_id)
+	if character_state.is_empty() or character_def.is_empty():
+		return
+	character_state["visible"] = true
+	character_state["x"] = float(step_data.get("x", character_def.get("default_x", 960.0)))
+	character_state["y"] = float(step_data.get("y", character_def.get("default_y", 540.0)))
+	character_state["scale"] = float(step_data.get("scale", character_def.get("default_scale", 1.0)))
+	character_state["base_image_id"] = _resolve_character_base_image_id(character_def, str(step_data.get("pose_variant_key", "")))
+	character_state["viseme_image_id"] = 0
+	current_character_states[character_id] = character_state
+	_render_current_scene()
+	var animation_id: int = int(step_data.get("animation_id", 0))
+	if animation_id > 0:
+		await _play_character_animation({
+			"character_id": character_id,
+			"animation_id": animation_id,
+		})
+
+
+func _apply_hide_character(step_data: Dictionary) -> void:
+	var character_id: int = int(step_data.get("character_id", 0))
+	var character_state: Dictionary = current_character_states.get(character_id, {})
+	if character_state.is_empty():
+		return
+	character_state["visible"] = false
+	character_state["viseme_image_id"] = 0
+	current_character_states[character_id] = character_state
+	_render_current_scene()
+
+
+func _apply_set_character_transform(step_data: Dictionary) -> void:
+	var character_id: int = int(step_data.get("character_id", 0))
+	var character_state: Dictionary = current_character_states.get(character_id, {})
+	if character_state.is_empty():
+		return
+	character_state["x"] = float(step_data.get("x", character_state.get("x", 960.0)))
+	character_state["y"] = float(step_data.get("y", character_state.get("y", 540.0)))
+	character_state["scale"] = float(step_data.get("scale", character_state.get("scale", 1.0)))
+	current_character_states[character_id] = character_state
+	_render_current_scene()
+
+
+func _play_character_animation(step_data: Dictionary) -> void:
+	var character_id: int = int(step_data.get("character_id", 0))
+	var animation_id: int = int(step_data.get("animation_id", 0))
+	var character_state: Dictionary = current_character_states.get(character_id, {})
+	var animation_data: Dictionary = _find_character_animation(character_id, animation_id)
+	if character_state.is_empty() or animation_data.is_empty():
+		return
+	for frame_data in animation_data.get("frames", []):
+		if typeof(frame_data) != TYPE_DICTIONARY:
+			continue
+		character_state["base_image_id"] = int(frame_data.get("character_image_id", 0))
+		current_character_states[character_id] = character_state
+		_render_current_scene()
+		await get_tree().create_timer(float(frame_data.get("duration_seconds", 0.066))).timeout
 
 
 func _apply_add_inventory_item(step_data: Dictionary, metadata: Dictionary = {}) -> void:
@@ -1214,6 +1619,12 @@ func _compute_contained_surface_layout(stage_size: Vector2, source_size: Vector2
 func _handle_mouse_motion(global_position: Vector2) -> void:
 	pointer_global_position = global_position
 	_sync_held_inventory_item()
+	if _has_visible_characters():
+		if hovered_object_id > 0:
+			var character_blocked_hover_id: int = hovered_object_id
+			hovered_object_id = -1
+			call_deferred("_run_object_mouseout_interactions", character_blocked_hover_id)
+		return
 	if _click_hits_ui(global_position):
 		if hovered_object_id > 0:
 			var previous_hovered_id: int = hovered_object_id
@@ -1697,12 +2108,14 @@ func _clear_subtitle() -> void:
 	subtitle_secondary.visible = false
 
 
-func _play_audio_for_line(line: Dictionary) -> void:
+func _play_audio_for_line(line: Dictionary, explicit_speaker_character_id: int = 0) -> void:
 	var playback_token: int = audio_playback_token + 1
 	audio_playback_token = playback_token
 	narrator_player.stop()
+	_clear_all_character_visemes()
 	var subtitle_payload: Dictionary = _build_subtitle_payload(line)
 	var sequence: Array = _build_audio_sequence(line)
+	var speaker_character_id: int = _resolve_speaker_character_id(explicit_speaker_character_id)
 	if not subtitle_payload.is_empty():
 		_apply_subtitle_payload(subtitle_payload)
 		subtitle_layer.visible = true
@@ -1711,9 +2124,17 @@ func _play_audio_for_line(line: Dictionary) -> void:
 		if playback_token != audio_playback_token:
 			return
 		var item: Dictionary = sequence[index]
-		await _play_audio_clip(narrator_player, str(item.get("asset_path", "")), _volume_for_channel("master_volume", "narrator_volume"))
+		await _play_audio_clip(
+			narrator_player,
+			str(item.get("asset_path", "")),
+			_volume_for_channel("master_volume", "narrator_volume"),
+			speaker_character_id,
+			item
+		)
 		if index < sequence.size() - 1:
 			await get_tree().create_timer(SEQUENTIAL_AUDIO_GAP_SECONDS).timeout
+	if speaker_character_id > 0:
+		_set_character_viseme_image(speaker_character_id, 0)
 	if playback_token == audio_playback_token and subtitle_layer.visible:
 		await get_tree().create_timer(SUBTITLE_LINGER_SECONDS).timeout
 		if playback_token == audio_playback_token:
@@ -1757,7 +2178,13 @@ func _pick_audio_candidate(line: Dictionary, language: String) -> Array:
 	return [choice]
 
 
-func _play_audio_clip(player: AudioStreamPlayer, asset_path: String, volume_linear: float) -> void:
+func _play_audio_clip(
+	player: AudioStreamPlayer,
+	asset_path: String,
+	volume_linear: float,
+	speaker_character_id: int = 0,
+	candidate_data: Dictionary = {}
+) -> void:
 	if player == null:
 		return
 	var stream: AudioStream = _load_audio_stream(_resolve_runtime_path(asset_path))
@@ -1769,6 +2196,8 @@ func _play_audio_clip(player: AudioStreamPlayer, asset_path: String, volume_line
 	player.play()
 	var timeout_seconds: float = maxf(0.1, stream.get_length() if stream.has_method("get_length") else 0.1)
 	while player.playing:
+		if speaker_character_id > 0:
+			_update_character_viseme_from_audio(speaker_character_id, candidate_data, player.get_playback_position())
 		await get_tree().process_frame
 		if not player.playing:
 			break
@@ -1776,6 +2205,8 @@ func _play_audio_clip(player: AudioStreamPlayer, asset_path: String, volume_line
 		if timeout_seconds <= 0:
 			break
 	player.stop()
+	if speaker_character_id > 0:
+		_set_character_viseme_image(speaker_character_id, 0)
 
 
 func _crossfade_bgm(audio_asset_id: int, duration_seconds: float) -> void:
@@ -1843,21 +2274,28 @@ func _find_audio_asset(audio_asset_id: int, expected_kind: String = "") -> Dicti
 func _load_audio_stream(path: String, loop: bool = false) -> AudioStream:
 	if path.is_empty():
 		return null
+	var cache_key: String = "%s|%s" % [path, "loop" if loop else "once"]
+	if audio_stream_cache.has(cache_key):
+		return audio_stream_cache[cache_key]
 	var extension: String = path.get_extension().to_lower()
 	if extension == "ogg":
 		var ogg_stream := AudioStreamOggVorbis.load_from_file(path)
 		if ogg_stream != null:
 			ogg_stream.loop = loop
+			audio_stream_cache[cache_key] = ogg_stream
 		return ogg_stream
 	if extension == "mp3":
 		var mp3_stream := AudioStreamMP3.load_from_file(path)
 		if mp3_stream != null:
 			mp3_stream.loop = loop
+			audio_stream_cache[cache_key] = mp3_stream
 		return mp3_stream
 	if extension == "wav":
 		var wav_stream := AudioStreamWAV.load_from_file(path)
 		if wav_stream != null and loop:
 			wav_stream.loop_mode = AudioStreamWAV.LOOP_FORWARD
+		if wav_stream != null:
+			audio_stream_cache[cache_key] = wav_stream
 		return wav_stream
 	var resource: Resource = load(path)
 	var stream := resource as AudioStream
@@ -1868,7 +2306,63 @@ func _load_audio_stream(path: String, loop: bool = false) -> AudioStream:
 			(stream as AudioStreamMP3).loop = true
 		elif stream is AudioStreamWAV:
 			(stream as AudioStreamWAV).loop_mode = AudioStreamWAV.LOOP_FORWARD
+	if stream != null:
+		audio_stream_cache[cache_key] = stream
 	return stream
+
+
+func _preload_audio_stream(path: String, loop: bool = false) -> void:
+	if path.is_empty():
+		return
+	_load_audio_stream(path, loop)
+
+
+func _resolve_speaker_character_id(explicit_character_id: int) -> int:
+	if explicit_character_id > 0:
+		var explicit_state: Dictionary = current_character_states.get(explicit_character_id, {})
+		if not explicit_state.is_empty() and bool(explicit_state.get("visible", false)):
+			return explicit_character_id
+	var visible_characters: Array = _visible_character_states()
+	if visible_characters.size() == 1:
+		return int((visible_characters[0] as Dictionary).get("id", 0))
+	return 0
+
+
+func _update_character_viseme_from_audio(character_id: int, candidate_data: Dictionary, playback_position: float) -> void:
+	var next_image_id: int = 0
+	for event_data in candidate_data.get("viseme_events", []):
+		if typeof(event_data) != TYPE_DICTIONARY:
+			continue
+		var start_seconds: float = float(event_data.get("start_seconds", 0.0))
+		var end_seconds: float = float(event_data.get("end_seconds", 0.0))
+		if playback_position >= start_seconds and playback_position < end_seconds:
+			next_image_id = _resolve_character_viseme_image_id(character_id, str(event_data.get("viseme_key", "")))
+			break
+	_set_character_viseme_image(character_id, next_image_id)
+
+
+func _set_character_viseme_image(character_id: int, image_id: int) -> void:
+	var character_state: Dictionary = current_character_states.get(character_id, {})
+	if character_state.is_empty():
+		return
+	if int(character_state.get("viseme_image_id", 0)) == image_id:
+		return
+	character_state["viseme_image_id"] = image_id
+	current_character_states[character_id] = character_state
+	_render_current_scene()
+
+
+func _clear_all_character_visemes() -> void:
+	var changed: bool = false
+	for character_id in current_character_states.keys():
+		var state: Dictionary = current_character_states[character_id]
+		if int(state.get("viseme_image_id", 0)) == 0:
+			continue
+		state["viseme_image_id"] = 0
+		current_character_states[character_id] = state
+		changed = true
+	if changed:
+		_render_current_scene()
 
 
 func _normalized_language_value(value: Variant, fallback: String) -> String:
@@ -1899,6 +2393,7 @@ func _normalized_volume_value(value: Variant, fallback: float) -> float:
 func _stop_media_playback() -> void:
 	audio_playback_token += 1
 	narrator_player.stop()
+	_clear_all_character_visemes()
 	if bgm_player_a != null:
 		bgm_player_a.stop()
 		bgm_player_a.stream = null

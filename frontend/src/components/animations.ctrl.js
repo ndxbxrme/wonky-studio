@@ -28,6 +28,8 @@ const AnimationsCtrl = app => async params => {
     backgroundObjectId: 'scene',
     frameRows: [],
     previewFrames: [],
+    backLinkHref: `/scene/${sceneId}`,
+    backLinkLabel: `Scene ${sceneId}`,
     editorReady: false,
     editorMissing: false,
     hasAnimations: false,
@@ -60,6 +62,7 @@ const AnimationsCtrl = app => async params => {
 
     async refreshData() {
       this.scene = replaceScene(await loadScene(this.sceneId));
+      await this.resolveBackLink();
       this.object = this.scene.objects.find(sceneObject => sceneObject.id === this.objectId) ?? null;
       if (!this.object) {
         this.editorReady = false;
@@ -74,6 +77,12 @@ const AnimationsCtrl = app => async params => {
         this.selectedAnimationId = this.animations[0]?.id ?? null;
       }
       this.prepareState();
+    },
+
+    async resolveBackLink() {
+      const backLink = await buildBackLink(this.scene);
+      this.backLinkHref = backLink.href;
+      this.backLinkLabel = backLink.label;
     },
 
     prepareState() {
@@ -224,7 +233,8 @@ const AnimationsCtrl = app => async params => {
 
     async onKeyDown(event) {
       if (event.defaultPrevented || event.altKey) return;
-      const key = event.key;
+      const key = typeof event.key === 'string' ? event.key : '';
+      if (!key) return;
       const lowerKey = key.toLowerCase();
       const editable = isEditableTarget(event.target);
 
@@ -381,6 +391,33 @@ const AnimationsCtrl = app => async params => {
   }
   return controller;
 };
+
+async function buildBackLink(scene) {
+  if (scene?.presentation_mode !== 'character') {
+    return {
+      href: `/scene/${scene?.id}`,
+      label: `Scene ${scene?.id}`
+    };
+  }
+  try {
+    const characters = await apiFetch('/api/characters');
+    const character = Array.isArray(characters)
+      ? characters.find(item => Number(item.scene_id) === Number(scene.id))
+      : null;
+    if (character) {
+      return {
+        href: `/character/${character.id}`,
+        label: character.name ? `Character ${character.name}` : `Character ${character.id}`
+      };
+    }
+  } catch {
+    // Fall back to the backing scene route if character lookup fails.
+  }
+  return {
+    href: `/scene/${scene?.id}`,
+    label: `Scene ${scene?.id}`
+  };
+}
 
 function readAnimationForm(form) {
   const formData = new FormData(form);

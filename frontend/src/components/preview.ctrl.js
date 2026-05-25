@@ -4,7 +4,7 @@ import {previewAudioRuntime} from '../audio-runtime.js';
 import {findScene} from '../state/scenes.js';
 import {user} from '../state/user.js';
 import {listenScenePreview} from '../preview-sync.js';
-import {preloadPreviewAssets} from './scene-preview-element.js';
+import {preloadImageUrls, preloadPreviewAssets} from './scene-preview-element.js';
 
 const MAX_CHAINED_INTERACTIONS = 100;
 const SUBTITLE_LINGER_MS = 1000;
@@ -664,6 +664,7 @@ const PreviewCtrl = app => async params => {
         },
         {
           mode: 'initial',
+          runtimeState: this.runtimeState,
           onProgress: progress => {
             const total = Math.max(0, Number(progress?.total) || 0);
             const loaded = Math.max(0, Number(progress?.loaded) || 0);
@@ -691,7 +692,8 @@ const PreviewCtrl = app => async params => {
       this.syncSubtitleOverlay('base');
       this.syncFadeOverlay('base');
       await this.configureOverlayPreview();
-      void preloadPreviewAssets(this.previewData, {mode: 'all'}).catch(() => {});
+      void this.primeRuntimeStateAssets().catch(() => {});
+      void preloadPreviewAssets(this.previewData, {mode: 'all', runtimeState: this.runtimeState}).catch(() => {});
       this.setLoadingState({
         visible: true,
         title: 'Preview ready',
@@ -716,12 +718,12 @@ const PreviewCtrl = app => async params => {
         ...this.overlayPreviewData,
         showBackground: true,
         transparentStage: true
-      }, {mode: 'initial'});
+      }, {mode: 'initial', runtimeState: this.overlayRuntimeState});
       this.pushRuntimeToPreview('overlay');
       this.syncOverlayPresentation();
       this.syncSubtitleOverlay('overlay');
       this.syncFadeOverlay('overlay');
-      void preloadPreviewAssets(this.overlayPreviewData, {mode: 'all'}).catch(() => {});
+      void preloadPreviewAssets(this.overlayPreviewData, {mode: 'all', runtimeState: this.overlayRuntimeState}).catch(() => {});
     },
 
     pushRuntimeToPreview(layer) {
@@ -1173,6 +1175,7 @@ const PreviewCtrl = app => async params => {
       }
       this.activeAudio = [];
       this.activeAudioBaseVolume = 1;
+      this.clearAllCharacterVisemes();
       this.syncSubtitleOverlay('base');
       this.syncSubtitleOverlay('overlay');
       this.syncHeldInventoryItem();
@@ -1479,6 +1482,11 @@ const PreviewCtrl = app => async params => {
         return;
       }
 
+      if (this.hasVisibleCharacters()) {
+        event.preventDefault();
+        return;
+      }
+
       const layer = this.getActiveLayerName();
       if (keyCode === 'Tab') {
         event.preventDefault();
@@ -1516,6 +1524,7 @@ const PreviewCtrl = app => async params => {
     async onPreviewObjectClick(event, layer) {
       if (layer === 'base' && this.overlayPreviewData) return;
       if (layer === 'overlay' && !this.overlayPreviewData) return;
+      if (this.isCharacterModalActiveForLayer(layer)) return;
       const objectId = Number(event.detail?.objectId);
       if (!objectId) return;
       if (this.activeVerbMenu) this.closeVerbMenu();
@@ -1536,6 +1545,7 @@ const PreviewCtrl = app => async params => {
     async onPreviewObjectMenu(event, layer) {
       if (layer === 'base' && this.overlayPreviewData) return;
       if (layer === 'overlay' && !this.overlayPreviewData) return;
+      if (this.isCharacterModalActiveForLayer(layer)) return;
       if (this.getHeldInventoryItem()) {
         this.clearHeldInventoryItem();
         return;
@@ -1571,6 +1581,7 @@ const PreviewCtrl = app => async params => {
 
     async handleTouchObjectTap(layer, objectId, metadata = {}) {
       await this.ensureTouchFullscreen();
+      if (this.isCharacterModalActiveForLayer(layer)) return;
       const alreadyFocused = Number(this.getFocusedObjectId(layer)) === Number(objectId);
       await this.applyTouchObjectFocus(layer, objectId);
       if (alreadyFocused) {
@@ -1641,6 +1652,7 @@ const PreviewCtrl = app => async params => {
       if (this.isTouchMode) return;
       if (layer === 'base' && this.overlayPreviewData) return;
       if (layer === 'overlay' && !this.overlayPreviewData) return;
+      if (this.isCharacterModalActiveForLayer(layer)) return;
       const objectId = Number(event.detail?.objectId);
       if (!objectId) return;
       if (layer === 'overlay') this.hoveredOverlayObjectId = objectId;
@@ -1662,6 +1674,7 @@ const PreviewCtrl = app => async params => {
       if (this.isTouchMode) return;
       if (layer === 'base' && this.overlayPreviewData) return;
       if (layer === 'overlay' && !this.overlayPreviewData) return;
+      if (this.isCharacterModalActiveForLayer(layer)) return;
       const objectId = Number(event.detail?.objectId);
       if (!objectId) return;
       if (layer === 'overlay' && Number(this.hoveredOverlayObjectId) === objectId) this.hoveredOverlayObjectId = null;
@@ -1856,6 +1869,106 @@ const PreviewCtrl = app => async params => {
       ) ?? null;
     },
 
+    getCharacterState(characterId) {
+      return (this.runtimeState?.characters ?? []).find(
+        character => Number(character.id) === Number(characterId)
+      ) ?? null;
+    },
+
+    findRuntimeObjectState(objectId) {
+      const numericObjectId = Number(objectId);
+      if (!numericObjectId) return {state: null, layer: null};
+      const baseObjectState = this.runtimeState?.objects?.[numericObjectId] ?? null;
+      if (baseObjectState) return {state: baseObjectState, layer: 'base'};
+      for (const character of this.runtimeState?.characters ?? []) {
+        const characterObjectState = character?.objects?.[numericObjectId] ?? null;
+        if (characterObjectState) {
+          return {state: characterObjectState, layer: 'base'};
+        }
+      }
+      return {state: null, layer: null};
+    },
+
+    getVisibleCharacters() {
+      return (this.runtimeState?.characters ?? []).filter(character => character?.visible !== false);
+    },
+
+    hasVisibleCharacters() {
+      return this.getVisibleCharacters().length > 0;
+    },
+
+    isCharacterModalActiveForLayer(layer) {
+      return layer === 'base' && this.hasVisibleCharacters();
+    },
+
+    syncCharacterModalState() {
+      if (!this.hasVisibleCharacters()) return;
+      this.hoveredBaseObjectId = null;
+      this.setFocusedObjectId('base', null);
+      if (this.activeVerbMenu?.layer === 'base') this.closeVerbMenu();
+      this.syncCustomCursor();
+    },
+
+    setCharacterVisemeImage(characterId, imageId) {
+      const characterState = this.getCharacterState(characterId);
+      const definition = getCharacterDefinition(this.previewData, characterId);
+      if (!characterState || !definition) return;
+      const mouthObjectId = Number(definition.mouth_scene_object_id ?? 0);
+      if (!mouthObjectId) return;
+      const mouthObjectState = characterState.objects?.[mouthObjectId];
+      const mouthDefinition = (definition.objects ?? []).find(
+        object => Number(object.id) === mouthObjectId
+      );
+      if (!mouthObjectState || !mouthDefinition) return;
+      if (imageId) {
+        const render = definition.viseme_frame_renders?.[String(imageId)] ?? null;
+        mouthObjectState.render = render ?? mouthDefinition.default_render ?? null;
+      } else {
+        mouthObjectState.render = mouthDefinition.default_render ?? null;
+      }
+      this.pushRuntimeToPreview('base');
+    },
+
+    clearAllCharacterVisemes() {
+      let changed = false;
+      for (const character of this.runtimeState?.characters ?? []) {
+        const definition = getCharacterDefinition(this.previewData, character.id);
+        const mouthObjectId = Number(definition?.mouth_scene_object_id ?? 0);
+        const mouthDefinition = (definition?.objects ?? []).find(
+          object => Number(object.id) === mouthObjectId
+        );
+        const mouthState = character?.objects?.[mouthObjectId];
+        if (!mouthObjectId || !mouthDefinition || !mouthState) continue;
+        if (mouthState.render !== mouthDefinition.default_render) {
+          mouthState.render = mouthDefinition.default_render ?? null;
+          changed = true;
+        }
+      }
+      if (changed) this.pushRuntimeToPreview('base');
+    },
+
+    resolveSpeakerCharacterId(explicitCharacterId = null) {
+      const explicitId = Number(explicitCharacterId);
+      if (explicitId > 0) {
+        const explicitCharacter = this.getCharacterState(explicitId);
+        if (explicitCharacter?.visible !== false) return explicitId;
+      }
+      const visibleCharacters = this.getVisibleCharacters();
+      if (visibleCharacters.length === 1) return Number(visibleCharacters[0].id);
+      return null;
+    },
+
+    async playCharacterAnimationAction(characterId, animationId, version) {
+      const characterState = this.getCharacterState(characterId);
+      const animation = getCharacterAnimationDefinition(this.previewData, characterId, animationId);
+      if (!characterState || !animation?.frames?.length) return;
+      for (const frame of animation.frames) {
+        if (version !== this.executionVersion) return;
+        this.pushRuntimeToPreview('base');
+        await wait(frame.duration_seconds);
+      }
+    },
+
     async executeAnimationPreview(layer, objectId, animationId) {
       const version = ++this.executionVersion;
       this.setStatus('Playing animation...');
@@ -1966,13 +2079,61 @@ const PreviewCtrl = app => async params => {
       if (step.type === 'set_object_property') {
         const resolvedObjectId = resolveStepTargetObjectId(step, metadata);
         if (!resolvedObjectId) return;
-        const objectState = runtimeState?.objects?.[resolvedObjectId];
+        const {state: objectState} = this.findRuntimeObjectState(resolvedObjectId);
         if (!objectState) return;
         if (step.property === 'visible') objectState.visible = Boolean(step.value);
         if (step.property === 'enabled') objectState.enabled = Boolean(step.value);
         if (step.property === 'label') objectState.label = String(step.value ?? '');
         this.refreshInspectorState();
-        this.pushRuntimeToPreview(layer);
+        this.pushRuntimeToPreview('base');
+        if (layer === 'overlay') this.pushRuntimeToPreview('overlay');
+        return;
+      }
+
+      if (step.type === 'show_character') {
+        const characterState = this.getCharacterState(step.character_id);
+        const definition = getCharacterDefinition(this.previewData, step.character_id);
+        if (!characterState || !definition) return;
+        characterState.visible = true;
+        characterState.x = Number.isFinite(Number(step.x)) ? Number(step.x) : Number(definition.default_x ?? 960);
+        characterState.y = Number.isFinite(Number(step.y)) ? Number(step.y) : Number(definition.default_y ?? 540);
+        characterState.scale = Number.isFinite(Number(step.scale)) ? Number(step.scale) : Number(definition.default_scale ?? 1);
+        characterState.objects = createCharacterObjectRuntimeState(definition);
+        this.pushRuntimeToPreview('base');
+        this.syncCharacterModalState();
+        if (step.animation_id) {
+          const runPromise = this.playCharacterAnimationAction(step.character_id, step.animation_id, version);
+          if (step.wait !== 'continue') await runPromise;
+          else void runPromise;
+        }
+        return;
+      }
+
+      if (step.type === 'hide_character') {
+        const characterState = this.getCharacterState(step.character_id);
+        if (!characterState) return;
+        characterState.visible = false;
+        const definition = getCharacterDefinition(this.previewData, step.character_id);
+        characterState.objects = createCharacterObjectRuntimeState(definition);
+        this.pushRuntimeToPreview('base');
+        this.syncCharacterModalState();
+        return;
+      }
+
+      if (step.type === 'set_character_transform') {
+        const characterState = this.getCharacterState(step.character_id);
+        if (!characterState) return;
+        characterState.x = Number(step.x ?? characterState.x ?? 960);
+        characterState.y = Number(step.y ?? characterState.y ?? 540);
+        characterState.scale = Number(step.scale ?? characterState.scale ?? 1);
+        this.pushRuntimeToPreview('base');
+        return;
+      }
+
+      if (step.type === 'play_character_animation') {
+        const runPromise = this.playCharacterAnimationAction(step.character_id, step.animation_id, version);
+        if (step.wait !== 'continue') await runPromise;
+        else void runPromise;
         return;
       }
 
@@ -2067,7 +2228,7 @@ const PreviewCtrl = app => async params => {
       if (step.type === 'play_audio') {
         const line = this.pickScriptLine(layer, step.script_line_ids);
         if (!line) return;
-        const runPromise = this.playAudioForLine(layer, line, version);
+        const runPromise = this.playAudioForLine(layer, line, version, step.speaker_character_id);
         if (step.wait !== 'continue') await runPromise;
         else void runPromise;
         return;
@@ -2384,6 +2545,30 @@ const PreviewCtrl = app => async params => {
       void previewAudioRuntime.preloadUrls(urls);
     },
 
+    async primeRuntimeStateAssets() {
+      const imageUrls = [
+        ...collectRuntimeInventoryThumbnailUrls(this.runtimeState?.inventory ?? []),
+        ...collectRuntimeInventoryThumbnailUrls(this.overlayRuntimeState?.inventory ?? [])
+      ];
+      if (imageUrls.length) {
+        await preloadImageUrls(imageUrls);
+      }
+      const previewJobs = [];
+      if (this.previewData) {
+        previewJobs.push(preloadPreviewAssets(this.previewData, {
+          mode: 'state',
+          runtimeState: this.runtimeState
+        }));
+      }
+      if (this.overlayPreviewData) {
+        previewJobs.push(preloadPreviewAssets(this.overlayPreviewData, {
+          mode: 'state',
+          runtimeState: this.overlayRuntimeState
+        }));
+      }
+      await Promise.all(previewJobs);
+    },
+
     resolveCustomCursorState() {
       if (this.loadingVisible && this.previewData?.global_settings?.cursor_states?.busy?.relative_path) {
         return {stateKey: CURSOR_STATE_BUSY};
@@ -2447,12 +2632,13 @@ const PreviewCtrl = app => async params => {
       this.syncSubtitleOverlay(layer);
     },
 
-    async playAudioForLine(layer, line, version) {
+    async playAudioForLine(layer, line, version, explicitSpeakerCharacterId = null) {
       const playbackToken = ++this.audioPlaybackToken;
       this.stopActiveAudio();
       const settings = this.getLanguageSettings();
       const subtitle = buildSubtitlePayload(line, settings);
       const sequence = buildAudioSequence(line, settings);
+      const speakerCharacterId = this.resolveSpeakerCharacterId(explicitSpeakerCharacterId);
       if (subtitle) {
         this.setLayerSubtitle(layer, subtitle);
         this.syncSubtitleOverlay(layer);
@@ -2462,16 +2648,20 @@ const PreviewCtrl = app => async params => {
         for (const item of sequence) {
           if (playbackToken !== this.audioPlaybackToken || version !== this.executionVersion) return;
           await this.playAudioClip(
-            item.audioUrl,
-            volumeForChannel(settings.masterVolume, settings.narratorVolume),
-            playbackToken,
-            version
+            item,
+            {
+              volume: volumeForChannel(settings.masterVolume, settings.narratorVolume),
+              playbackToken,
+              version,
+              speakerCharacterId
+            }
           );
           if (sequence.length > 1 && item !== sequence[sequence.length - 1]) {
             await waitMilliseconds(SEQUENTIAL_AUDIO_GAP_MS);
           }
         }
       } finally {
+        if (speakerCharacterId) this.setCharacterVisemeImage(speakerCharacterId, null);
         if (playbackToken === this.audioPlaybackToken && version === this.executionVersion) {
           await waitMilliseconds(SUBTITLE_LINGER_MS);
           this.setLayerSubtitle(layer, null);
@@ -2489,12 +2679,20 @@ const PreviewCtrl = app => async params => {
       this.activeAudioBaseVolume = 1;
     },
 
-    async playAudioClip(audioUrl, volume, playbackToken, version) {
+    async playAudioClip(sequenceItem, {volume, playbackToken, version, speakerCharacterId = null} = {}) {
+      const audioUrl = sequenceItem?.audioUrl;
       if (!audioUrl) return;
       const audio = new Audio(audioUrl);
       this.activeAudioBaseVolume = volume;
       audio.volume = Math.max(0, Math.min(1, volume * combinedAudioDuckFactor(this)));
       this.activeAudio = [audio];
+      const visemeCleanup = speakerCharacterId
+        ? startCharacterLipSync(this, {
+          characterId: speakerCharacterId,
+          candidate: sequenceItem?.candidate ?? null,
+          audio
+        })
+        : null;
       await new Promise(resolve => {
         let finished = false;
         const finish = () => {
@@ -2513,6 +2711,8 @@ const PreviewCtrl = app => async params => {
           playPromise.catch(() => finish());
         }
       });
+      visemeCleanup?.();
+      if (speakerCharacterId) this.setCharacterVisemeImage(speakerCharacterId, null);
       if (playbackToken !== this.audioPlaybackToken || version !== this.executionVersion) return;
       this.activeAudio = [];
     }
@@ -2549,6 +2749,14 @@ function createRuntimeSnapshot(previewData) {
         }
       ])
     ),
+    characters: (previewData?.characters ?? []).map(character => ({
+      id: Number(character.id),
+      visible: false,
+      x: Number(character.default_x ?? 960),
+      y: Number(character.default_y ?? 540),
+      scale: Number(character.default_scale ?? 1),
+      objects: createCharacterObjectRuntimeState(character)
+    })),
     inventory: [],
     heldInventoryObjectId: null,
     inventoryOverlayOpen: false
@@ -2607,6 +2815,55 @@ function getObjectRenderForUploadedFileId(previewData, objectId, uploadedFileId)
     : -1;
   if (frameIndex < 0) return null;
   return getObjectRenderForFrame(previewData, objectId, frameIndex);
+}
+
+function getCharacterDefinition(previewData, characterId) {
+  return (previewData?.characters ?? []).find(
+    character => Number(character.id) === Number(characterId)
+  ) ?? null;
+}
+
+function getCharacterAnimationDefinition(previewData, characterId, animationId) {
+  const character = getCharacterDefinition(previewData, characterId);
+  return (character?.animations ?? []).find(
+    animation => Number(animation.id) === Number(animationId)
+  ) ?? null;
+}
+
+function createCharacterObjectRuntimeState(character) {
+  return Object.fromEntries(
+    (character?.objects ?? []).map(object => [
+      Number(object.id),
+      {
+        visible: object.visible !== false,
+        enabled: object.enabled !== false,
+        render: object.default_render ?? null
+      }
+    ])
+  );
+}
+
+function getDefaultCharacterImageId(character, componentKey) {
+  const images = (character?.images ?? []).filter(
+    image => String(image.component_key ?? '') === String(componentKey)
+  );
+  return Number(images.find(image => image.is_default)?.id ?? images[0]?.id ?? 0) || null;
+}
+
+function resolveCharacterVisemeRenderKey(previewData, characterId, visemeKey) {
+  const character = getCharacterDefinition(previewData, characterId);
+  if (!character || !visemeKey) return null;
+  const normalizedKey = String(visemeKey).trim().toLowerCase();
+  const keys = Object.keys(character.viseme_frame_renders ?? {});
+  const exactKey = keys.find(
+    key => String(key ?? '').trim().toLowerCase() === normalizedKey
+  );
+  if (exactKey) return exactKey;
+  const suffixKey = keys.find(key => {
+    const variantKey = String(key ?? '').trim().toLowerCase();
+    return variantKey.split('__').at(-1) === normalizedKey;
+  });
+  return suffixKey ?? null;
 }
 
 function resolveStepTargetObjectId(step, metadata = {}) {
@@ -2790,7 +3047,34 @@ function pickAudioCandidate(line, language) {
   const selected = candidates.filter(candidate => candidate.selected);
   const choicePool = selected.length ? selected : [candidates[0]];
   const choice = choicePool[Math.floor(Math.random() * choicePool.length)];
-  return choice ? [{audioUrl: scriptAudioCandidateUrl(choice.id)}] : [];
+  return choice ? [{
+    audioUrl: scriptAudioCandidateUrl(choice.id),
+    candidate: choice
+  }] : [];
+}
+
+function startCharacterLipSync(controller, {characterId, candidate, audio}) {
+  const visemeEvents = Array.isArray(candidate?.viseme_events) ? candidate.viseme_events : [];
+  if (!characterId || !visemeEvents.length || !audio) return null;
+  let activeRenderKey = null;
+  const update = () => {
+    const currentTime = Number(audio.currentTime || 0);
+    const activeEvent = visemeEvents.find(event => (
+      currentTime >= Number(event.start_seconds ?? 0)
+      && currentTime < Number(event.end_seconds ?? 0)
+    )) ?? null;
+    const nextRenderKey = activeEvent
+      ? resolveCharacterVisemeRenderKey(controller.previewData, characterId, activeEvent.viseme_key)
+      : null;
+    if (nextRenderKey === activeRenderKey) return;
+    activeRenderKey = nextRenderKey;
+    controller.setCharacterVisemeImage(characterId, nextRenderKey);
+  };
+  const timer = window.setInterval(update, 33);
+  update();
+  return () => {
+    window.clearInterval(timer);
+  };
 }
 
 function collectPreviewAudioUrls(previewData) {
@@ -2806,6 +3090,13 @@ function collectPreviewAudioUrls(previewData) {
     }
   }
   return urls;
+}
+
+function collectRuntimeInventoryThumbnailUrls(items) {
+  return (items ?? [])
+    .map(item => Number(item?.scene_object_id))
+    .filter(objectId => Number.isFinite(objectId) && objectId > 0)
+    .map(objectId => objectThumbnailUrl(objectId));
 }
 
 function detectTouchMode() {

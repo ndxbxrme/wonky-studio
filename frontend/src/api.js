@@ -58,6 +58,10 @@ function globalSettingsAssetUrl(assetKind) {
   return resolveApiPath(`/api/global-settings/assets/${assetKind}/content`);
 }
 
+function characterImageUrl(imageId) {
+  return resolveApiPath(`/api/character-images/${imageId}/content`);
+}
+
 function resolveApiPath(path) {
   if (!path.startsWith('/')) path = `/${path}`;
   return API_BASE_URL ? `${API_BASE_URL}${path}` : path;
@@ -70,6 +74,7 @@ export {
   objectMaskUrl,
   objectThumbnailUrl,
   audioAssetUrl,
+  characterImageUrl,
   globalSettingsAssetUrl,
   scriptAudioCandidateUrl,
   uploadedFileThumbnailUrl,

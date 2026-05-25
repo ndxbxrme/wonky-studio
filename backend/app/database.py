@@ -314,6 +314,8 @@ def init_database(
                 category TEXT NOT NULL DEFAULT 'other',
                 source TEXT NOT NULL DEFAULT 'manual',
                 sort_order INTEGER NOT NULL DEFAULT 0,
+                visible INTEGER NOT NULL DEFAULT 1,
+                enabled INTEGER NOT NULL DEFAULT 1,
                 keyboard_target_enabled INTEGER NOT NULL DEFAULT 0,
                 default_uploaded_file_id INTEGER,
                 inventory_image_relative_path TEXT,
@@ -331,6 +333,8 @@ def init_database(
         _ensure_column(connection, "scene_objects", "category", "TEXT NOT NULL DEFAULT 'other'")
         _ensure_column(connection, "scene_objects", "source", "TEXT NOT NULL DEFAULT 'manual'")
         _ensure_column(connection, "scene_objects", "sort_order", "INTEGER NOT NULL DEFAULT 0")
+        _ensure_column(connection, "scene_objects", "visible", "INTEGER NOT NULL DEFAULT 1")
+        _ensure_column(connection, "scene_objects", "enabled", "INTEGER NOT NULL DEFAULT 1")
         _ensure_column(connection, "scene_objects", "keyboard_target_enabled", "INTEGER NOT NULL DEFAULT 0")
         _ensure_column(connection, "scene_objects", "default_uploaded_file_id", "INTEGER")
         _ensure_column(connection, "scene_objects", "pickup_uploaded_file_id", "INTEGER")
@@ -528,6 +532,8 @@ def init_database(
                 status TEXT NOT NULL DEFAULT 'queued',
                 scene_id INTEGER,
                 script_line_id INTEGER,
+                character_id INTEGER,
+                script_audio_candidate_id INTEGER,
                 progress_current INTEGER NOT NULL DEFAULT 0,
                 progress_total INTEGER NOT NULL DEFAULT 0,
                 message TEXT NOT NULL DEFAULT '',
@@ -538,11 +544,15 @@ def init_database(
                 started_at TEXT,
                 completed_at TEXT,
                 FOREIGN KEY (organization_id) REFERENCES organizations(id),
-                FOREIGN KEY (scene_id) REFERENCES scenes(id)
+                FOREIGN KEY (scene_id) REFERENCES scenes(id),
+                FOREIGN KEY (character_id) REFERENCES characters(id),
+                FOREIGN KEY (script_audio_candidate_id) REFERENCES script_audio_candidates(id)
             )
             """
         )
         _ensure_column(connection, "processing_jobs", "script_line_id", "INTEGER")
+        _ensure_column(connection, "processing_jobs", "character_id", "INTEGER")
+        _ensure_column(connection, "processing_jobs", "script_audio_candidate_id", "INTEGER")
         connection.execute(
             """
             CREATE TABLE IF NOT EXISTS script_lines (
@@ -617,6 +627,148 @@ def init_database(
         )
         connection.execute(
             "CREATE INDEX IF NOT EXISTS idx_script_audio_status ON script_audio_candidates (language, source_type, review_status)"
+        )
+        connection.execute(
+            """
+            CREATE TABLE IF NOT EXISTS script_audio_candidate_viseme_events (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                script_audio_candidate_id INTEGER NOT NULL,
+                viseme_key TEXT NOT NULL,
+                start_seconds REAL NOT NULL,
+                end_seconds REAL NOT NULL,
+                sort_order INTEGER NOT NULL DEFAULT 0,
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (script_audio_candidate_id) REFERENCES script_audio_candidates(id)
+            )
+            """
+        )
+        connection.execute(
+            "CREATE INDEX IF NOT EXISTS idx_script_audio_visemes_candidate ON script_audio_candidate_viseme_events (script_audio_candidate_id, sort_order, id)"
+        )
+        connection.execute(
+            """
+            CREATE TABLE IF NOT EXISTS characters (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                organization_id TEXT NOT NULL,
+                name TEXT NOT NULL,
+                description TEXT NOT NULL DEFAULT '',
+                scene_id INTEGER,
+                mouth_scene_object_id INTEGER,
+                sort_order INTEGER NOT NULL DEFAULT 0,
+                default_x REAL NOT NULL DEFAULT 960,
+                default_y REAL NOT NULL DEFAULT 540,
+                default_scale REAL NOT NULL DEFAULT 1.0,
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE (organization_id, name),
+                FOREIGN KEY (organization_id) REFERENCES organizations(id),
+                FOREIGN KEY (scene_id) REFERENCES scenes(id),
+                FOREIGN KEY (mouth_scene_object_id) REFERENCES scene_objects(id)
+            )
+            """
+        )
+        _ensure_column(connection, "characters", "scene_id", "INTEGER")
+        _ensure_column(connection, "characters", "mouth_scene_object_id", "INTEGER")
+        connection.execute(
+            "CREATE INDEX IF NOT EXISTS idx_characters_org_sort ON characters (organization_id, sort_order, id)"
+        )
+        connection.execute(
+            """
+            CREATE TABLE IF NOT EXISTS character_images (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                character_id INTEGER NOT NULL,
+                component_key TEXT NOT NULL,
+                variant_key TEXT NOT NULL,
+                kind TEXT NOT NULL,
+                source_group TEXT NOT NULL DEFAULT '',
+                source_name TEXT NOT NULL DEFAULT '',
+                relative_path TEXT NOT NULL,
+                original_filename TEXT NOT NULL DEFAULT '',
+                width INTEGER NOT NULL DEFAULT 0,
+                height INTEGER NOT NULL DEFAULT 0,
+                is_default INTEGER NOT NULL DEFAULT 0,
+                sort_order INTEGER NOT NULL DEFAULT 0,
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE (character_id, component_key, variant_key),
+                FOREIGN KEY (character_id) REFERENCES characters(id)
+            )
+            """
+        )
+        connection.execute(
+            "CREATE INDEX IF NOT EXISTS idx_character_images_character ON character_images (character_id, component_key, sort_order, id)"
+        )
+        connection.execute(
+            """
+            CREATE TABLE IF NOT EXISTS character_objects (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                character_id INTEGER NOT NULL,
+                name TEXT NOT NULL,
+                description TEXT NOT NULL DEFAULT '',
+                prompt TEXT NOT NULL DEFAULT '',
+                sort_order INTEGER NOT NULL DEFAULT 0,
+                is_viseme_target INTEGER NOT NULL DEFAULT 0,
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (character_id) REFERENCES characters(id)
+            )
+            """
+        )
+        connection.execute(
+            "CREATE INDEX IF NOT EXISTS idx_character_objects_character ON character_objects (character_id, sort_order, id)"
+        )
+        connection.execute(
+            """
+            CREATE TABLE IF NOT EXISTS character_object_masks (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                character_object_id INTEGER NOT NULL,
+                character_image_id INTEGER NOT NULL,
+                relative_path TEXT NOT NULL,
+                soft_relative_path TEXT,
+                prompt_text TEXT NOT NULL DEFAULT '',
+                bbox_json TEXT,
+                score REAL,
+                status TEXT NOT NULL DEFAULT 'draft',
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (character_object_id) REFERENCES character_objects(id),
+                FOREIGN KEY (character_image_id) REFERENCES character_images(id)
+            )
+            """
+        )
+        connection.execute(
+            "CREATE INDEX IF NOT EXISTS idx_character_object_masks_object ON character_object_masks (character_object_id, character_image_id, id)"
+        )
+        connection.execute(
+            """
+            CREATE TABLE IF NOT EXISTS character_animations (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                character_id INTEGER NOT NULL,
+                name TEXT NOT NULL,
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE (character_id, name),
+                FOREIGN KEY (character_id) REFERENCES characters(id)
+            )
+            """
+        )
+        connection.execute(
+            """
+            CREATE TABLE IF NOT EXISTS character_animation_frames (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                character_animation_id INTEGER NOT NULL,
+                character_image_id INTEGER NOT NULL,
+                duration_seconds REAL NOT NULL,
+                sort_order INTEGER NOT NULL DEFAULT 0,
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (character_animation_id) REFERENCES character_animations(id),
+                FOREIGN KEY (character_image_id) REFERENCES character_images(id)
+            )
+            """
+        )
+        connection.execute(
+            "CREATE INDEX IF NOT EXISTS idx_character_animation_frames_animation ON character_animation_frames (character_animation_id, sort_order, id)"
         )
         connection.execute(
             """
@@ -739,6 +891,13 @@ def reset_workspace_tables(db_path: Path, preserve_audio_assets: bool = False) -
         "overlay_scene_bindings",
         "global_settings",
         "game_variables",
+        "character_animation_frames",
+        "character_animations",
+        "character_object_masks",
+        "character_objects",
+        "character_images",
+        "characters",
+        "script_audio_candidate_viseme_events",
         "audio_assets",
         "script_audio_candidates",
         "script_translations",
@@ -778,6 +937,8 @@ def create_processing_job(
     job_type: str,
     scene_id: int | None = None,
     script_line_id: int | None = None,
+    character_id: int | None = None,
+    script_audio_candidate_id: int | None = None,
     progress_total: int = 0,
     message: str = "",
 ) -> dict[str, Any]:
@@ -789,12 +950,23 @@ def create_processing_job(
                 job_type,
                 scene_id,
                 script_line_id,
+                character_id,
+                script_audio_candidate_id,
                 progress_total,
                 message
             )
-            VALUES (?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             """,
-            (organization_id, job_type, scene_id, script_line_id, progress_total, message),
+            (
+                organization_id,
+                job_type,
+                scene_id,
+                script_line_id,
+                character_id,
+                script_audio_candidate_id,
+                progress_total,
+                message,
+            ),
         )
         row = connection.execute(
             """
@@ -804,6 +976,8 @@ def create_processing_job(
                    status,
                    scene_id,
                    script_line_id,
+                   character_id,
+                   script_audio_candidate_id,
                    progress_current,
                    progress_total,
                    message,
@@ -836,6 +1010,8 @@ def get_processing_job(
                    status,
                    scene_id,
                    script_line_id,
+                   character_id,
+                   script_audio_candidate_id,
                    progress_current,
                    progress_total,
                    message,
@@ -870,6 +1046,8 @@ def get_active_processing_job_for_scene(
                    status,
                    scene_id,
                    script_line_id,
+                   character_id,
+                   script_audio_candidate_id,
                    progress_current,
                    progress_total,
                    message,
@@ -908,6 +1086,8 @@ def get_active_processing_job_for_script_line(
                    status,
                    scene_id,
                    script_line_id,
+                   character_id,
+                   script_audio_candidate_id,
                    progress_current,
                    progress_total,
                    message,
@@ -941,6 +1121,8 @@ def claim_next_processing_job(db_path: Path) -> dict[str, Any] | None:
                    status,
                    scene_id,
                    script_line_id,
+                   character_id,
+                   script_audio_candidate_id,
                    progress_current,
                    progress_total,
                    message,
@@ -977,6 +1159,8 @@ def claim_next_processing_job(db_path: Path) -> dict[str, Any] | None:
                    status,
                    scene_id,
                    script_line_id,
+                   character_id,
+                   script_audio_candidate_id,
                    progress_current,
                    progress_total,
                    message,
@@ -1441,6 +1625,761 @@ def delete_verb(
               AND organization_id = ?
             """,
             (verb_id, organization_id),
+        )
+
+
+def list_characters(db_path: Path, organization_id: str) -> list[dict[str, Any]]:
+    with connect(db_path) as connection:
+        rows = connection.execute(
+            """
+            SELECT id,
+                   organization_id,
+                   name,
+                   description,
+                   scene_id,
+                   mouth_scene_object_id,
+                   sort_order,
+                   default_x,
+                   default_y,
+                   default_scale,
+                   created_at,
+                   updated_at
+            FROM characters
+            WHERE organization_id = ?
+            ORDER BY sort_order ASC, id ASC
+            """,
+            (organization_id,),
+        ).fetchall()
+    return [_character_from_row(row) for row in rows]
+
+
+def get_character_by_id(
+    db_path: Path,
+    organization_id: str,
+    character_id: int,
+) -> dict[str, Any] | None:
+    with connect(db_path) as connection:
+        row = connection.execute(
+            """
+            SELECT id,
+                   organization_id,
+                   name,
+                   description,
+                   scene_id,
+                   mouth_scene_object_id,
+                   sort_order,
+                   default_x,
+                   default_y,
+                   default_scale,
+                   created_at,
+                   updated_at
+            FROM characters
+            WHERE id = ?
+              AND organization_id = ?
+            """,
+            (character_id, organization_id),
+        ).fetchone()
+    return _character_from_row(row) if row else None
+
+
+def create_character(
+    db_path: Path,
+    organization_id: str,
+    name: str,
+    description: str,
+    scene_id: int | None,
+    sort_order: int,
+    default_x: float,
+    default_y: float,
+    default_scale: float,
+) -> dict[str, Any]:
+    with connect(db_path) as connection:
+        cursor = connection.execute(
+            """
+            INSERT INTO characters (
+                organization_id,
+                name,
+                description,
+                scene_id,
+                sort_order,
+                default_x,
+                default_y,
+                default_scale
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                organization_id,
+                name.strip(),
+                description,
+                scene_id if scene_id is None else int(scene_id),
+                int(sort_order),
+                float(default_x),
+                float(default_y),
+                float(default_scale),
+            ),
+        )
+    created = get_character_by_id(db_path, organization_id, int(cursor.lastrowid))
+    if created is None:
+        raise RuntimeError("Created character could not be loaded")
+    return created
+
+
+def update_character(
+    db_path: Path,
+    organization_id: str,
+    character_id: int,
+    name: str | None = None,
+    description: str | None = None,
+    scene_id: int | None = None,
+    update_scene_id: bool = False,
+    mouth_scene_object_id: int | None = None,
+    update_mouth_scene_object_id: bool = False,
+    sort_order: int | None = None,
+    default_x: float | None = None,
+    default_y: float | None = None,
+    default_scale: float | None = None,
+) -> dict[str, Any] | None:
+    assignments = ["updated_at = CURRENT_TIMESTAMP"]
+    values: list[Any] = []
+    if name is not None:
+        assignments.append("name = ?")
+        values.append(name.strip())
+    if description is not None:
+        assignments.append("description = ?")
+        values.append(description)
+    if update_scene_id:
+        assignments.append("scene_id = ?")
+        values.append(scene_id if scene_id is None else int(scene_id))
+    if update_mouth_scene_object_id:
+        assignments.append("mouth_scene_object_id = ?")
+        values.append(
+            mouth_scene_object_id
+            if mouth_scene_object_id is None
+            else int(mouth_scene_object_id)
+        )
+    if sort_order is not None:
+        assignments.append("sort_order = ?")
+        values.append(int(sort_order))
+    if default_x is not None:
+        assignments.append("default_x = ?")
+        values.append(float(default_x))
+    if default_y is not None:
+        assignments.append("default_y = ?")
+        values.append(float(default_y))
+    if default_scale is not None:
+        assignments.append("default_scale = ?")
+        values.append(float(default_scale))
+    with connect(db_path) as connection:
+        cursor = connection.execute(
+            f"""
+            UPDATE characters
+            SET {", ".join(assignments)}
+            WHERE id = ?
+              AND organization_id = ?
+            """,
+            (*values, character_id, organization_id),
+        )
+    if cursor.rowcount == 0:
+        return None
+    return get_character_by_id(db_path, organization_id, character_id)
+
+
+def delete_character(db_path: Path, organization_id: str, character_id: int) -> bool:
+    with connect(db_path) as connection:
+        row = connection.execute(
+            "SELECT 1 FROM characters WHERE id = ? AND organization_id = ?",
+            (character_id, organization_id),
+        ).fetchone()
+        if row is None:
+            return False
+        connection.execute(
+            """
+            DELETE FROM character_animation_frames
+            WHERE character_animation_id IN (
+                SELECT id
+                FROM character_animations
+                WHERE character_id = ?
+            )
+            """,
+            (character_id,),
+        )
+        connection.execute(
+            """
+            DELETE FROM character_object_masks
+            WHERE character_object_id IN (
+                SELECT id
+                FROM character_objects
+                WHERE character_id = ?
+            )
+            """,
+            (character_id,),
+        )
+        connection.execute("DELETE FROM character_objects WHERE character_id = ?", (character_id,))
+        connection.execute("DELETE FROM character_animations WHERE character_id = ?", (character_id,))
+        connection.execute("DELETE FROM character_images WHERE character_id = ?", (character_id,))
+        connection.execute("DELETE FROM characters WHERE id = ?", (character_id,))
+    return True
+
+
+def list_character_images(
+    db_path: Path,
+    organization_id: str,
+    character_id: int,
+) -> list[dict[str, Any]]:
+    with connect(db_path) as connection:
+        rows = connection.execute(
+            """
+            SELECT character_images.*
+            FROM character_images
+            JOIN characters ON characters.id = character_images.character_id
+            WHERE character_images.character_id = ?
+              AND characters.organization_id = ?
+            ORDER BY character_images.component_key ASC,
+                     character_images.sort_order ASC,
+                     character_images.id ASC
+            """,
+            (character_id, organization_id),
+        ).fetchall()
+    return [_character_image_from_row(row) for row in rows]
+
+
+def get_character_image_by_id(
+    db_path: Path,
+    organization_id: str,
+    image_id: int,
+) -> dict[str, Any] | None:
+    with connect(db_path) as connection:
+        row = connection.execute(
+            """
+            SELECT character_images.*
+            FROM character_images
+            JOIN characters ON characters.id = character_images.character_id
+            WHERE character_images.id = ?
+              AND characters.organization_id = ?
+            """,
+            (image_id, organization_id),
+        ).fetchone()
+    return _character_image_from_row(row) if row else None
+
+
+def upsert_character_image(
+    db_path: Path,
+    organization_id: str,
+    character_id: int,
+    component_key: str,
+    variant_key: str,
+    kind: str,
+    source_group: str,
+    source_name: str,
+    relative_path: str,
+    original_filename: str,
+    width: int,
+    height: int,
+    is_default: bool,
+    sort_order: int = 0,
+) -> dict[str, Any]:
+    with connect(db_path) as connection:
+        owner = connection.execute(
+            "SELECT id FROM characters WHERE id = ? AND organization_id = ?",
+            (character_id, organization_id),
+        ).fetchone()
+        if owner is None:
+            raise ValueError("Character not found")
+        if is_default:
+            connection.execute(
+                """
+                UPDATE character_images
+                SET is_default = 0,
+                    updated_at = CURRENT_TIMESTAMP
+                WHERE character_id = ?
+                  AND component_key = ?
+                """,
+                (character_id, component_key),
+            )
+        connection.execute(
+            """
+            INSERT INTO character_images (
+                character_id,
+                component_key,
+                variant_key,
+                kind,
+                source_group,
+                source_name,
+                relative_path,
+                original_filename,
+                width,
+                height,
+                is_default,
+                sort_order
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT (character_id, component_key, variant_key)
+            DO UPDATE SET
+                kind = excluded.kind,
+                source_group = excluded.source_group,
+                source_name = excluded.source_name,
+                relative_path = excluded.relative_path,
+                original_filename = excluded.original_filename,
+                width = excluded.width,
+                height = excluded.height,
+                is_default = excluded.is_default,
+                sort_order = excluded.sort_order,
+                updated_at = CURRENT_TIMESTAMP
+            """,
+            (
+                character_id,
+                component_key,
+                variant_key,
+                kind,
+                source_group,
+                source_name,
+                relative_path,
+                original_filename,
+                int(width),
+                int(height),
+                int(bool(is_default)),
+                int(sort_order),
+            ),
+        )
+        row = connection.execute(
+            """
+            SELECT character_images.*
+            FROM character_images
+            JOIN characters ON characters.id = character_images.character_id
+            WHERE character_images.character_id = ?
+              AND character_images.component_key = ?
+              AND character_images.variant_key = ?
+              AND characters.organization_id = ?
+            """,
+            (character_id, component_key, variant_key, organization_id),
+        ).fetchone()
+    if row is None:
+        raise RuntimeError("Character image could not be loaded")
+    return _character_image_from_row(row)
+
+
+def delete_character_image(db_path: Path, organization_id: str, image_id: int) -> bool:
+    with connect(db_path) as connection:
+        row = connection.execute(
+            """
+            SELECT character_images.id
+            FROM character_images
+            JOIN characters ON characters.id = character_images.character_id
+            WHERE character_images.id = ?
+              AND characters.organization_id = ?
+            """,
+            (image_id, organization_id),
+        ).fetchone()
+        if row is None:
+            return False
+        connection.execute(
+            "DELETE FROM character_animation_frames WHERE character_image_id = ?",
+            (image_id,),
+        )
+        connection.execute("DELETE FROM character_object_masks WHERE character_image_id = ?", (image_id,))
+        connection.execute("DELETE FROM character_images WHERE id = ?", (image_id,))
+    return True
+
+
+def list_character_objects(
+    db_path: Path,
+    organization_id: str,
+    character_id: int,
+) -> list[dict[str, Any]]:
+    with connect(db_path) as connection:
+        rows = connection.execute(
+            """
+            SELECT co.*,
+                   COUNT(com.id) AS mask_count
+            FROM character_objects co
+            JOIN characters c ON c.id = co.character_id
+            LEFT JOIN character_object_masks com ON com.character_object_id = co.id
+            WHERE co.character_id = ?
+              AND c.organization_id = ?
+            GROUP BY co.id
+            ORDER BY co.sort_order ASC, co.id ASC
+            """,
+            (character_id, organization_id),
+        ).fetchall()
+    return [_character_object_from_row(row) for row in rows]
+
+
+def get_character_object_by_id(
+    db_path: Path,
+    organization_id: str,
+    character_object_id: int,
+) -> dict[str, Any] | None:
+    with connect(db_path) as connection:
+        row = connection.execute(
+            """
+            SELECT co.*,
+                   COUNT(com.id) AS mask_count
+            FROM character_objects co
+            JOIN characters c ON c.id = co.character_id
+            LEFT JOIN character_object_masks com ON com.character_object_id = co.id
+            WHERE co.id = ?
+              AND c.organization_id = ?
+            GROUP BY co.id
+            """,
+            (character_object_id, organization_id),
+        ).fetchone()
+    return _character_object_from_row(row) if row else None
+
+
+def create_character_object(
+    db_path: Path,
+    organization_id: str,
+    character_id: int,
+    name: str,
+    description: str,
+    prompt: str,
+    sort_order: int,
+    is_viseme_target: bool,
+) -> dict[str, Any]:
+    with connect(db_path) as connection:
+        owner = connection.execute(
+            "SELECT id FROM characters WHERE id = ? AND organization_id = ?",
+            (character_id, organization_id),
+        ).fetchone()
+        if owner is None:
+            raise ValueError("Character not found")
+        cursor = connection.execute(
+            """
+            INSERT INTO character_objects (
+                character_id,
+                name,
+                description,
+                prompt,
+                sort_order,
+                is_viseme_target
+            )
+            VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            (
+                character_id,
+                name.strip(),
+                description,
+                prompt,
+                int(sort_order),
+                int(bool(is_viseme_target)),
+            ),
+        )
+    created = get_character_object_by_id(db_path, organization_id, int(cursor.lastrowid))
+    if created is None:
+        raise RuntimeError("Created character object could not be loaded")
+    return created
+
+
+def update_character_object(
+    db_path: Path,
+    organization_id: str,
+    character_object_id: int,
+    name: str | None = None,
+    description: str | None = None,
+    prompt: str | None = None,
+    sort_order: int | None = None,
+    is_viseme_target: bool | None = None,
+) -> dict[str, Any] | None:
+    assignments = ["updated_at = CURRENT_TIMESTAMP"]
+    values: list[Any] = []
+    if name is not None:
+        assignments.append("name = ?")
+        values.append(name.strip())
+    if description is not None:
+        assignments.append("description = ?")
+        values.append(description)
+    if prompt is not None:
+        assignments.append("prompt = ?")
+        values.append(prompt)
+    if sort_order is not None:
+        assignments.append("sort_order = ?")
+        values.append(int(sort_order))
+    if is_viseme_target is not None:
+        assignments.append("is_viseme_target = ?")
+        values.append(int(bool(is_viseme_target)))
+    with connect(db_path) as connection:
+        cursor = connection.execute(
+            f"""
+            UPDATE character_objects
+            SET {", ".join(assignments)}
+            WHERE id IN (
+                SELECT co.id
+                FROM character_objects co
+                JOIN characters c ON c.id = co.character_id
+                WHERE co.id = ?
+                  AND c.organization_id = ?
+            )
+            """,
+            (*values, character_object_id, organization_id),
+        )
+    if cursor.rowcount == 0:
+        return None
+    return get_character_object_by_id(db_path, organization_id, character_object_id)
+
+
+def delete_character_object(db_path: Path, organization_id: str, character_object_id: int) -> bool:
+    with connect(db_path) as connection:
+        row = connection.execute(
+            """
+            SELECT co.id
+            FROM character_objects co
+            JOIN characters c ON c.id = co.character_id
+            WHERE co.id = ?
+              AND c.organization_id = ?
+            """,
+            (character_object_id, organization_id),
+        ).fetchone()
+        if row is None:
+            return False
+        connection.execute("DELETE FROM character_object_masks WHERE character_object_id = ?", (character_object_id,))
+        connection.execute("DELETE FROM character_objects WHERE id = ?", (character_object_id,))
+    return True
+
+
+def list_character_animations(
+    db_path: Path,
+    organization_id: str,
+    character_id: int,
+) -> list[dict[str, Any]]:
+    with connect(db_path) as connection:
+        animation_rows = connection.execute(
+            """
+            SELECT character_animations.*
+            FROM character_animations
+            JOIN characters ON characters.id = character_animations.character_id
+            WHERE character_animations.character_id = ?
+              AND characters.organization_id = ?
+            ORDER BY lower(character_animations.name) ASC, character_animations.id ASC
+            """,
+            (character_id, organization_id),
+        ).fetchall()
+        frame_rows = connection.execute(
+            """
+            SELECT caf.*,
+                   ci.component_key,
+                   ci.variant_key,
+                   ci.kind,
+                   ci.relative_path,
+                   ci.original_filename,
+                   ci.width,
+                   ci.height
+            FROM character_animation_frames caf
+            JOIN character_animations ca ON ca.id = caf.character_animation_id
+            JOIN characters c ON c.id = ca.character_id
+            JOIN character_images ci ON ci.id = caf.character_image_id
+            WHERE ca.character_id = ?
+              AND c.organization_id = ?
+            ORDER BY caf.character_animation_id ASC, caf.sort_order ASC, caf.id ASC
+            """,
+            (character_id, organization_id),
+        ).fetchall()
+    frames_by_animation: dict[int, list[dict[str, Any]]] = {}
+    for row in frame_rows:
+        frame = dict(row)
+        frames_by_animation.setdefault(int(frame["character_animation_id"]), []).append(frame)
+    result = []
+    for row in animation_rows:
+        animation = _character_animation_from_row(row)
+        animation["frames"] = [_character_animation_frame_from_row(frame) for frame in frames_by_animation.get(int(animation["id"]), [])]
+        result.append(animation)
+    return result
+
+
+def get_character_animation_by_id(
+    db_path: Path,
+    organization_id: str,
+    animation_id: int,
+) -> dict[str, Any] | None:
+    with connect(db_path) as connection:
+        row = connection.execute(
+            """
+            SELECT character_animations.*
+            FROM character_animations
+            JOIN characters ON characters.id = character_animations.character_id
+            WHERE character_animations.id = ?
+              AND characters.organization_id = ?
+            """,
+            (animation_id, organization_id),
+        ).fetchone()
+    if row is None:
+        return None
+    animation = _character_animation_from_row(row)
+    character_animations = list_character_animations(db_path, organization_id, int(animation["character_id"]))
+    return next((item for item in character_animations if int(item["id"]) == int(animation_id)), None)
+
+
+def create_character_animation(
+    db_path: Path,
+    organization_id: str,
+    character_id: int,
+    name: str,
+    frames: list[dict[str, Any]],
+) -> dict[str, Any]:
+    with connect(db_path) as connection:
+        owner = connection.execute(
+            "SELECT id FROM characters WHERE id = ? AND organization_id = ?",
+            (character_id, organization_id),
+        ).fetchone()
+        if owner is None:
+            raise ValueError("Character not found")
+        cursor = connection.execute(
+            """
+            INSERT INTO character_animations (character_id, name)
+            VALUES (?, ?)
+            """,
+            (character_id, name.strip()),
+        )
+        animation_id = int(cursor.lastrowid)
+        _replace_character_animation_frames(connection, animation_id, character_id, frames)
+    created = get_character_animation_by_id(db_path, organization_id, animation_id)
+    if created is None:
+        raise RuntimeError("Character animation could not be loaded")
+    return created
+
+
+def update_character_animation(
+    db_path: Path,
+    organization_id: str,
+    animation_id: int,
+    name: str,
+    frames: list[dict[str, Any]],
+) -> dict[str, Any] | None:
+    with connect(db_path) as connection:
+        row = connection.execute(
+            """
+            SELECT character_animations.id,
+                   character_animations.character_id
+            FROM character_animations
+            JOIN characters ON characters.id = character_animations.character_id
+            WHERE character_animations.id = ?
+              AND characters.organization_id = ?
+            """,
+            (animation_id, organization_id),
+        ).fetchone()
+        if row is None:
+            return None
+        connection.execute(
+            """
+            UPDATE character_animations
+            SET name = ?,
+                updated_at = CURRENT_TIMESTAMP
+            WHERE id = ?
+            """,
+            (name.strip(), animation_id),
+        )
+        _replace_character_animation_frames(connection, animation_id, int(row["character_id"]), frames)
+    return get_character_animation_by_id(db_path, organization_id, animation_id)
+
+
+def delete_character_animation(db_path: Path, organization_id: str, animation_id: int) -> bool:
+    with connect(db_path) as connection:
+        row = connection.execute(
+            """
+            SELECT character_animations.id
+            FROM character_animations
+            JOIN characters ON characters.id = character_animations.character_id
+            WHERE character_animations.id = ?
+              AND characters.organization_id = ?
+            """,
+            (animation_id, organization_id),
+        ).fetchone()
+        if row is None:
+            return False
+        connection.execute("DELETE FROM character_animation_frames WHERE character_animation_id = ?", (animation_id,))
+        connection.execute("DELETE FROM character_animations WHERE id = ?", (animation_id,))
+    return True
+
+
+def replace_script_audio_candidate_viseme_events(
+    db_path: Path,
+    organization_id: str,
+    candidate_id: int,
+    events: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    with connect(db_path) as connection:
+        candidate = _get_audio_candidate_row(connection, organization_id, candidate_id)
+        if candidate is None:
+            raise ValueError("Audio candidate not found")
+        connection.execute(
+            "DELETE FROM script_audio_candidate_viseme_events WHERE script_audio_candidate_id = ?",
+            (candidate_id,),
+        )
+        for index, event in enumerate(events):
+            connection.execute(
+                """
+                INSERT INTO script_audio_candidate_viseme_events (
+                    script_audio_candidate_id,
+                    viseme_key,
+                    start_seconds,
+                    end_seconds,
+                    sort_order
+                )
+                VALUES (?, ?, ?, ?, ?)
+                """,
+                (
+                    candidate_id,
+                    str(event.get("viseme_key") or "").strip(),
+                    float(event.get("start_seconds") or 0),
+                    float(event.get("end_seconds") or 0),
+                    index,
+                ),
+            )
+    return list_script_audio_candidate_viseme_events(db_path, organization_id, candidate_id)
+
+
+def list_script_audio_candidate_viseme_events(
+    db_path: Path,
+    organization_id: str,
+    candidate_id: int,
+) -> list[dict[str, Any]]:
+    with connect(db_path) as connection:
+        candidate = _get_audio_candidate_row(connection, organization_id, candidate_id)
+        if candidate is None:
+            return []
+        rows = connection.execute(
+            """
+            SELECT *
+            FROM script_audio_candidate_viseme_events
+            WHERE script_audio_candidate_id = ?
+            ORDER BY sort_order ASC, id ASC
+            """,
+            (candidate_id,),
+        ).fetchall()
+    return [_script_audio_candidate_viseme_event_from_row(row) for row in rows]
+
+
+def _replace_character_animation_frames(
+    connection: sqlite3.Connection,
+    animation_id: int,
+    character_id: int,
+    frames: list[dict[str, Any]],
+) -> None:
+    connection.execute("DELETE FROM character_animation_frames WHERE character_animation_id = ?", (animation_id,))
+    for index, frame in enumerate(frames or []):
+        image_id = int(frame["character_image_id"])
+        image_row = connection.execute(
+            """
+            SELECT id
+            FROM character_images
+            WHERE id = ?
+              AND character_id = ?
+            """,
+            (image_id, character_id),
+        ).fetchone()
+        if image_row is None:
+            raise ValueError("Character animation frame image does not belong to this character")
+        connection.execute(
+            """
+            INSERT INTO character_animation_frames (
+                character_animation_id,
+                character_image_id,
+                duration_seconds,
+                sort_order
+            )
+            VALUES (?, ?, ?, ?)
+            """,
+            (animation_id, image_id, float(frame["duration_seconds"]), index),
         )
 
 
@@ -2332,9 +3271,23 @@ def get_script_line_detail(
         ).fetchall()
         audio_candidates = connection.execute(
             """
-            SELECT *
-            FROM script_audio_candidates
-            WHERE script_line_id = ?
+            SELECT sac.*,
+                   COALESCE((
+                       SELECT json_group_array(json_object(
+                           'id', save.id,
+                           'script_audio_candidate_id', save.script_audio_candidate_id,
+                           'viseme_key', save.viseme_key,
+                           'start_seconds', save.start_seconds,
+                           'end_seconds', save.end_seconds,
+                           'sort_order', save.sort_order,
+                           'created_at', save.created_at
+                       ))
+                       FROM script_audio_candidate_viseme_events save
+                       WHERE save.script_audio_candidate_id = sac.id
+                       ORDER BY save.sort_order ASC, save.id ASC
+                   ), '[]') AS viseme_events_json
+            FROM script_audio_candidates sac
+            WHERE sac.script_line_id = ?
             ORDER BY language ASC,
                      source_type ASC,
                      CASE WHEN rank < 0 THEN 999 ELSE rank END ASC,
@@ -2510,6 +3463,17 @@ def delete_script_line(
         line = _get_script_line_row(connection, organization_id, line_id)
         if line is None:
             return False
+        connection.execute(
+            """
+            DELETE FROM script_audio_candidate_viseme_events
+            WHERE script_audio_candidate_id IN (
+                SELECT id
+                FROM script_audio_candidates
+                WHERE script_line_id = ?
+            )
+            """,
+            (line["id"],),
+        )
         connection.execute(
             "DELETE FROM script_audio_candidates WHERE script_line_id = ?",
             (line["id"],),
@@ -3798,6 +4762,8 @@ def get_scene_with_images(db_path: Path, scene_id: int) -> dict[str, Any] | None
                    scene_objects.category,
                    scene_objects.source,
                    scene_objects.sort_order,
+                   scene_objects.visible,
+                   scene_objects.enabled,
                    scene_objects.keyboard_target_enabled,
                    scene_objects.default_uploaded_file_id,
                    scene_objects.pickup_uploaded_file_id,
@@ -3861,6 +4827,8 @@ def get_scene_with_images(db_path: Path, scene_id: int) -> dict[str, Any] | None
         "objects": [
             {
                 **dict(row),
+                "visible": bool(row["visible"]),
+                "enabled": bool(row["enabled"]),
                 "keyboard_target_enabled": bool(row["keyboard_target_enabled"]),
                 "inventory_image_failed": bool(row["inventory_image_failed"]),
                 "pickup_frame_failed": bool(row["pickup_frame_failed"]),
@@ -3896,6 +4864,7 @@ def list_scenes(db_path: Path, organization_id: str, limit: int = 20) -> list[di
             LEFT JOIN scene_objects ON scene_objects.scene_id = scenes.id
             LEFT JOIN object_masks ON object_masks.scene_object_id = scene_objects.id
             WHERE scenes.organization_id = ?
+              AND scenes.presentation_mode != 'character'
             GROUP BY scenes.id
             ORDER BY scenes.sort_order ASC, scenes.id ASC
             LIMIT ?
@@ -3970,6 +4939,7 @@ def get_workspace_summary(
             SELECT COUNT(*) AS count
             FROM scenes
             WHERE organization_id = ?
+              AND presentation_mode != 'character'
             """,
             (organization_id,),
         ).fetchone()["count"] or 0)
@@ -3980,6 +4950,7 @@ def get_workspace_summary(
             FROM scene_objects so
             JOIN scenes s ON s.id = so.scene_id
             WHERE s.organization_id = ?
+              AND s.presentation_mode != 'character'
               AND NOT EXISTS (
                 SELECT 1
                 FROM object_masks om
@@ -3995,6 +4966,7 @@ def get_workspace_summary(
             FROM scene_objects so
             JOIN scenes s ON s.id = so.scene_id
             WHERE s.organization_id = ?
+              AND s.presentation_mode != 'character'
               AND so.keyboard_target_enabled = 1
               AND TRIM(COALESCE(so.inventory_image_relative_path, '')) = ''
             """,
@@ -4164,13 +5136,15 @@ def create_scene_object(
         )
         row = connection.execute(
             """
-            SELECT id, scene_id, name, description, prompt, inventory_image_prompt, category, source, sort_order, keyboard_target_enabled, default_uploaded_file_id, pickup_uploaded_file_id, inventory_image_relative_path, inventory_image_failed, pickup_frame_failed, status, created_at, updated_at
+            SELECT id, scene_id, name, description, prompt, inventory_image_prompt, category, source, sort_order, visible, enabled, keyboard_target_enabled, default_uploaded_file_id, pickup_uploaded_file_id, inventory_image_relative_path, inventory_image_failed, pickup_frame_failed, status, created_at, updated_at
             FROM scene_objects
             WHERE id = ?
             """,
             (cursor.lastrowid,),
         ).fetchone()
     result = dict(row)
+    result["visible"] = bool(result["visible"])
+    result["enabled"] = bool(result["enabled"])
     result["keyboard_target_enabled"] = bool(result["keyboard_target_enabled"])
     result["inventory_image_failed"] = bool(result["inventory_image_failed"])
     result["pickup_frame_failed"] = bool(result["pickup_frame_failed"])
@@ -4443,7 +5417,7 @@ def create_scene_object_if_missing(
     with connect(db_path) as connection:
         existing = connection.execute(
             """
-            SELECT id, scene_id, name, description, prompt, inventory_image_prompt, category, source, sort_order, keyboard_target_enabled, default_uploaded_file_id, pickup_uploaded_file_id, inventory_image_relative_path, inventory_image_failed, pickup_frame_failed, status, created_at, updated_at
+            SELECT id, scene_id, name, description, prompt, inventory_image_prompt, category, source, sort_order, visible, enabled, keyboard_target_enabled, default_uploaded_file_id, pickup_uploaded_file_id, inventory_image_relative_path, inventory_image_failed, pickup_frame_failed, status, created_at, updated_at
             FROM scene_objects
             WHERE scene_id = ?
               AND lower(name) = ?
@@ -4452,6 +5426,8 @@ def create_scene_object_if_missing(
         ).fetchone()
         if existing:
             result = dict(existing)
+            result["visible"] = bool(result["visible"])
+            result["enabled"] = bool(result["enabled"])
             result["keyboard_target_enabled"] = bool(result["keyboard_target_enabled"])
             result["inventory_image_failed"] = bool(result["inventory_image_failed"])
             result["pickup_frame_failed"] = bool(result["pickup_frame_failed"])
@@ -4486,13 +5462,15 @@ def create_scene_object_if_missing(
         )
         row = connection.execute(
             """
-            SELECT id, scene_id, name, description, prompt, inventory_image_prompt, category, source, sort_order, keyboard_target_enabled, default_uploaded_file_id, pickup_uploaded_file_id, inventory_image_relative_path, inventory_image_failed, pickup_frame_failed, status, created_at, updated_at
+            SELECT id, scene_id, name, description, prompt, inventory_image_prompt, category, source, sort_order, visible, enabled, keyboard_target_enabled, default_uploaded_file_id, pickup_uploaded_file_id, inventory_image_relative_path, inventory_image_failed, pickup_frame_failed, status, created_at, updated_at
             FROM scene_objects
             WHERE id = ?
             """,
             (cursor.lastrowid,),
         ).fetchone()
     result = dict(row)
+    result["visible"] = bool(result["visible"])
+    result["enabled"] = bool(result["enabled"])
     result["keyboard_target_enabled"] = bool(result["keyboard_target_enabled"])
     result["inventory_image_failed"] = bool(result["inventory_image_failed"])
     result["pickup_frame_failed"] = bool(result["pickup_frame_failed"])
@@ -4508,6 +5486,8 @@ def update_scene_object(
     prompt: str | None = None,
     inventory_image_prompt: str | None = None,
     sort_order: int | None = None,
+    visible: bool | None = None,
+    enabled: bool | None = None,
     keyboard_target_enabled: bool | None = None,
     default_uploaded_file_id: int | None = None,
     update_default_uploaded_file_id: bool = False,
@@ -4531,6 +5511,12 @@ def update_scene_object(
     if sort_order is not None:
         assignments.append("sort_order = ?")
         values.append(int(sort_order))
+    if visible is not None:
+        assignments.append("visible = ?")
+        values.append(int(bool(visible)))
+    if enabled is not None:
+        assignments.append("enabled = ?")
+        values.append(int(bool(enabled)))
     if keyboard_target_enabled is not None:
         assignments.append("keyboard_target_enabled = ?")
         values.append(int(bool(keyboard_target_enabled)))
@@ -4625,7 +5611,7 @@ def get_scene_object(
     with connect(db_path) as connection:
         row = connection.execute(
             """
-            SELECT id, scene_id, name, description, prompt, inventory_image_prompt, category, source, sort_order, keyboard_target_enabled, default_uploaded_file_id, pickup_uploaded_file_id, inventory_image_relative_path, inventory_image_failed, pickup_frame_failed, status, created_at, updated_at
+            SELECT id, scene_id, name, description, prompt, inventory_image_prompt, category, source, sort_order, visible, enabled, keyboard_target_enabled, default_uploaded_file_id, pickup_uploaded_file_id, inventory_image_relative_path, inventory_image_failed, pickup_frame_failed, status, created_at, updated_at
             FROM scene_objects
             WHERE id = ?
               AND scene_id = ?
@@ -4635,6 +5621,8 @@ def get_scene_object(
     if row is None:
         return None
     result = dict(row)
+    result["visible"] = bool(result["visible"])
+    result["enabled"] = bool(result["enabled"])
     result["keyboard_target_enabled"] = bool(result["keyboard_target_enabled"])
     result["inventory_image_failed"] = bool(result["inventory_image_failed"])
     result["pickup_frame_failed"] = bool(result["pickup_frame_failed"])
@@ -4740,6 +5728,8 @@ def get_scene_object_for_organization(
                    scene_objects.category,
                    scene_objects.source,
                    scene_objects.sort_order,
+                   scene_objects.visible,
+                   scene_objects.enabled,
                    scene_objects.keyboard_target_enabled,
                    scene_objects.default_uploaded_file_id,
                    scene_objects.pickup_uploaded_file_id,
@@ -4760,6 +5750,8 @@ def get_scene_object_for_organization(
     if row is None:
         return None
     result = dict(row)
+    result["visible"] = bool(result["visible"])
+    result["enabled"] = bool(result["enabled"])
     result["keyboard_target_enabled"] = bool(result["keyboard_target_enabled"])
     result["inventory_image_failed"] = bool(result["inventory_image_failed"])
     result["pickup_frame_failed"] = bool(result["pickup_frame_failed"])
@@ -4776,6 +5768,8 @@ def list_scene_objects_for_organization(
             SELECT scene_objects.id,
                    scene_objects.scene_id,
                    scene_objects.name,
+                   scene_objects.visible,
+                   scene_objects.enabled,
                    scene_objects.keyboard_target_enabled,
                    scene_objects.default_uploaded_file_id,
                    scene_objects.pickup_uploaded_file_id,
@@ -4793,6 +5787,8 @@ def list_scene_objects_for_organization(
     results = []
     for row in rows:
         result = dict(row)
+        result["visible"] = bool(result["visible"])
+        result["enabled"] = bool(result["enabled"])
         result["keyboard_target_enabled"] = bool(result["keyboard_target_enabled"])
         result["inventory_image_failed"] = bool(result["inventory_image_failed"])
         result["pickup_frame_failed"] = bool(result["pickup_frame_failed"])
@@ -5006,7 +6002,7 @@ def list_scene_objects_for_scene(db_path: Path, scene_id: int) -> list[dict[str,
     with connect(db_path) as connection:
         rows = connection.execute(
             """
-            SELECT id, scene_id, name, description, prompt, inventory_image_prompt, category, source, sort_order, keyboard_target_enabled, default_uploaded_file_id, pickup_uploaded_file_id, inventory_image_relative_path, inventory_image_failed, pickup_frame_failed, status, created_at, updated_at
+            SELECT id, scene_id, name, description, prompt, inventory_image_prompt, category, source, sort_order, visible, enabled, keyboard_target_enabled, default_uploaded_file_id, pickup_uploaded_file_id, inventory_image_relative_path, inventory_image_failed, pickup_frame_failed, status, created_at, updated_at
             FROM scene_objects
             WHERE scene_id = ?
               AND trim(prompt) != ''
@@ -5017,6 +6013,8 @@ def list_scene_objects_for_scene(db_path: Path, scene_id: int) -> list[dict[str,
     results: list[dict[str, Any]] = []
     for row in rows:
         result = dict(row)
+        result["visible"] = bool(result["visible"])
+        result["enabled"] = bool(result["enabled"])
         result["keyboard_target_enabled"] = bool(result["keyboard_target_enabled"])
         result["inventory_image_failed"] = bool(result["inventory_image_failed"])
         result["pickup_frame_failed"] = bool(result["pickup_frame_failed"])
@@ -5881,6 +6879,7 @@ def _audio_candidate_from_row(row: sqlite3.Row) -> dict[str, Any]:
     result["selected"] = bool(result["selected"])
     if result.get("rank") == -1:
         result["rank"] = None
+    result["viseme_events"] = _json_loads(result.pop("viseme_events_json", "[]"), [])
     return result
 
 
@@ -5894,6 +6893,57 @@ def _verb_from_row(row: sqlite3.Row) -> dict[str, Any]:
     result = dict(row)
     result["labels"] = _json_loads(result.pop("labels_json", "{}"), {})
     result["enabled"] = bool(result["enabled"])
+    return result
+
+
+def _character_from_row(row: sqlite3.Row) -> dict[str, Any]:
+    return dict(row)
+
+
+def _character_image_from_row(row: sqlite3.Row) -> dict[str, Any]:
+    result = dict(row)
+    result["is_default"] = bool(result.get("is_default"))
+    return result
+
+
+def _character_object_from_row(row: sqlite3.Row) -> dict[str, Any]:
+    result = dict(row)
+    result["is_viseme_target"] = bool(result.get("is_viseme_target"))
+    result["mask_count"] = int(result.get("mask_count") or 0)
+    return result
+
+
+def _character_animation_from_row(row: sqlite3.Row) -> dict[str, Any]:
+    return dict(row)
+
+
+def _character_animation_frame_from_row(row: sqlite3.Row) -> dict[str, Any]:
+    return {
+        "id": int(row["id"]),
+        "character_animation_id": int(row["character_animation_id"]),
+        "character_image_id": int(row["character_image_id"]),
+        "duration_seconds": float(row["duration_seconds"]),
+        "sort_order": int(row["sort_order"]),
+        "created_at": row["created_at"],
+        "updated_at": row["updated_at"],
+        "image": {
+            "id": int(row["character_image_id"]),
+            "component_key": str(row["component_key"]),
+            "variant_key": str(row["variant_key"]),
+            "kind": str(row["kind"]),
+            "relative_path": str(row["relative_path"]),
+            "original_filename": str(row["original_filename"] or ""),
+            "width": int(row["width"] or 0),
+            "height": int(row["height"] or 0),
+        },
+    }
+
+
+def _script_audio_candidate_viseme_event_from_row(row: sqlite3.Row) -> dict[str, Any]:
+    result = dict(row)
+    result["start_seconds"] = float(result.get("start_seconds") or 0)
+    result["end_seconds"] = float(result.get("end_seconds") or 0)
+    result["sort_order"] = int(result.get("sort_order") or 0)
     return result
 
 

@@ -12,6 +12,7 @@ class WonkyScenePreviewElement extends HTMLElement {
     this.transparentStage = false;
     this.currentBackgroundUrl = '';
     this.currentObjectRenders = new Map();
+    this.runtimeCharacters = [];
     this.activeObjectIds = new Set();
     this.objectPlaybackState = new Map();
     this.hoveredObjectId = null;
@@ -209,6 +210,7 @@ class WonkyScenePreviewElement extends HTMLElement {
   applyRuntimeState(runtimeObjectStates) {
     const runtimeState = runtimeObjectStates?.objects ? runtimeObjectStates : {objects: runtimeObjectStates ?? {}};
     this.runtimeObjectStates = runtimeState.objects ?? {};
+    this.runtimeCharacters = Array.isArray(runtimeState.characters) ? runtimeState.characters : [];
     for (const [objectId, state] of Object.entries(this.runtimeObjectStates)) {
       const numericId = Number(objectId);
       if (state?.render) this.currentObjectRenders.set(numericId, state.render);
@@ -454,6 +456,60 @@ class WonkyScenePreviewElement extends HTMLElement {
         ctx.setLineDash([10, 6]);
         ctx.strokeRect(x, y, width, height);
         ctx.restore();
+      }
+    }
+
+    const visibleCharacters = (this.runtimeCharacters ?? [])
+      .filter(character => character?.visible !== false)
+      .sort((left, right) => {
+        const leftDefinition = (this.preview.characters ?? []).find(item => Number(item.id) === Number(left?.id));
+        const rightDefinition = (this.preview.characters ?? []).find(item => Number(item.id) === Number(right?.id));
+        return (
+          Number(leftDefinition?.sort_order ?? 0) - Number(rightDefinition?.sort_order ?? 0)
+          || Number(left?.id ?? 0) - Number(right?.id ?? 0)
+        );
+      });
+    if (visibleCharacters.length) {
+      ctx.save();
+      ctx.fillStyle = 'rgba(28, 28, 28, 0.46)';
+      ctx.fillRect(fittedRect.left, fittedRect.top, fittedRect.width, fittedRect.height);
+      ctx.restore();
+    }
+    for (const characterState of visibleCharacters) {
+      const definition = (this.preview.characters ?? []).find(item => Number(item.id) === Number(characterState.id));
+      if (!definition) continue;
+      const characterSceneWidth = Math.max(1, Number(definition.width || sceneWidth || 1));
+      const characterSceneHeight = Math.max(1, Number(definition.height || sceneHeight || 1));
+      const scale = Number(characterState.scale ?? definition.default_scale ?? 1) || 1;
+      const centerX = fittedRect.left + ((Number(characterState.x ?? definition.default_x ?? 0) / sceneWidth) * fittedRect.width);
+      const centerY = fittedRect.top + ((Number(characterState.y ?? definition.default_y ?? 0) / sceneHeight) * fittedRect.height);
+      const drawWidth = characterSceneWidth * scale * fittedRect.scale;
+      const drawHeight = characterSceneHeight * scale * fittedRect.scale;
+      const left = centerX - (drawWidth / 2);
+      const top = centerY - drawHeight;
+      const objects = [...(definition.objects ?? [])].sort(
+        (leftObject, rightObject) => (
+          Number(leftObject.sort_order ?? 0) - Number(rightObject.sort_order ?? 0)
+          || Number(leftObject.id ?? 0) - Number(rightObject.id ?? 0)
+        )
+      );
+      for (const object of objects) {
+        const objectState = characterState.objects?.[object.id];
+        if (objectState?.visible === false) continue;
+        const render = objectState?.render ?? object.default_render ?? null;
+        if (!render?.url) continue;
+        const imageUrl = resolvePreviewUrl(render.url);
+        const image = imageCache.get(imageUrl)?.value ?? null;
+        if (!image) {
+          this.ensureImageLoaded(imageUrl);
+          continue;
+        }
+        const objectLeft = left + ((Number(render.left ?? 0) / characterSceneWidth) * drawWidth);
+        const objectTop = top + ((Number(render.top ?? 0) / characterSceneHeight) * drawHeight);
+        const objectWidth = (Number(render.width ?? 0) / characterSceneWidth) * drawWidth;
+        const objectHeight = (Number(render.height ?? 0) / characterSceneHeight) * drawHeight;
+        if (objectWidth <= 0 || objectHeight <= 0) continue;
+        ctx.drawImage(image, objectLeft, objectTop, objectWidth, objectHeight);
       }
     }
   }
@@ -702,8 +758,8 @@ async function loadImage(url) {
 async function preloadPreviewAssets(preview, options = {}) {
   if (!preview) return;
   const onProgress = typeof options.onProgress === 'function' ? options.onProgress : null;
-  const mode = options.mode === 'all' ? 'all' : 'initial';
-  const urls = collectPreviewAssetUrls(preview, mode);
+  const mode = ['all', 'state'].includes(options.mode) ? options.mode : 'initial';
+  const urls = collectPreviewAssetUrls(preview, mode, options.runtimeState ?? null);
   const orderedUrls = [...urls];
   const total = orderedUrls.length;
   let loaded = 0;
@@ -717,14 +773,21 @@ async function preloadPreviewAssets(preview, options = {}) {
   );
 }
 
-function collectPreviewAssetUrls(preview, mode = 'initial') {
+async function preloadImageUrls(urls = []) {
+  const orderedUrls = [...new Set((urls ?? []).filter(Boolean))];
+  await Promise.all(orderedUrls.map(url => loadImage(url).catch(() => {})));
+}
+
+function collectPreviewAssetUrls(preview, mode = 'initial', runtimeState = null) {
   const urls = new Set();
-  const backgroundFrameIndex = Number(preview?.background_frame_index ?? 0);
+  const backgroundFrameIndex = Number(runtimeState?.background_frame_index ?? preview?.background_frame_index ?? 0);
   const selectedBackground = (preview?.images ?? []).find(
     frame => Number(frame.frame_index) === backgroundFrameIndex
   ) ?? preview?.images?.[0] ?? null;
   if (selectedBackground) urls.add(uploadedFileUrl(selectedBackground.uploaded_file_id));
   collectGlobalPreviewAssetUrls(preview, urls);
+  if (runtimeState) collectRuntimePreviewAssetUrls(preview, runtimeState, urls);
+  if (mode === 'state') return urls;
   for (const object of preview.objects ?? []) {
     if (object.default_render?.url) urls.add(resolvePreviewUrl(object.default_render.url));
     if (mode !== 'all') continue;
@@ -737,7 +800,47 @@ function collectPreviewAssetUrls(preview, mode = 'initial') {
       if (render?.url) urls.add(resolvePreviewUrl(render.url));
     }
   }
+  for (const character of preview.characters ?? []) {
+    for (const object of character.objects ?? []) {
+      if (object.default_render?.url) urls.add(resolvePreviewUrl(object.default_render.url));
+      for (const render of object.frame_renders ?? []) {
+        if (render?.url) urls.add(resolvePreviewUrl(render.url));
+      }
+      for (const animation of object.animations ?? []) {
+        for (const frame of animation.frames ?? []) {
+          if (frame.render?.url) urls.add(resolvePreviewUrl(frame.render.url));
+        }
+      }
+    }
+    for (const render of Object.values(character.viseme_frame_renders ?? {})) {
+      if (render?.url) urls.add(resolvePreviewUrl(render.url));
+    }
+  }
   return urls;
+}
+
+function collectRuntimePreviewAssetUrls(preview, runtimeState, urls) {
+  for (const object of preview.objects ?? []) {
+    const state = runtimeState?.objects?.[object.id];
+    const render = state?.render ?? object.default_render ?? null;
+    if (render?.url) urls.add(resolvePreviewUrl(render.url));
+  }
+  const runtimeCharacters = Array.isArray(runtimeState?.characters) ? runtimeState.characters : [];
+  for (const characterState of runtimeCharacters) {
+    if (characterState?.visible === false) continue;
+    const definition = (preview.characters ?? []).find(
+      item => Number(item.id) === Number(characterState.id)
+    );
+    if (!definition) continue;
+    for (const object of definition.objects ?? []) {
+      const state = characterState?.objects?.[object.id];
+      const render = state?.render ?? object.default_render ?? null;
+      if (render?.url) urls.add(resolvePreviewUrl(render.url));
+    }
+    for (const render of Object.values(definition.viseme_frame_renders ?? {})) {
+      if (render?.url) urls.add(resolvePreviewUrl(render.url));
+    }
+  }
 }
 
 function collectGlobalPreviewAssetUrls(preview, urls) {
@@ -801,7 +904,8 @@ function fitSceneRect(sceneWidth, sceneHeight, availableWidth, availableHeight) 
     left: (safeAvailableWidth - width) / 2,
     top: (safeAvailableHeight - height) / 2,
     width,
-    height
+    height,
+    scale
   };
 }
 
@@ -851,4 +955,4 @@ if (!customElements.get('wonky-scene-preview')) {
   customElements.define('wonky-scene-preview', WonkyScenePreviewElement);
 }
 
-export {preloadPreviewAssets};
+export {preloadPreviewAssets, preloadImageUrls};
