@@ -22,6 +22,10 @@
       <p>Create reusable speaking characters, then open each one in the full scene-style editor.</p>
     </div>
     <div class="scene-header__actions">
+      <div class="scene-header__button-group">
+        <button class="button secondary compact" type="button" data-action="undo-character-change" {{#if not canUndoGlobalHistory}}disabled{{/if}}>Undo</button>
+        <button class="button secondary compact" type="button" data-action="redo-character-change" {{#if not canRedoGlobalHistory}}disabled{{/if}}>Redo</button>
+      </div>
       <p class="form-status" data-characters-status aria-live="polite">{{status}}</p>
     </div>
   </header>
@@ -33,6 +37,11 @@
           <p class="eyebrow">Editor</p>
           <h2>{{#if selectedCharacter}}Edit character{{/if}}{{#if not selectedCharacter}}Add character{{/if}}</h2>
         </div>
+        {{#if selectedCharacter}}
+          <div class="form-actions">
+            <button class="button secondary compact" type="button" data-action="new-character">New character</button>
+          </div>
+        {{/if}}
         <form class="stack-form stack-form--two-col" data-character-form>
           <input type="hidden" name="character_id" value="{{selectedCharacter.id}}" />
           <label class="field-span-full">
@@ -60,11 +69,14 @@
             <input name="sort_order" type="number" step="1" value="0" />
           </label>
           <div class="form-actions field-span-full">
-            <button class="button secondary compact" type="submit">{{#if selectedCharacter}}Save character{{/if}}{{#if not selectedCharacter}}Add character{{/if}}</button>
+            {{#if not selectedCharacter}}
+              <button class="button secondary compact" type="submit">Add character</button>
+            {{/if}}
             {{#if selectedCharacter}}
               <button class="button danger compact" type="button" data-action="delete-character" data-character-id="{{selectedCharacter.id}}">Remove character</button>
             {{/if}}
           </div>
+          <p class="form-status field-span-full" data-character-form-status aria-live="polite"></p>
         </form>
       </section>
     </aside>

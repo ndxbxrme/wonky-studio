@@ -23,6 +23,12 @@
         <p>{{character.description}}</p>
       </div>
       <div class="scene-header__actions">
+        <div class="scene-header__action-row">
+          <div class="scene-header__button-group">
+            <button class="button secondary compact" type="button" data-action="undo-scene-change" {{#if not canUndoGlobalHistory}}disabled{{/if}}>Undo</button>
+            <button class="button secondary compact" type="button" data-action="redo-scene-change" {{#if not canRedoGlobalHistory}}disabled{{/if}}>Redo</button>
+          </div>
+        </div>
         <div class="scene-header__action-row scene-header__action-row--tools">
           <div class="scene-header__button-group scene-header__button-group--tools">
             <button class="button secondary compact" type="button" data-action="analyze-vlm"><span class="ui-icon" data-icon="sparkles"></span><span>Analyze with VLM</span></button>
@@ -111,7 +117,6 @@
                 </select>
               </label>
             </div>
-            <button class="button secondary compact" type="submit">Save character settings</button>
             <p class="form-status scene-form-status" data-character-settings-status aria-live="polite"></p>
           </form>
 
@@ -133,7 +138,6 @@
                 value="{{scene.background_frame_index}}"
               />
             </label>
-            <button class="button secondary compact" type="submit">Save default frame</button>
             <p class="form-status scene-form-status" data-scene-settings-status aria-live="polite"></p>
           </form>
 

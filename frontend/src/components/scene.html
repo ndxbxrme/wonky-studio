@@ -39,6 +39,8 @@
             {{#if nextSceneId}}<a class="button secondary compact" href="/scene/{{nextSceneId}}">Next scene</a>{{/if}}
           </div>
           <div class="scene-header__button-group">
+            <button class="button secondary compact" type="button" data-action="undo-scene-change" {{#if not canUndoGlobalHistory}}disabled{{/if}}>Undo</button>
+            <button class="button secondary compact" type="button" data-action="redo-scene-change" {{#if not canRedoGlobalHistory}}disabled{{/if}}>Redo</button>
             <a class="button secondary compact" href="/actions/{{scene.id}}"><span class="ui-icon" data-icon="workflow"></span><span>Edit actions</span></a>
             <button class="button secondary compact" type="button" data-action="open-preview"><span class="ui-icon" data-icon="external-link"></span><span>Open preview</span></button>
             <button class="button secondary compact" type="button" data-action="logout"><span class="ui-icon" data-icon="log-out"></span><span>Sign out</span></button>
@@ -127,7 +129,6 @@
                 value="{{scene.background_frame_index}}"
               />
             </label>
-            <button class="button secondary compact" type="submit">Save scene settings</button>
             <p class="form-status scene-form-status" data-scene-settings-status aria-live="polite"></p>
           </form>
 
@@ -292,9 +293,8 @@
                         />
                         Keyboard target
                       </label>
-                    </div>
+                  </div>
                   <div class="form-actions object-row-actions">
-                      <button class="button secondary compact" type="submit">Save</button>
                       <button class="button secondary compact" type="button" data-action="generate-object-inventory-image" data-object-id="{{object.id}}"><span class="ui-icon" data-icon="package"></span><span>Generate inventory art</span></button>
                       <button class="button secondary compact" type="button" data-action="generate-object-removal-frame" data-object-id="{{object.id}}"><span class="ui-icon" data-icon="image-minus"></span><span>Generate pickup frame</span></button>
                     </div>

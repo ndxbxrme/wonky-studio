@@ -37,6 +37,10 @@
           </form>
           {{#if nextSceneId}}<a class="button secondary compact" href="/actions/{{nextSceneId}}"><span>Next scene</span><span class="ui-icon" data-icon="arrow-down"></span></a>{{/if}}
         </div>
+        <div class="scene-header__button-group">
+          <button class="button secondary compact" type="button" data-action="undo-action-change" {{#if not canUndoGlobalHistory}}disabled{{/if}}>Undo</button>
+          <button class="button secondary compact" type="button" data-action="redo-action-change" {{#if not canRedoGlobalHistory}}disabled{{/if}}>Redo</button>
+        </div>
         <a class="button secondary compact" href="/scene/{{scene.id}}">Scene view</a>
         <button class="button secondary compact" type="button" data-action="open-preview">Open preview</button>
         <p class="form-status" data-actions-status aria-live="polite">{{status}}</p>
@@ -290,19 +294,22 @@
                   {{/each}}
                 </select>
               </label>
-              <button class="button primary compact" type="submit">Save trigger</button>
+              <p class="form-status field-span-full {{#if hasInteractionFormSaveError}}is-error{{/if}}" aria-live="polite">{{interactionFormStatus}}</p>
             </div>
           </form>
 
           <section class="actions-panel">
-            <div>
-              <p class="eyebrow">Sequence</p>
-              <h2>{{#if selectedStep}}Edit action step{{/if}}{{#if not selectedStep}}Action steps{{/if}}</h2>
-              <p class="panel-intro">
-                {{#if selectedStep}}Update the selected step, or cancel to go back to adding a new one.{{/if}}
-                {{#if not selectedStep}}Add a step to the selected branch, then reorder or remove steps below.{{/if}}
-              </p>
+            <div class="interaction-editor__header">
+              <div>
+                <p class="eyebrow">Sequence</p>
+                <h2>{{#if selectedStep}}Edit action step{{/if}}{{#if not selectedStep}}Action steps{{/if}}</h2>
+                <p class="panel-intro">
+                  {{#if selectedStep}}Update the selected step, or cancel to go back to adding a new one.{{/if}}
+                  {{#if not selectedStep}}Add a step to the selected branch, then reorder or remove steps below.{{/if}}
+                </p>
+              </div>
             </div>
+            <p class="form-status {{#if hasActionTreeSaveError}}is-error{{/if}}" data-action-tree-status aria-live="polite">{{actionTreeStatus}}</p>
             <form class="action-step-form" data-action-step-form>
               <label data-form-field="branch" {{#if selectedStep}}hidden{{/if}}>
                 Add to

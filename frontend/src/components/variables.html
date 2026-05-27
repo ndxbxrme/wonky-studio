@@ -24,6 +24,10 @@
       <p>Manage built-in runtime settings and shared gameplay state in one place.</p>
     </div>
     <div class="scene-header__actions">
+      <div class="scene-header__button-group">
+        <button class="button secondary compact" type="button" data-action="undo-variable-change" {{#if not canUndoGlobalHistory}}disabled{{/if}}>Undo</button>
+        <button class="button secondary compact" type="button" data-action="redo-variable-change" {{#if not canRedoGlobalHistory}}disabled{{/if}}>Redo</button>
+      </div>
       <p class="form-status" data-variables-status aria-live="polite">{{status}}</p>
     </div>
   </header>
@@ -65,11 +69,14 @@
             </div>
           {{/if}}
           <div class="form-actions field-span-full">
-            <button class="button secondary compact" type="submit">{{variableSubmitLabel}}</button>
+            {{#if not isEditingVariable}}
+              <button class="button secondary compact" type="submit">{{variableSubmitLabel}}</button>
+            {{/if}}
             {{#if isEditingVariable}}
               <button class="button secondary compact form-actions__cancel" type="button" data-action="cancel-variable-edit">X</button>
             {{/if}}
           </div>
+          <p class="form-status field-span-full" data-variable-form-status aria-live="polite"></p>
         </form>
       </section>
     </aside>

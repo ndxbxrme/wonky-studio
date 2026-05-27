@@ -42,6 +42,8 @@ const ConversationEditorCtrl = app => async params => {
     actionTypes: ACTION_TYPES,
     nodeScriptSearchResults: [],
     choiceScriptSearchResults: [],
+    nodeFormLineLabel: '',
+    choiceFormLineLabel: '',
     selectedNodeId: null,
     selectedNode: null,
     suppressNodeAutoSelect: false,
@@ -56,6 +58,44 @@ const ConversationEditorCtrl = app => async params => {
     choiceSelectedStep: null,
     choiceActionRows: [],
     choiceBranchOptions: [],
+    nodeActionEditorStates: new Map(),
+    choiceActionEditorStates: new Map(),
+    nodeActionEditorState: null,
+    choiceActionEditorState: null,
+    canUndoNodeActionChange: false,
+    canRedoNodeActionChange: false,
+    canUndoChoiceActionChange: false,
+    canRedoChoiceActionChange: false,
+    nodeOrderState: null,
+    choiceOrderStates: new Map(),
+    choiceOrderState: null,
+    canUndoNodeOrderChange: false,
+    canRedoNodeOrderChange: false,
+    canUndoChoiceOrderChange: false,
+    canRedoChoiceOrderChange: false,
+    nodeFormStates: new Map(),
+    choiceFormStates: new Map(),
+    nodeFormState: null,
+    choiceFormState: null,
+    nodeFormStatus: '',
+    choiceFormStatus: '',
+    hasNodeFormSaveError: false,
+    hasChoiceFormSaveError: false,
+    newNodeDraft: createBlankNodeDraft(),
+    newChoiceDraft: createBlankChoiceDraft(),
+    nodeOrderStatus: '',
+    choiceOrderStatus: '',
+    hasNodeOrderSaveError: false,
+    hasChoiceOrderSaveError: false,
+    nodeActionTreeStatus: '',
+    choiceActionTreeStatus: '',
+    hasNodeActionTreeSaveError: false,
+    hasChoiceActionTreeSaveError: false,
+    globalHistoryUndoStack: [],
+    globalHistoryRedoStack: [],
+    canUndoGlobalHistory: false,
+    canRedoGlobalHistory: false,
+    lastHistoryLabel: '',
     status: '',
     unloadHandlers: [],
 
@@ -64,6 +104,7 @@ const ConversationEditorCtrl = app => async params => {
       this.bind(this.root, 'click', event => this.onClick(event));
       this.bind(this.root, 'submit', event => this.onSubmit(event));
       this.bind(this.root, 'change', event => this.onChange(event));
+      this.bind(window, 'keydown', event => this.onKeyDown(event));
       this.setControlValues();
     },
 
@@ -125,6 +166,9 @@ const ConversationEditorCtrl = app => async params => {
         }))
       ));
       await this.loadAnimations();
+      this.syncActionEditorStatesFromServer();
+      this.syncOrderEditorStatesFromServer();
+      this.syncFormEditorStatesFromServer();
       this.prepareState();
     },
 
@@ -195,20 +239,44 @@ const ConversationEditorCtrl = app => async params => {
 
     prepareState() {
       const startNodeId = Number(this.conversation?.start_node_id ?? 0);
-      const nodes = (this.conversation?.nodes ?? []).map(node => {
-        const linePreview = node?.script_line?.source_text || '';
-        const choices = (node.choices ?? []).map(choice => ({
-          ...choice,
+      const orderedNodeIds = this.ensureNodeOrderState(
+        (this.conversation?.nodes ?? []).map(node => Number(node.id))
+      ).workingIds;
+      const orderedNodes = orderedNodeIds
+        .map(nodeId => (this.conversation?.nodes ?? []).find(node => Number(node.id) === Number(nodeId)))
+        .filter(Boolean);
+      const nodes = orderedNodes.map(node => {
+        const nodeFormState = this.ensureNodeFormState(node);
+        const line = nodeFormState.workingValue.script_line_id
+          ? this.scriptLineOptions.find(option => Number(option.id) === Number(nodeFormState.workingValue.script_line_id))
+          : null;
+        const nodeActionEditorState = this.ensureActionEditorState('node', node.id, node.enter_actions ?? []);
+        const linePreview = line?.label || node?.script_line?.source_text || '';
+        const orderedChoiceIds = this.ensureChoiceOrderState(
+          node.id,
+          (node.choices ?? []).map(choice => Number(choice.id))
+        ).workingIds;
+        const orderedChoices = orderedChoiceIds
+          .map(choiceId => (node.choices ?? []).find(choice => Number(choice.id) === Number(choiceId)))
+          .filter(Boolean);
+        const choices = orderedChoices.map(choice => {
+          const choiceWithDraft = this.applyChoiceFormStateToChoice(node.id, choice);
+          return {
+          ...choiceWithDraft,
+          actions: structuredClone(
+            this.ensureActionEditorState('choice', choice.id, choice.actions ?? []).workingActionTree
+          ),
           isSelected: Number(choice.id) === Number(this.selectedChoiceId),
-          linePreview: choice?.script_line?.source_text || 'Untitled choice',
-          destinationLabel: choice.end_conversation
+          linePreview: this.getChoiceLinePreview(node.id, choice),
+          destinationLabel: choiceWithDraft.end_conversation
             ? 'Ends conversation'
-            : choice.next_node_id
-              ? `Next: ${findNodeName(this.conversation?.nodes ?? [], choice.next_node_id)}`
+            : choiceWithDraft.next_node_id
+              ? `Next: ${findNodeName(this.conversation?.nodes ?? [], choiceWithDraft.next_node_id)}`
               : 'No next node set'
-        }));
+        };});
         return {
-          ...node,
+          ...this.applyNodeFormStateToNode(node),
+          enter_actions: structuredClone(nodeActionEditorState.workingActionTree),
           isSelected: Number(node.id) === Number(this.selectedNodeId),
           isStartNode: Number(node.id) === startNodeId,
           linePreview: linePreview ? truncate(linePreview, 72) : '',
@@ -224,6 +292,10 @@ const ConversationEditorCtrl = app => async params => {
       this.suppressNodeAutoSelect = false;
       this.conversation.nodes = nodes;
       this.selectedNode = nodes.find(node => Number(node.id) === Number(this.selectedNodeId)) ?? null;
+      this.nodeFormState = this.selectedNode ? this.ensureNodeFormState(this.selectedNode) : null;
+      this.nodeActionEditorState = this.selectedNode
+        ? this.ensureActionEditorState('node', this.selectedNode.id, this.selectedNode.enter_actions ?? [])
+        : null;
       const choices = this.selectedNode?.choices ?? [];
       if (!choices.some(choice => Number(choice.id) === Number(this.selectedChoiceId))) {
         this.selectedChoiceId = this.suppressChoiceAutoSelect ? null : (choices[0]?.id ?? null);
@@ -236,6 +308,10 @@ const ConversationEditorCtrl = app => async params => {
         }));
       }
       this.selectedChoice = (this.selectedNode?.choices ?? []).find(choice => Number(choice.id) === Number(this.selectedChoiceId)) ?? null;
+      this.choiceFormState = this.selectedChoice ? this.ensureChoiceFormState(this.selectedNode.id, this.selectedChoice) : null;
+      this.choiceActionEditorState = this.selectedChoice
+        ? this.ensureActionEditorState('choice', this.selectedChoice.id, this.selectedChoice.actions ?? [])
+        : null;
       this.nodeSelectedStep = this.selectedNode
         ? findStepById(this.selectedNode.enter_actions ?? [], this.nodeSelectedStepId)
         : null;
@@ -312,6 +388,35 @@ const ConversationEditorCtrl = app => async params => {
         animationNameOptions: this.animationNameOptions,
         conversationOptions: this.conversationOptions
       });
+      this.canUndoNodeActionChange = Boolean(this.nodeActionEditorState?.undoStack?.length);
+      this.canRedoNodeActionChange = Boolean(this.nodeActionEditorState?.redoStack?.length);
+      this.canUndoChoiceActionChange = Boolean(this.choiceActionEditorState?.undoStack?.length);
+      this.canRedoChoiceActionChange = Boolean(this.choiceActionEditorState?.redoStack?.length);
+      this.hasNodeActionTreeSaveError = Boolean(this.nodeActionEditorState?.error);
+      this.hasChoiceActionTreeSaveError = Boolean(this.choiceActionEditorState?.error);
+      this.hasNodeFormSaveError = Boolean(this.nodeFormState?.error);
+      this.hasChoiceFormSaveError = Boolean(this.choiceFormState?.error);
+      this.nodeActionTreeStatus = formatActionTreeStatus(this.nodeActionEditorState);
+      this.choiceActionTreeStatus = formatActionTreeStatus(this.choiceActionEditorState);
+      this.nodeFormStatus = formatFormStatus(this.nodeFormState, 'node');
+      this.choiceFormStatus = formatFormStatus(this.choiceFormState, 'choice');
+      const nodeFormDraft = this.selectedNode ? this.nodeFormState?.workingValue : this.newNodeDraft;
+      const choiceFormDraft = this.selectedChoice ? this.choiceFormState?.workingValue : this.newChoiceDraft;
+      this.nodeFormLineLabel = this.findScriptLineLabel(nodeFormDraft?.script_line_id);
+      this.choiceFormLineLabel = this.findScriptLineLabel(choiceFormDraft?.script_line_id);
+      this.choiceOrderState = this.selectedNode
+        ? this.ensureChoiceOrderState(this.selectedNode.id, (this.selectedNode.choices ?? []).map(choice => Number(choice.id)))
+        : null;
+      this.canUndoNodeOrderChange = Boolean(this.nodeOrderState?.undoStack?.length);
+      this.canRedoNodeOrderChange = Boolean(this.nodeOrderState?.redoStack?.length);
+      this.canUndoChoiceOrderChange = Boolean(this.choiceOrderState?.undoStack?.length);
+      this.canRedoChoiceOrderChange = Boolean(this.choiceOrderState?.redoStack?.length);
+      this.hasNodeOrderSaveError = Boolean(this.nodeOrderState?.error);
+      this.hasChoiceOrderSaveError = Boolean(this.choiceOrderState?.error);
+      this.nodeOrderStatus = formatActionTreeStatus(this.nodeOrderState);
+      this.choiceOrderStatus = formatActionTreeStatus(this.choiceOrderState);
+      this.canUndoGlobalHistory = this.globalHistoryUndoStack.length > 0;
+      this.canRedoGlobalHistory = this.globalHistoryRedoStack.length > 0;
     },
 
     refreshView() {
@@ -328,17 +433,19 @@ const ConversationEditorCtrl = app => async params => {
       }
       const nodeForm = this.root?.querySelector('[data-node-form]');
       if (nodeForm) {
+        const nodeDraft = this.selectedNode ? this.nodeFormState?.workingValue : this.newNodeDraft;
         nodeForm.elements.node_id.value = this.selectedNode?.id ?? '';
-        nodeForm.elements.name.value = this.selectedNode?.name ?? '';
-        nodeForm.elements.script_line_id.value = this.selectedNode?.script_line_id ?? '';
-        nodeForm.elements.speaker_character_id.value = this.selectedNode?.speaker_character_id ?? '';
+        nodeForm.elements.name.value = nodeDraft?.name ?? '';
+        nodeForm.elements.script_line_id.value = nodeDraft?.script_line_id ?? '';
+        nodeForm.elements.speaker_character_id.value = nodeDraft?.speaker_character_id ?? '';
       }
       const choiceForm = this.root?.querySelector('[data-choice-form]');
       if (choiceForm) {
+        const choiceDraft = this.selectedChoice ? this.choiceFormState?.workingValue : this.newChoiceDraft;
         choiceForm.elements.choice_id.value = this.selectedChoice?.id ?? '';
-        choiceForm.elements.script_line_id.value = this.selectedChoice?.script_line_id ?? '';
-        choiceForm.elements.next_node_id.value = this.selectedChoice?.next_node_id ?? '';
-        choiceForm.elements.end_conversation.checked = Boolean(this.selectedChoice?.end_conversation);
+        choiceForm.elements.script_line_id.value = choiceDraft?.script_line_id ?? '';
+        choiceForm.elements.next_node_id.value = choiceDraft?.next_node_id ?? '';
+        choiceForm.elements.end_conversation.checked = Boolean(choiceDraft?.end_conversation);
       }
       this.root?.querySelectorAll('[data-conversation-action-form]').forEach(form => {
         const target = String(form.dataset.actionTarget || 'node');
@@ -376,6 +483,8 @@ const ConversationEditorCtrl = app => async params => {
         this.selectedChoiceId = null;
         this.suppressNodeAutoSelect = true;
         this.suppressChoiceAutoSelect = true;
+        this.newNodeDraft = createBlankNodeDraft();
+        this.newChoiceDraft = createBlankChoiceDraft();
         this.prepareState();
         this.refreshView();
         return;
@@ -383,6 +492,7 @@ const ConversationEditorCtrl = app => async params => {
       if (event.target.closest('[data-action="clear-choice-selection"]')) {
         this.selectedChoiceId = null;
         this.suppressChoiceAutoSelect = true;
+        this.newChoiceDraft = createBlankChoiceDraft();
         this.prepareState();
         this.refreshView();
         return;
@@ -472,6 +582,40 @@ const ConversationEditorCtrl = app => async params => {
         );
         return;
       }
+      const undoGlobalHistory = event.target.closest('[data-action="undo-conversation-change"]');
+      if (undoGlobalHistory) {
+        await this.undoGlobalHistoryChange();
+        return;
+      }
+      const redoGlobalHistory = event.target.closest('[data-action="redo-conversation-change"]');
+      if (redoGlobalHistory) {
+        await this.redoGlobalHistoryChange();
+        return;
+      }
+    },
+
+    async onKeyDown(event) {
+      if (!(event.ctrlKey || event.metaKey)) return;
+      if (event.altKey) return;
+      const target = event.target;
+      if (
+        target instanceof HTMLInputElement
+        || target instanceof HTMLTextAreaElement
+        || target instanceof HTMLSelectElement
+        || target?.isContentEditable
+      ) {
+        return;
+      }
+      const key = String(event.key || '').toLowerCase();
+      if (key === 'z' && !event.shiftKey) {
+        event.preventDefault();
+        await this.undoGlobalHistoryChange();
+        return;
+      }
+      if (key === 'y' || (key === 'z' && event.shiftKey)) {
+        event.preventDefault();
+        await this.redoGlobalHistoryChange();
+      }
     },
 
     async onSubmit(event) {
@@ -503,6 +647,42 @@ const ConversationEditorCtrl = app => async params => {
     },
 
     async onChange(event) {
+      const nodeForm = event.target.closest('[data-node-form]');
+      if (nodeForm && !event.target.closest('[data-node-line-search-form]')) {
+        if (this.selectedNode) {
+          this.captureNodeFormUndoSnapshot();
+          this.updateNodeFormDraft(nodeForm);
+          this.prepareState();
+          this.refreshView();
+          this.recordGlobalHistoryEntry({
+            label: 'Edit node',
+            undo: () => this.undoNodeFormChange(this.selectedNode.id),
+            redo: () => this.redoNodeFormChange(this.selectedNode.id)
+          });
+          void this.persistNodeForm(this.selectedNode.id);
+        } else {
+          this.newNodeDraft = this.readNodeFormDraft(nodeForm);
+        }
+        return;
+      }
+      const choiceForm = event.target.closest('[data-choice-form]');
+      if (choiceForm && !event.target.closest('[data-choice-line-search-form]')) {
+        if (this.selectedChoice && this.selectedNode) {
+          this.captureChoiceFormUndoSnapshot(this.selectedNode.id, this.selectedChoice.id);
+          this.updateChoiceFormDraft(this.selectedNode.id, this.selectedChoice.id, choiceForm);
+          this.prepareState();
+          this.refreshView();
+          this.recordGlobalHistoryEntry({
+            label: 'Edit choice',
+            undo: () => this.undoChoiceFormChange(this.selectedNode.id, this.selectedChoice.id),
+            redo: () => this.redoChoiceFormChange(this.selectedNode.id, this.selectedChoice.id)
+          });
+          void this.persistChoiceForm(this.selectedNode.id, this.selectedChoice.id);
+        } else {
+          this.newChoiceDraft = this.readChoiceFormDraft(choiceForm);
+        }
+        return;
+      }
       if (event.target.matches('[name="action_type"], [name="target_scope"], [name="target_object_mode"], [name="scene_object_mode"], [name="random_idle_scope"]')) {
         this.updateActionFormVisibility(event.target.closest('[data-conversation-action-form]'));
         return;
@@ -549,6 +729,8 @@ const ConversationEditorCtrl = app => async params => {
         });
         this.selectedNodeId = saved.id;
         this.selectedChoiceId = null;
+        this.newNodeDraft = createBlankNodeDraft();
+        this.newChoiceDraft = createBlankChoiceDraft();
         await this.refreshData();
         this.refreshView();
         this.setStatus(nodeId ? 'Node saved.' : 'Node added.');
@@ -574,6 +756,7 @@ const ConversationEditorCtrl = app => async params => {
           body: JSON.stringify(payload)
         });
         this.selectedChoiceId = saved.id;
+        this.newChoiceDraft = createBlankChoiceDraft();
         await this.refreshData();
         this.refreshView();
         this.setStatus(choiceId ? 'Choice saved.' : 'Choice added.');
@@ -640,33 +823,38 @@ const ConversationEditorCtrl = app => async params => {
       const form = this.root?.querySelector(target === 'node' ? '[data-node-form]' : '[data-choice-form]');
       if (!form) return;
       form.elements.script_line_id.value = lineId ? String(lineId) : '';
-      const line = lineId
-        ? this.scriptLineOptions.find(option => Number(option.id) === Number(lineId))
-        : null;
-      if (target === 'node' && this.selectedNode) {
-        this.selectedNode.script_line_id = lineId || null;
-        this.selectedNode.scriptLineLabel = line?.label ?? '';
-        this.selectedNode.linePreview = line?.label ?? '';
-        const nodeIndex = (this.conversation?.nodes ?? []).findIndex(node => Number(node.id) === Number(this.selectedNode.id));
-        if (nodeIndex >= 0) {
-          this.conversation.nodes[nodeIndex] = {
-            ...this.conversation.nodes[nodeIndex],
-            script_line_id: lineId || null,
-            scriptLineLabel: line?.label ?? '',
-            linePreview: line?.label ?? ''
-          };
+      if (target === 'node') {
+        if (this.selectedNode) {
+          this.captureNodeFormUndoSnapshot();
+          this.updateNodeFormDraft(form);
+          this.prepareState();
+          this.refreshView();
+          this.recordGlobalHistoryEntry({
+            label: lineId ? 'Set node line' : 'Clear node line',
+            undo: () => this.undoNodeFormChange(this.selectedNode.id),
+            redo: () => this.redoNodeFormChange(this.selectedNode.id)
+          });
+          void this.persistNodeForm(this.selectedNode.id);
+        } else {
+          this.newNodeDraft = this.readNodeFormDraft(form);
+          this.refreshView();
         }
       }
-      if (target === 'choice' && this.selectedChoice) {
-        this.selectedChoice.script_line_id = lineId || null;
-        this.selectedChoice.linePreview = line?.label ?? 'No player line selected';
-        const choiceIndex = (this.selectedNode?.choices ?? []).findIndex(choice => Number(choice.id) === Number(this.selectedChoice.id));
-        if (choiceIndex >= 0 && this.selectedNode) {
-          this.selectedNode.choices[choiceIndex] = {
-            ...this.selectedNode.choices[choiceIndex],
-            script_line_id: lineId || null,
-            linePreview: line?.label ?? 'No player line selected'
-          };
+      if (target === 'choice') {
+        if (this.selectedChoice && this.selectedNode) {
+          this.captureChoiceFormUndoSnapshot(this.selectedNode.id, this.selectedChoice.id);
+          this.updateChoiceFormDraft(this.selectedNode.id, this.selectedChoice.id, form);
+          this.prepareState();
+          this.refreshView();
+          this.recordGlobalHistoryEntry({
+            label: lineId ? 'Set choice line' : 'Clear choice line',
+            undo: () => this.undoChoiceFormChange(this.selectedNode.id, this.selectedChoice.id),
+            redo: () => this.redoChoiceFormChange(this.selectedNode.id, this.selectedChoice.id)
+          });
+          void this.persistChoiceForm(this.selectedNode.id, this.selectedChoice.id);
+        } else {
+          this.newChoiceDraft = this.readChoiceFormDraft(form);
+          this.refreshView();
         }
       }
       if (target === 'node') this.nodeScriptSearchResults = [];
@@ -674,46 +862,472 @@ const ConversationEditorCtrl = app => async params => {
       this.refreshView();
     },
 
-    async moveNode(nodeId, direction) {
-      const nodes = [...(this.conversation?.nodes ?? [])];
-      const index = nodes.findIndex(node => Number(node.id) === Number(nodeId));
-      if (index < 0) return;
-      const targetIndex = direction === 'up' ? index - 1 : index + 1;
-      if (targetIndex < 0 || targetIndex >= nodes.length) return;
-      [nodes[index], nodes[targetIndex]] = [nodes[targetIndex], nodes[index]];
-      this.setStatus('Reordering nodes...');
-      try {
-        await Promise.all(nodes.map((node, nextIndex) => apiFetch(`/api/conversation-nodes/${node.id}`, {
-          method: 'PATCH',
-          body: JSON.stringify({sort_order: nextIndex})
-        })));
-        await this.refreshData();
+    ensureNodeFormState(node) {
+      const key = Number(node?.id);
+      let state = this.nodeFormStates.get(key);
+      if (!state) {
+        state = createFormEditorState(this.extractNodeFormValue(node));
+        this.nodeFormStates.set(key, state);
+      }
+      return state;
+    },
+
+    ensureChoiceFormState(nodeId, choice) {
+      const key = Number(choice?.id);
+      let state = this.choiceFormStates.get(key);
+      if (!state) {
+        state = createFormEditorState(this.extractChoiceFormValue(choice));
+        state.nodeId = Number(nodeId);
+        this.choiceFormStates.set(key, state);
+      }
+      return state;
+    },
+
+    syncFormEditorStatesFromServer() {
+      const nextNodeStates = new Map();
+      const nextChoiceStates = new Map();
+      for (const node of this.conversation?.nodes ?? []) {
+        const nodeId = Number(node.id);
+        const serverNodeValue = this.extractNodeFormValue(node);
+        const existingNodeState = this.nodeFormStates.get(nodeId);
+        if (existingNodeState?.isDirty || existingNodeState?.isSaving) nextNodeStates.set(nodeId, existingNodeState);
+        else nextNodeStates.set(nodeId, createFormEditorState(serverNodeValue));
+        for (const choice of node.choices ?? []) {
+          const choiceId = Number(choice.id);
+          const serverChoiceValue = this.extractChoiceFormValue(choice);
+          const existingChoiceState = this.choiceFormStates.get(choiceId);
+          if (existingChoiceState?.isDirty || existingChoiceState?.isSaving) {
+            existingChoiceState.nodeId = nodeId;
+            nextChoiceStates.set(choiceId, existingChoiceState);
+          } else {
+            const state = createFormEditorState(serverChoiceValue);
+            state.nodeId = nodeId;
+            nextChoiceStates.set(choiceId, state);
+          }
+        }
+      }
+      this.nodeFormStates = nextNodeStates;
+      this.choiceFormStates = nextChoiceStates;
+    },
+
+    extractNodeFormValue(node) {
+      return {
+        name: String(node?.name ?? ''),
+        script_line_id: node?.script_line_id ? Number(node.script_line_id) : null,
+        speaker_character_id: node?.speaker_character_id ? Number(node.speaker_character_id) : null
+      };
+    },
+
+    extractChoiceFormValue(choice) {
+      return {
+        script_line_id: choice?.script_line_id ? Number(choice.script_line_id) : null,
+        next_node_id: choice?.next_node_id ? Number(choice.next_node_id) : null,
+        end_conversation: Boolean(choice?.end_conversation)
+      };
+    },
+
+    readNodeFormDraft(form) {
+      return {
+        name: String(form.elements.name.value || ''),
+        script_line_id: form.elements.script_line_id.value ? Number(form.elements.script_line_id.value) : null,
+        speaker_character_id: form.elements.speaker_character_id.value ? Number(form.elements.speaker_character_id.value) : null
+      };
+    },
+
+    readChoiceFormDraft(form) {
+      return {
+        script_line_id: form.elements.script_line_id.value ? Number(form.elements.script_line_id.value) : null,
+        next_node_id: form.elements.next_node_id.value ? Number(form.elements.next_node_id.value) : null,
+        end_conversation: Boolean(form.elements.end_conversation.checked)
+      };
+    },
+
+    updateNodeFormDraft(form) {
+      if (!this.selectedNode) return;
+      const editorState = this.ensureNodeFormState(this.selectedNode);
+      editorState.workingValue = this.readNodeFormDraft(form);
+      editorState.isDirty = !formValuesEqual(editorState.workingValue, editorState.baseValue);
+      editorState.mutationVersion += 1;
+      editorState.error = '';
+    },
+
+    updateChoiceFormDraft(nodeId, choiceId, form) {
+      const editorState = this.ensureChoiceFormState(nodeId, {id: choiceId, ...this.readChoiceFormDraft(form)});
+      editorState.workingValue = this.readChoiceFormDraft(form);
+      editorState.isDirty = !formValuesEqual(editorState.workingValue, editorState.baseValue);
+      editorState.mutationVersion += 1;
+      editorState.error = '';
+    },
+
+    applyNodeFormStateToNode(node) {
+      const editorState = this.ensureNodeFormState(node);
+      const workingValue = editorState.workingValue;
+      const line = workingValue.script_line_id
+        ? this.scriptLineOptions.find(option => Number(option.id) === Number(workingValue.script_line_id))
+        : null;
+      return {
+        ...node,
+        name: workingValue.name || 'Untitled node',
+        script_line_id: workingValue.script_line_id,
+        speaker_character_id: workingValue.speaker_character_id,
+        scriptLineLabel: line?.label ?? (node?.script_line?.source_text || ''),
+        linePreview: line?.label ?? (node?.script_line?.source_text || '')
+      };
+    },
+
+    applyChoiceFormStateToChoice(nodeId, choice) {
+      const editorState = this.ensureChoiceFormState(nodeId, choice);
+      const workingValue = editorState.workingValue;
+      return {
+        ...choice,
+        script_line_id: workingValue.script_line_id,
+        next_node_id: workingValue.next_node_id,
+        end_conversation: workingValue.end_conversation
+      };
+    },
+
+    getChoiceLinePreview(nodeId, choice) {
+      const editorState = this.ensureChoiceFormState(nodeId, choice);
+      return this.findScriptLineLabel(editorState.workingValue.script_line_id)
+        || choice?.script_line?.source_text
+        || 'No player line selected';
+    },
+
+    findScriptLineLabel(lineId) {
+      if (!lineId) return '';
+      return this.scriptLineOptions.find(option => Number(option.id) === Number(lineId))?.label ?? '';
+    },
+
+    async persistNodeForm(nodeId) {
+      const editorState = this.ensureNodeFormState({id: nodeId});
+      editorState.saveQueued = true;
+      if (editorState.isSaving) {
+        this.prepareState();
         this.refreshView();
-        this.setStatus('Node order updated.');
-      } catch {
-        this.setStatus('Could not reorder nodes.');
+        return;
+      }
+      while (editorState.saveQueued) {
+        editorState.saveQueued = false;
+        if (!editorState.isDirty) break;
+        const payloadValue = structuredClone(editorState.workingValue);
+        const saveVersion = editorState.mutationVersion;
+        editorState.isSaving = true;
+        editorState.error = '';
+        this.prepareState();
+        this.refreshView();
+        try {
+          const saved = await apiFetch(`/api/conversation-nodes/${nodeId}`, {
+            method: 'PATCH',
+            body: JSON.stringify({
+              name: String(payloadValue.name || '').trim(),
+              script_line_id: payloadValue.script_line_id,
+              clear_script_line_id: !payloadValue.script_line_id,
+              speaker_character_id: payloadValue.speaker_character_id,
+              clear_speaker_character_id: !payloadValue.speaker_character_id
+            })
+          });
+          editorState.baseValue = this.extractNodeFormValue(saved);
+          if (editorState.mutationVersion === saveVersion) {
+            editorState.workingValue = structuredClone(editorState.baseValue);
+            editorState.isDirty = false;
+          } else {
+            editorState.isDirty = !formValuesEqual(editorState.workingValue, editorState.baseValue);
+            editorState.saveQueued = editorState.isDirty || editorState.saveQueued;
+          }
+          editorState.error = '';
+        } catch {
+          editorState.workingValue = structuredClone(editorState.baseValue);
+          editorState.isDirty = false;
+          editorState.error = 'Could not save the latest node changes. Reverted to the last saved version.';
+          editorState.saveQueued = false;
+        } finally {
+          editorState.isSaving = false;
+          this.prepareState();
+          this.refreshView();
+        }
       }
     },
 
-    async moveChoice(choiceId, direction) {
-      const choices = [...(this.selectedNode?.choices ?? [])];
-      const index = choices.findIndex(choice => Number(choice.id) === Number(choiceId));
+    async persistChoiceForm(nodeId, choiceId) {
+      const editorState = this.ensureChoiceFormState(nodeId, {id: choiceId});
+      editorState.saveQueued = true;
+      if (editorState.isSaving) {
+        this.prepareState();
+        this.refreshView();
+        return;
+      }
+      while (editorState.saveQueued) {
+        editorState.saveQueued = false;
+        if (!editorState.isDirty) break;
+        const payloadValue = structuredClone(editorState.workingValue);
+        const saveVersion = editorState.mutationVersion;
+        editorState.isSaving = true;
+        editorState.error = '';
+        this.prepareState();
+        this.refreshView();
+        try {
+          const saved = await apiFetch(`/api/conversation-choices/${choiceId}`, {
+            method: 'PATCH',
+            body: JSON.stringify({
+              script_line_id: payloadValue.script_line_id,
+              clear_script_line_id: !payloadValue.script_line_id,
+              next_node_id: payloadValue.next_node_id,
+              clear_next_node_id: !payloadValue.next_node_id,
+              end_conversation: Boolean(payloadValue.end_conversation)
+            })
+          });
+          editorState.baseValue = this.extractChoiceFormValue(saved);
+          if (editorState.mutationVersion === saveVersion) {
+            editorState.workingValue = structuredClone(editorState.baseValue);
+            editorState.isDirty = false;
+          } else {
+            editorState.isDirty = !formValuesEqual(editorState.workingValue, editorState.baseValue);
+            editorState.saveQueued = editorState.isDirty || editorState.saveQueued;
+          }
+          editorState.error = '';
+        } catch {
+          editorState.workingValue = structuredClone(editorState.baseValue);
+          editorState.isDirty = false;
+          editorState.error = 'Could not save the latest choice changes. Reverted to the last saved version.';
+          editorState.saveQueued = false;
+        } finally {
+          editorState.isSaving = false;
+          this.prepareState();
+          this.refreshView();
+        }
+      }
+    },
+
+    async moveNode(nodeId, direction) {
+      const editorState = this.ensureNodeOrderState((this.conversation?.nodes ?? []).map(node => Number(node.id)));
+      const orderedIds = [...editorState.workingIds];
+      const index = orderedIds.findIndex(id => Number(id) === Number(nodeId));
       if (index < 0) return;
       const targetIndex = direction === 'up' ? index - 1 : index + 1;
-      if (targetIndex < 0 || targetIndex >= choices.length) return;
-      [choices[index], choices[targetIndex]] = [choices[targetIndex], choices[index]];
-      this.setStatus('Reordering choices...');
-      try {
-        await Promise.all(choices.map((choice, nextIndex) => apiFetch(`/api/conversation-choices/${choice.id}`, {
-          method: 'PATCH',
-          body: JSON.stringify({sort_order: nextIndex})
-        })));
-        await this.refreshData();
-        this.refreshView();
-        this.setStatus('Choice order updated.');
-      } catch {
-        this.setStatus('Could not reorder choices.');
+      if (targetIndex < 0 || targetIndex >= orderedIds.length) return;
+      [orderedIds[index], orderedIds[targetIndex]] = [orderedIds[targetIndex], orderedIds[index]];
+      editorState.undoStack.push([...editorState.workingIds]);
+      if (editorState.undoStack.length > 100) editorState.undoStack.shift();
+      editorState.redoStack = [];
+      editorState.mutationVersion += 1;
+      editorState.error = '';
+      this.setNodeOrder(editorState, orderedIds);
+      this.prepareState();
+      this.refreshView();
+      this.recordGlobalHistoryEntry({
+        label: 'Reorder nodes',
+        undo: () => this.undoNodeOrderChange(),
+        redo: () => this.redoNodeOrderChange()
+      });
+      void this.persistNodeOrder();
+    },
+
+    async moveChoice(choiceId, direction) {
+      if (!this.selectedNode) return;
+      const editorState = this.ensureChoiceOrderState(this.selectedNode.id, (this.selectedNode.choices ?? []).map(choice => Number(choice.id)));
+      const orderedIds = [...editorState.workingIds];
+      const index = orderedIds.findIndex(id => Number(id) === Number(choiceId));
+      if (index < 0) return;
+      const targetIndex = direction === 'up' ? index - 1 : index + 1;
+      if (targetIndex < 0 || targetIndex >= orderedIds.length) return;
+      [orderedIds[index], orderedIds[targetIndex]] = [orderedIds[targetIndex], orderedIds[index]];
+      editorState.undoStack.push([...editorState.workingIds]);
+      if (editorState.undoStack.length > 100) editorState.undoStack.shift();
+      editorState.redoStack = [];
+      editorState.mutationVersion += 1;
+      editorState.error = '';
+      this.setChoiceOrder(this.selectedNode.id, editorState, orderedIds);
+      this.prepareState();
+      this.refreshView();
+      this.recordGlobalHistoryEntry({
+        label: 'Reorder choices',
+        undo: () => this.undoChoiceOrderChange(this.selectedNode.id),
+        redo: () => this.redoChoiceOrderChange(this.selectedNode.id)
+      });
+      void this.persistChoiceOrder(this.selectedNode.id);
+    },
+
+    ensureNodeOrderState(nodeIds) {
+      if (!this.nodeOrderState) this.nodeOrderState = createOrderEditorState(nodeIds ?? []);
+      return this.nodeOrderState;
+    },
+
+    ensureChoiceOrderState(nodeId, choiceIds) {
+      const key = Number(nodeId);
+      let state = this.choiceOrderStates.get(key);
+      if (!state) {
+        state = createOrderEditorState(choiceIds ?? []);
+        this.choiceOrderStates.set(key, state);
       }
+      return state;
+    },
+
+    syncOrderEditorStatesFromServer() {
+      const serverNodeIds = (this.conversation?.nodes ?? []).map(node => Number(node.id));
+      if (!this.nodeOrderState || (!this.nodeOrderState.isDirty && !this.nodeOrderState.isSaving)) {
+        this.nodeOrderState = createOrderEditorState(serverNodeIds);
+      }
+      const nextChoiceOrderStates = new Map();
+      for (const node of this.conversation?.nodes ?? []) {
+        const nodeId = Number(node.id);
+        const choiceIds = (node.choices ?? []).map(choice => Number(choice.id));
+        const existing = this.choiceOrderStates.get(nodeId);
+        if (existing?.isDirty || existing?.isSaving) nextChoiceOrderStates.set(nodeId, existing);
+        else nextChoiceOrderStates.set(nodeId, createOrderEditorState(choiceIds));
+      }
+      this.choiceOrderStates = nextChoiceOrderStates;
+    },
+
+    setNodeOrder(editorState, orderedIds) {
+      editorState.workingIds = [...orderedIds];
+      editorState.isDirty = !orderArraysEqual(editorState.workingIds, editorState.baseIds);
+      const nodeById = new Map((this.conversation?.nodes ?? []).map(node => [Number(node.id), node]));
+      this.conversation.nodes = orderedIds.map(id => nodeById.get(Number(id))).filter(Boolean);
+    },
+
+    setChoiceOrder(nodeId, editorState, orderedIds) {
+      editorState.workingIds = [...orderedIds];
+      editorState.isDirty = !orderArraysEqual(editorState.workingIds, editorState.baseIds);
+      const node = (this.conversation?.nodes ?? []).find(item => Number(item.id) === Number(nodeId));
+      if (!node) return;
+      const choiceById = new Map((node.choices ?? []).map(choice => [Number(choice.id), choice]));
+      node.choices = orderedIds.map(id => choiceById.get(Number(id))).filter(Boolean);
+    },
+
+    async persistNodeOrder() {
+      const editorState = this.ensureNodeOrderState((this.conversation?.nodes ?? []).map(node => Number(node.id)));
+      editorState.saveQueued = true;
+      if (editorState.isSaving) {
+        this.prepareState();
+        this.refreshView();
+        return;
+      }
+      while (editorState.saveQueued) {
+        editorState.saveQueued = false;
+        if (!editorState.isDirty) break;
+        const orderedIds = [...editorState.workingIds];
+        const saveVersion = editorState.mutationVersion;
+        editorState.isSaving = true;
+        editorState.error = '';
+        this.prepareState();
+        this.refreshView();
+        try {
+          await Promise.all(orderedIds.map((id, nextIndex) => apiFetch(`/api/conversation-nodes/${id}`, {
+            method: 'PATCH',
+            body: JSON.stringify({sort_order: nextIndex})
+          })));
+          editorState.baseIds = [...orderedIds];
+          if (editorState.mutationVersion === saveVersion) editorState.isDirty = false;
+          else editorState.saveQueued = editorState.saveQueued || editorState.isDirty;
+          editorState.error = '';
+        } catch {
+          editorState.workingIds = [...editorState.baseIds];
+          editorState.isDirty = false;
+          editorState.redoStack = [];
+          editorState.error = 'Could not save the latest node order. Reverted to the last saved version.';
+          this.setNodeOrder(editorState, editorState.workingIds);
+        } finally {
+          editorState.isSaving = false;
+          this.prepareState();
+          this.refreshView();
+        }
+      }
+    },
+
+    async persistChoiceOrder(nodeId) {
+      const editorState = this.ensureChoiceOrderState(nodeId, (this.selectedNode?.choices ?? []).map(choice => Number(choice.id)));
+      editorState.saveQueued = true;
+      if (editorState.isSaving) {
+        this.prepareState();
+        this.refreshView();
+        return;
+      }
+      while (editorState.saveQueued) {
+        editorState.saveQueued = false;
+        if (!editorState.isDirty) break;
+        const orderedIds = [...editorState.workingIds];
+        const saveVersion = editorState.mutationVersion;
+        editorState.isSaving = true;
+        editorState.error = '';
+        this.prepareState();
+        this.refreshView();
+        try {
+          await Promise.all(orderedIds.map((id, nextIndex) => apiFetch(`/api/conversation-choices/${id}`, {
+            method: 'PATCH',
+            body: JSON.stringify({sort_order: nextIndex})
+          })));
+          editorState.baseIds = [...orderedIds];
+          if (editorState.mutationVersion === saveVersion) editorState.isDirty = false;
+          else editorState.saveQueued = editorState.saveQueued || editorState.isDirty;
+          editorState.error = '';
+        } catch {
+          editorState.workingIds = [...editorState.baseIds];
+          editorState.isDirty = false;
+          editorState.redoStack = [];
+          editorState.error = 'Could not save the latest choice order. Reverted to the last saved version.';
+          this.setChoiceOrder(nodeId, editorState, editorState.workingIds);
+        } finally {
+          editorState.isSaving = false;
+          this.prepareState();
+          this.refreshView();
+        }
+      }
+    },
+
+    async undoNodeOrderChange() {
+      const editorState = this.nodeOrderState;
+      if (!editorState?.undoStack?.length) return;
+      const previous = editorState.undoStack.pop();
+      editorState.redoStack.push([...editorState.workingIds]);
+      editorState.mutationVersion += 1;
+      editorState.error = '';
+      this.setNodeOrder(editorState, previous);
+      this.prepareState();
+      this.refreshView();
+      void this.persistNodeOrder();
+    },
+
+    async redoNodeOrderChange() {
+      const editorState = this.nodeOrderState;
+      if (!editorState?.redoStack?.length) return;
+      const nextOrder = editorState.redoStack.pop();
+      editorState.undoStack.push([...editorState.workingIds]);
+      editorState.mutationVersion += 1;
+      editorState.error = '';
+      this.setNodeOrder(editorState, nextOrder);
+      this.prepareState();
+      this.refreshView();
+      void this.persistNodeOrder();
+    },
+
+    async undoChoiceOrderChange(nodeId = this.selectedNode?.id) {
+      if (!nodeId) return;
+      const node = (this.conversation?.nodes ?? []).find(item => Number(item.id) === Number(nodeId));
+      const editorState = this.ensureChoiceOrderState(nodeId, (node?.choices ?? []).map(choice => Number(choice.id)));
+      if (!editorState.undoStack.length) return;
+      const previous = editorState.undoStack.pop();
+      editorState.redoStack.push([...editorState.workingIds]);
+      editorState.mutationVersion += 1;
+      editorState.error = '';
+      this.setChoiceOrder(nodeId, editorState, previous);
+      this.prepareState();
+      this.refreshView();
+      void this.persistChoiceOrder(nodeId);
+    },
+
+    async redoChoiceOrderChange(nodeId = this.selectedNode?.id) {
+      if (!nodeId) return;
+      const node = (this.conversation?.nodes ?? []).find(item => Number(item.id) === Number(nodeId));
+      const editorState = this.ensureChoiceOrderState(nodeId, (node?.choices ?? []).map(choice => Number(choice.id)));
+      if (!editorState.redoStack.length) return;
+      const nextOrder = editorState.redoStack.pop();
+      editorState.undoStack.push([...editorState.workingIds]);
+      editorState.mutationVersion += 1;
+      editorState.error = '';
+      this.setChoiceOrder(nodeId, editorState, nextOrder);
+      this.prepareState();
+      this.refreshView();
+      void this.persistChoiceOrder(nodeId);
     },
 
     getActionTree(target) {
@@ -737,36 +1351,14 @@ const ConversationEditorCtrl = app => async params => {
       else this.nodeSelectedStep = null;
     },
 
-    async persistActionTree(target, nextTree, pendingStatus, successStatus) {
-      const endpoint = target === 'choice'
-        ? `/api/conversation-choices/${this.selectedChoice?.id}`
-        : `/api/conversation-nodes/${this.selectedNode?.id}`;
-      const field = target === 'choice' ? 'actions' : 'enter_actions';
-      this.setStatus(pendingStatus);
-      try {
-        await apiFetch(endpoint, {
-          method: 'PATCH',
-          body: JSON.stringify({[field]: nextTree})
-        });
-        await this.refreshData();
-        this.refreshView();
-        this.setStatus(successStatus);
-      } catch {
-        this.setStatus('Could not save action steps.');
-      }
-    },
-
     async addActionStep(target, form) {
       const branchValue = form.elements.branch?.value ?? 'root';
-      const nextTree = insertStep(this.getActionTree(target), branchValue, readActionStepForm(form));
-      await this.persistActionTree(
-        target,
-        nextTree,
-        'Adding action step...',
-        'Action step added.'
-      );
+      const nextTree = insertStep(this.getActionTree(target), branchValue, withLocalStepIds(readActionStepForm(form)));
+      this.applyLocalActionTreeChange(target, nextTree);
       form.reset();
       this.clearSelectedActionStep(target);
+      this.prepareState();
+      this.refreshView();
     },
 
     async updateActionStep(target, form) {
@@ -781,36 +1373,175 @@ const ConversationEditorCtrl = app => async params => {
         else_steps: selectedStep.else_steps ?? []
       };
       const nextTree = replaceStepById(this.getActionTree(target), selectedStepId, updatedStep);
-      await this.persistActionTree(
-        target,
-        nextTree,
-        'Updating action step...',
-        'Action step updated.'
-      );
+      this.applyLocalActionTreeChange(target, nextTree);
       this.clearSelectedActionStep(target);
+      this.prepareState();
+      this.refreshView();
     },
 
     async removeActionStep(target, stepId) {
       const nextTree = removeStepById(this.getActionTree(target), stepId);
-      await this.persistActionTree(
-        target,
-        nextTree,
-        'Removing action step...',
-        'Action step removed.'
-      );
+      this.applyLocalActionTreeChange(target, nextTree);
       if (String(target === 'choice' ? this.choiceSelectedStepId : this.nodeSelectedStepId) === String(stepId)) {
         this.clearSelectedActionStep(target);
       }
+      this.prepareState();
+      this.refreshView();
     },
 
     async moveActionStep(target, stepId, direction) {
       const nextTree = moveStepById(this.getActionTree(target), stepId, direction);
-      await this.persistActionTree(
-        target,
-        nextTree,
-        'Reordering action steps...',
-        'Action step order updated.'
-      );
+      this.applyLocalActionTreeChange(target, nextTree);
+      this.prepareState();
+      this.refreshView();
+    },
+
+    ensureActionEditorState(target, id, actionTree) {
+      const states = target === 'choice' ? this.choiceActionEditorStates : this.nodeActionEditorStates;
+      const key = Number(id);
+      let state = states.get(key);
+      if (!state) {
+        state = createTreeEditorState(actionTree ?? []);
+        states.set(key, state);
+        return state;
+      }
+      return state;
+    },
+
+    syncActionEditorStatesFromServer() {
+      const nextNodeStates = new Map();
+      const nextChoiceStates = new Map();
+      for (const node of this.conversation?.nodes ?? []) {
+        const nodeId = Number(node.id);
+        const serverTree = structuredClone(node.enter_actions ?? []);
+        const existingNodeState = this.nodeActionEditorStates.get(nodeId);
+        if (existingNodeState?.isDirty || existingNodeState?.isSaving) nextNodeStates.set(nodeId, existingNodeState);
+        else nextNodeStates.set(nodeId, createTreeEditorState(serverTree));
+        for (const choice of node.choices ?? []) {
+          const choiceId = Number(choice.id);
+          const choiceTree = structuredClone(choice.actions ?? []);
+          const existingChoiceState = this.choiceActionEditorStates.get(choiceId);
+          if (existingChoiceState?.isDirty || existingChoiceState?.isSaving) nextChoiceStates.set(choiceId, existingChoiceState);
+          else nextChoiceStates.set(choiceId, createTreeEditorState(choiceTree));
+        }
+      }
+      this.nodeActionEditorStates = nextNodeStates;
+      this.choiceActionEditorStates = nextChoiceStates;
+    },
+
+    setWorkingActionTree(target, id, nextTree) {
+      const editorState = this.ensureActionEditorState(target, id, nextTree);
+      editorState.workingActionTree = structuredClone(nextTree);
+      editorState.isDirty = !treesEqual(editorState.workingActionTree, editorState.baseActionTree);
+      if (target === 'choice') {
+        const node = this.conversation?.nodes?.find(item => Number(item.id) === Number(this.selectedNodeId));
+        const choice = node?.choices?.find(item => Number(item.id) === Number(id));
+        if (choice) choice.actions = structuredClone(editorState.workingActionTree);
+      } else {
+        const node = this.conversation?.nodes?.find(item => Number(item.id) === Number(id));
+        if (node) node.enter_actions = structuredClone(editorState.workingActionTree);
+      }
+    },
+
+    applyLocalActionTreeChange(target, nextTree) {
+      const selected = target === 'choice' ? this.selectedChoice : this.selectedNode;
+      if (!selected) return;
+      const editorState = this.ensureActionEditorState(target, selected.id, this.getActionTree(target));
+      editorState.undoStack.push(structuredClone(editorState.workingActionTree));
+      if (editorState.undoStack.length > 100) editorState.undoStack.shift();
+      editorState.redoStack = [];
+      editorState.mutationVersion += 1;
+      editorState.error = '';
+      this.setWorkingActionTree(target, selected.id, withLocalStepIds(nextTree));
+      this.recordGlobalHistoryEntry({
+        label: target === 'choice' ? 'Edit choice actions' : 'Edit node actions',
+        undo: () => this.undoActionTreeChange(target, selected.id),
+        redo: () => this.redoActionTreeChange(target, selected.id)
+      });
+      void this.persistActionTree(target, selected.id);
+    },
+
+    async persistActionTree(target, id) {
+      const editorState = this.ensureActionEditorState(target, id, []);
+      editorState.saveQueued = true;
+      if (editorState.isSaving) {
+        this.prepareState();
+        this.refreshView();
+        return;
+      }
+      while (editorState.saveQueued) {
+        editorState.saveQueued = false;
+        if (!editorState.isDirty) break;
+        const endpoint = target === 'choice'
+          ? `/api/conversation-choices/${id}`
+          : `/api/conversation-nodes/${id}`;
+        const field = target === 'choice' ? 'actions' : 'enter_actions';
+        const payloadTree = structuredClone(editorState.workingActionTree);
+        const saveVersion = editorState.mutationVersion;
+        editorState.isSaving = true;
+        editorState.error = '';
+        this.prepareState();
+        this.refreshView();
+        try {
+          const saved = await apiFetch(endpoint, {
+            method: 'PATCH',
+            body: JSON.stringify({[field]: payloadTree})
+          });
+          const savedTree = structuredClone(saved[field] ?? []);
+          editorState.baseActionTree = structuredClone(savedTree);
+          if (editorState.mutationVersion === saveVersion) {
+            editorState.workingActionTree = structuredClone(savedTree);
+            editorState.isDirty = false;
+          } else {
+            editorState.isDirty = !treesEqual(editorState.workingActionTree, editorState.baseActionTree);
+            editorState.saveQueued = editorState.isDirty || editorState.saveQueued;
+          }
+          editorState.error = '';
+          this.setWorkingActionTree(target, id, editorState.workingActionTree);
+        } catch {
+          editorState.workingActionTree = structuredClone(editorState.baseActionTree);
+          editorState.isDirty = false;
+          editorState.error = 'Could not save the latest step changes. Reverted to the last saved version.';
+          editorState.redoStack = [];
+          this.setWorkingActionTree(target, id, editorState.workingActionTree);
+          this.clearSelectedActionStep(target);
+          editorState.saveQueued = false;
+        } finally {
+          editorState.isSaving = false;
+          this.prepareState();
+          this.refreshView();
+        }
+      }
+    },
+
+    async undoActionTreeChange(target, id = target === 'choice' ? this.selectedChoice?.id : this.selectedNode?.id) {
+      if (!id) return;
+      const editorState = this.ensureActionEditorState(target, id, []);
+      if (!editorState || !editorState.undoStack.length) return;
+      const previousTree = editorState.undoStack.pop();
+      editorState.redoStack.push(structuredClone(editorState.workingActionTree));
+      editorState.mutationVersion += 1;
+      editorState.error = '';
+      this.setWorkingActionTree(target, id, previousTree);
+      this.clearSelectedActionStep(target);
+      this.prepareState();
+      this.refreshView();
+      void this.persistActionTree(target, id);
+    },
+
+    async redoActionTreeChange(target, id = target === 'choice' ? this.selectedChoice?.id : this.selectedNode?.id) {
+      if (!id) return;
+      const editorState = this.ensureActionEditorState(target, id, []);
+      if (!editorState || !editorState.redoStack.length) return;
+      const nextTree = editorState.redoStack.pop();
+      editorState.undoStack.push(structuredClone(editorState.workingActionTree));
+      editorState.mutationVersion += 1;
+      editorState.error = '';
+      this.setWorkingActionTree(target, id, nextTree);
+      this.clearSelectedActionStep(target);
+      this.prepareState();
+      this.refreshView();
+      void this.persistActionTree(target, id);
     },
 
     updateActionFormVisibility(form) {
@@ -886,6 +1617,112 @@ const ConversationEditorCtrl = app => async params => {
       if (randomIdleMaxDelayField) randomIdleMaxDelayField.hidden = selectedType !== 'start_random_idle';
       const randomIdleAvoidRepeatField = form.querySelector('[data-form-field="random-idle-avoid-repeat"]');
       if (randomIdleAvoidRepeatField) randomIdleAvoidRepeatField.hidden = selectedType !== 'start_random_idle';
+    },
+
+    recordGlobalHistoryEntry(entry) {
+      this.globalHistoryUndoStack.push(entry);
+      if (this.globalHistoryUndoStack.length > 200) this.globalHistoryUndoStack.shift();
+      this.globalHistoryRedoStack = [];
+      this.lastHistoryLabel = entry.label || '';
+      this.prepareState();
+      this.refreshView();
+    },
+
+    async undoGlobalHistoryChange() {
+      const entry = this.globalHistoryUndoStack.pop();
+      if (!entry) return;
+      await entry.undo();
+      this.globalHistoryRedoStack.push(entry);
+      this.lastHistoryLabel = entry.label || '';
+      this.prepareState();
+      this.refreshView();
+    },
+
+    async redoGlobalHistoryChange() {
+      const entry = this.globalHistoryRedoStack.pop();
+      if (!entry) return;
+      await entry.redo();
+      this.globalHistoryUndoStack.push(entry);
+      this.lastHistoryLabel = entry.label || '';
+      this.prepareState();
+      this.refreshView();
+    },
+
+    captureNodeFormUndoSnapshot() {
+      if (!this.selectedNode) return;
+      const editorState = this.ensureNodeFormState(this.selectedNode);
+      editorState.undoStack.push(structuredClone(editorState.workingValue));
+      if (editorState.undoStack.length > 100) editorState.undoStack.shift();
+      editorState.redoStack = [];
+    },
+
+    captureChoiceFormUndoSnapshot(nodeId, choiceId) {
+      const editorState = this.ensureChoiceFormState(nodeId, {id: choiceId});
+      editorState.undoStack.push(structuredClone(editorState.workingValue));
+      if (editorState.undoStack.length > 100) editorState.undoStack.shift();
+      editorState.redoStack = [];
+    },
+
+    async undoNodeFormChange(nodeId = this.selectedNode?.id) {
+      if (!nodeId) return;
+      const node = (this.conversation?.nodes ?? []).find(item => Number(item.id) === Number(nodeId));
+      const editorState = this.ensureNodeFormState(node ?? {id: nodeId});
+      if (!editorState?.undoStack?.length) return;
+      const previous = editorState.undoStack.pop();
+      editorState.redoStack.push(structuredClone(editorState.workingValue));
+      editorState.mutationVersion += 1;
+      editorState.error = '';
+      editorState.workingValue = structuredClone(previous);
+      editorState.isDirty = !formValuesEqual(editorState.workingValue, editorState.baseValue);
+      this.prepareState();
+      this.refreshView();
+      void this.persistNodeForm(nodeId);
+    },
+
+    async redoNodeFormChange(nodeId = this.selectedNode?.id) {
+      if (!nodeId) return;
+      const node = (this.conversation?.nodes ?? []).find(item => Number(item.id) === Number(nodeId));
+      const editorState = this.ensureNodeFormState(node ?? {id: nodeId});
+      if (!editorState?.redoStack?.length) return;
+      const nextValue = editorState.redoStack.pop();
+      editorState.undoStack.push(structuredClone(editorState.workingValue));
+      editorState.mutationVersion += 1;
+      editorState.error = '';
+      editorState.workingValue = structuredClone(nextValue);
+      editorState.isDirty = !formValuesEqual(editorState.workingValue, editorState.baseValue);
+      this.prepareState();
+      this.refreshView();
+      void this.persistNodeForm(nodeId);
+    },
+
+    async undoChoiceFormChange(nodeId = this.selectedNode?.id, choiceId = this.selectedChoice?.id) {
+      if (!nodeId || !choiceId) return;
+      const editorState = this.ensureChoiceFormState(nodeId, {id: choiceId});
+      if (!editorState?.undoStack?.length) return;
+      const previous = editorState.undoStack.pop();
+      editorState.redoStack.push(structuredClone(editorState.workingValue));
+      editorState.mutationVersion += 1;
+      editorState.error = '';
+      editorState.workingValue = structuredClone(previous);
+      editorState.isDirty = !formValuesEqual(editorState.workingValue, editorState.baseValue);
+      this.prepareState();
+      this.refreshView();
+      void this.persistChoiceForm(nodeId, choiceId);
+    },
+
+    async redoChoiceFormChange(nodeId = this.selectedNode?.id, choiceId = this.selectedChoice?.id) {
+      if (!nodeId || !choiceId) return;
+      const editorState = this.ensureChoiceFormState(nodeId, {id: choiceId});
+      if (!editorState?.redoStack?.length) return;
+      const nextValue = editorState.redoStack.pop();
+      editorState.undoStack.push(structuredClone(editorState.workingValue));
+      editorState.mutationVersion += 1;
+      editorState.error = '';
+      editorState.workingValue = structuredClone(nextValue);
+      editorState.isDirty = !formValuesEqual(editorState.workingValue, editorState.baseValue);
+      this.prepareState();
+      this.refreshView();
+      void this.persistChoiceForm(nodeId, choiceId);
     }
   };
 
@@ -912,6 +1749,106 @@ function truncate(value, limit) {
 
 function findNodeName(nodes, nodeId) {
   return nodes.find(node => Number(node.id) === Number(nodeId))?.name ?? `Node ${nodeId}`;
+}
+
+function createTreeEditorState(actionTree) {
+  const clonedTree = structuredClone(actionTree ?? []);
+  return {
+    baseActionTree: structuredClone(clonedTree),
+    workingActionTree: structuredClone(clonedTree),
+    undoStack: [],
+    redoStack: [],
+    isDirty: false,
+    isSaving: false,
+    saveQueued: false,
+    mutationVersion: 0,
+    error: ''
+  };
+}
+
+function treesEqual(left, right) {
+  return JSON.stringify(left ?? []) === JSON.stringify(right ?? []);
+}
+
+function createOrderEditorState(ids) {
+  const values = [...(ids ?? [])];
+  return {
+    baseIds: [...values],
+    workingIds: [...values],
+    undoStack: [],
+    redoStack: [],
+    isDirty: false,
+    isSaving: false,
+    saveQueued: false,
+    mutationVersion: 0,
+    error: ''
+  };
+}
+
+function createFormEditorState(value) {
+  const clonedValue = structuredClone(value ?? {});
+  return {
+    baseValue: structuredClone(clonedValue),
+    workingValue: structuredClone(clonedValue),
+    undoStack: [],
+    redoStack: [],
+    isDirty: false,
+    isSaving: false,
+    saveQueued: false,
+    mutationVersion: 0,
+    error: ''
+  };
+}
+
+function createBlankNodeDraft() {
+  return {
+    name: '',
+    script_line_id: null,
+    speaker_character_id: null
+  };
+}
+
+function createBlankChoiceDraft() {
+  return {
+    script_line_id: null,
+    next_node_id: null,
+    end_conversation: false
+  };
+}
+
+function formValuesEqual(left, right) {
+  return JSON.stringify(left ?? {}) === JSON.stringify(right ?? {});
+}
+
+function orderArraysEqual(left, right) {
+  return JSON.stringify(left ?? []) === JSON.stringify(right ?? []);
+}
+
+function withLocalStepIds(stepOrTree) {
+  if (Array.isArray(stepOrTree)) return stepOrTree.map(item => withLocalStepIds(item));
+  if (!stepOrTree || typeof stepOrTree !== 'object') return stepOrTree;
+  return {
+    ...stepOrTree,
+    id: String(stepOrTree.id || `local-${crypto.randomUUID()}`),
+    then_steps: withLocalStepIds(stepOrTree.then_steps ?? []),
+    else_steps: withLocalStepIds(stepOrTree.else_steps ?? [])
+  };
+}
+
+function formatActionTreeStatus(editorState) {
+  if (!editorState) return '';
+  if (editorState.error) return editorState.error;
+  if (editorState.isSaving) return 'Saving step changes...';
+  if (editorState.isDirty) return 'Unsaved step changes';
+  return 'All step changes saved';
+}
+
+function formatFormStatus(editorState, kind) {
+  if (!editorState) return '';
+  if (editorState.error) return editorState.error;
+  if (editorState.isSaving) return `Saving ${kind} changes...`;
+  if (editorState.isDirty) return `Unsaved ${kind} changes`;
+  return `All ${kind} changes saved`;
 }
 
 export {ConversationEditorCtrl};

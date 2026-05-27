@@ -7,21 +7,23 @@ const CharactersCtrl = app => async () => {
     appName: 'Wonky Studio',
     user: user.current,
     characters: [],
-    poseFolders: [],
     selectedCharacterId: null,
     selectedCharacter: null,
-    selectedObjectId: null,
-    selectedObject: null,
-    selectedAnimationId: null,
-    selectedAnimation: null,
-    animationFrameDrafts: [],
     status: '',
+    characterFormStatus: '',
+    globalHistoryUndoStack: [],
+    globalHistoryRedoStack: [],
+    canUndoGlobalHistory: false,
+    canRedoGlobalHistory: false,
+    suppressAutoSelectOnce: false,
     unloadHandlers: [],
 
     async postLoad() {
       this.root = document.querySelector('[data-characters-page]');
       this.bind(this.root, 'click', event => this.onClick(event));
       this.bind(this.root, 'submit', event => this.onSubmit(event));
+      this.bind(this.root, 'change', event => this.onChange(event));
+      this.bind(window, 'keydown', event => this.onKeyDown(event));
       this.setControlValues();
     },
 
@@ -37,10 +39,7 @@ const CharactersCtrl = app => async () => {
     },
 
     async refreshData() {
-      [this.characters, this.poseFolders] = await Promise.all([
-        apiFetch('/api/characters'),
-        apiFetch('/api/character-pose-folders')
-      ]);
+      this.characters = await apiFetch('/api/characters');
       this.prepareState();
     },
 
@@ -48,41 +47,19 @@ const CharactersCtrl = app => async () => {
       this.characters = (this.characters ?? []).map(character => ({
         ...character,
         isSelected: Number(character.id) === Number(this.selectedCharacterId),
-        baseImages: (character.images ?? []).filter(image => image.component_key === 'base'),
-        visemeImages: (character.images ?? []).filter(image => image.component_key === 'viseme_mouth'),
-        basePreviewUrl: characterImageUrl(resolvePreferredImageId(character, 'base')),
+        basePreviewUrl: characterImageUrl(resolvePreferredImageId(character))
       }));
       if (!this.characters.some(character => Number(character.id) === Number(this.selectedCharacterId))) {
-        this.selectedCharacterId = this.characters[0]?.id ?? null;
+        if (this.suppressAutoSelectOnce) {
+          this.suppressAutoSelectOnce = false;
+          this.selectedCharacterId = null;
+        } else {
+          this.selectedCharacterId = this.characters[0]?.id ?? null;
+        }
       }
       this.selectedCharacter = this.characters.find(character => Number(character.id) === Number(this.selectedCharacterId)) ?? null;
-      const objects = this.selectedCharacter?.objects ?? [];
-      if (!objects.some(object => Number(object.id) === Number(this.selectedObjectId))) {
-        this.selectedObjectId = objects[0]?.id ?? null;
-      }
-      if (this.selectedCharacter) {
-        this.selectedCharacter.objects = objects.map(object => ({
-          ...object,
-          isSelected: Number(object.id) === Number(this.selectedObjectId)
-        }));
-      }
-      this.selectedObject = (this.selectedCharacter?.objects ?? []).find(object => Number(object.id) === Number(this.selectedObjectId)) ?? null;
-      const animations = this.selectedCharacter?.animations ?? [];
-      if (!animations.some(animation => Number(animation.id) === Number(this.selectedAnimationId))) {
-        this.selectedAnimationId = animations[0]?.id ?? null;
-      }
-      if (this.selectedCharacter) {
-        this.selectedCharacter.animations = animations.map(animation => ({
-          ...animation,
-          isSelected: Number(animation.id) === Number(this.selectedAnimationId)
-        }));
-      }
-      this.selectedAnimation = (this.selectedCharacter?.animations ?? []).find(animation => Number(animation.id) === Number(this.selectedAnimationId)) ?? null;
-      this.animationFrameDrafts = (this.selectedAnimation?.frames ?? []).map(frame => ({
-        key: String(frame.id),
-        character_image_id: Number(frame.character_image_id),
-        duration_seconds: Number(frame.duration_seconds)
-      }));
+      this.canUndoGlobalHistory = this.globalHistoryUndoStack.length > 0;
+      this.canRedoGlobalHistory = this.globalHistoryRedoStack.length > 0;
     },
 
     refreshView() {
@@ -91,31 +68,17 @@ const CharactersCtrl = app => async () => {
     },
 
     setControlValues() {
-      const characterForm = this.root?.querySelector('[data-character-form]');
-      if (characterForm) {
-        const character = this.selectedCharacter;
-        characterForm.elements.character_id.value = character?.id ?? '';
-        characterForm.elements.name.value = character?.name ?? '';
-        characterForm.elements.description.value = character?.description ?? '';
-        characterForm.elements.sort_order.value = character?.sort_order ?? 0;
-        characterForm.elements.default_x.value = character?.default_x ?? 960;
-        characterForm.elements.default_y.value = character?.default_y ?? 540;
-        characterForm.elements.default_scale.value = character?.default_scale ?? 1;
-      }
-      const animationForm = this.root?.querySelector('[data-character-animation-form]');
-      if (animationForm) {
-        animationForm.elements.animation_id.value = this.selectedAnimation?.id ?? '';
-        animationForm.elements.animation_name.value = this.selectedAnimation?.name ?? '';
-      }
-      const objectForm = this.root?.querySelector('[data-character-object-form]');
-      if (objectForm) {
-        objectForm.elements.character_object_id.value = this.selectedObject?.id ?? '';
-        objectForm.elements.name.value = this.selectedObject?.name ?? '';
-        objectForm.elements.description.value = this.selectedObject?.description ?? '';
-        objectForm.elements.prompt.value = this.selectedObject?.prompt ?? '';
-        objectForm.elements.sort_order.value = this.selectedObject?.sort_order ?? 0;
-        objectForm.elements.is_viseme_target.checked = Boolean(this.selectedObject?.is_viseme_target);
-      }
+      const form = this.root?.querySelector('[data-character-form]');
+      if (!form) return;
+      const character = this.selectedCharacter;
+      form.elements.character_id.value = character?.id ?? '';
+      form.elements.name.value = character?.name ?? '';
+      form.elements.description.value = character?.description ?? '';
+      form.elements.sort_order.value = character?.sort_order ?? 0;
+      form.elements.default_x.value = character?.default_x ?? 960;
+      form.elements.default_y.value = character?.default_y ?? 540;
+      form.elements.default_scale.value = character?.default_scale ?? 1;
+      applyStatus(this.root?.querySelector('[data-character-form-status]'), this.characterFormStatus);
     },
 
     setStatus(message) {
@@ -127,6 +90,16 @@ const CharactersCtrl = app => async () => {
       const selectCharacter = event.target.closest('[data-action="select-character"]');
       if (selectCharacter) {
         this.selectedCharacterId = Number(selectCharacter.dataset.characterId);
+        this.characterFormStatus = '';
+        this.prepareState();
+        this.refreshView();
+        return;
+      }
+      const newCharacter = event.target.closest('[data-action="new-character"]');
+      if (newCharacter) {
+        this.suppressAutoSelectOnce = true;
+        this.selectedCharacterId = null;
+        this.characterFormStatus = '';
         this.prepareState();
         this.refreshView();
         return;
@@ -136,232 +109,146 @@ const CharactersCtrl = app => async () => {
         await this.deleteCharacter(Number(deleteCharacter.dataset.characterId));
         return;
       }
-      const deleteImage = event.target.closest('[data-action="delete-character-image"]');
-      if (deleteImage) {
-        await this.deleteImage(Number(deleteImage.dataset.imageId));
+      const undoButton = event.target.closest('[data-action="undo-character-change"]');
+      if (undoButton) {
+        await this.undoGlobalHistoryChange();
         return;
       }
-      const selectAnimation = event.target.closest('[data-action="select-character-animation"]');
-      if (selectAnimation) {
-        this.selectedAnimationId = Number(selectAnimation.dataset.animationId);
-        this.prepareState();
-        this.refreshView();
+      const redoButton = event.target.closest('[data-action="redo-character-change"]');
+      if (redoButton) {
+        await this.redoGlobalHistoryChange();
+      }
+    },
+
+    async onChange(event) {
+      const form = event.target.closest('[data-character-form]');
+      if (!form) return;
+      if (!Number(form.elements.character_id?.value || 0)) return;
+      await this.autosaveSelectedCharacterForm(form);
+    },
+
+    async onKeyDown(event) {
+      if (!(event.ctrlKey || event.metaKey) || event.altKey) return;
+      const target = event.target;
+      if (
+        target instanceof HTMLInputElement
+        || target instanceof HTMLTextAreaElement
+        || target instanceof HTMLSelectElement
+        || target?.isContentEditable
+      ) {
         return;
       }
-      const selectObject = event.target.closest('[data-action="select-character-object"]');
-      if (selectObject) {
-        this.selectedObjectId = Number(selectObject.dataset.objectId);
-        this.prepareState();
-        this.refreshView();
+      const key = String(event.key || '').toLowerCase();
+      if (key === 'z' && !event.shiftKey) {
+        event.preventDefault();
+        await this.undoGlobalHistoryChange();
         return;
       }
-      const addFrame = event.target.closest('[data-action="add-character-animation-frame"]');
-      if (addFrame) {
-        this.animationFrameDrafts.push({
-          key: `${Date.now()}-${Math.random()}`,
-          character_image_id: Number(this.selectedCharacter?.baseImages?.[0]?.id ?? 0),
-          duration_seconds: 0.2
-        });
-        this.refreshView();
-        return;
-      }
-      const removeFrame = event.target.closest('[data-action="remove-character-animation-frame"]');
-      if (removeFrame) {
-        const frameKey = String(removeFrame.dataset.frameKey);
-        this.animationFrameDrafts = this.animationFrameDrafts.filter(frame => String(frame.key) !== frameKey);
-        this.refreshView();
-        return;
-      }
-      const deleteAnimation = event.target.closest('[data-action="delete-character-animation"]');
-      if (deleteAnimation) {
-        await this.deleteAnimation(Number(deleteAnimation.dataset.animationId));
-        return;
-      }
-      const deleteObject = event.target.closest('[data-action="delete-character-object"]');
-      if (deleteObject) {
-        await this.deleteObject(Number(deleteObject.dataset.objectId));
+      if (key === 'y' || (key === 'z' && event.shiftKey)) {
+        event.preventDefault();
+        await this.redoGlobalHistoryChange();
       }
     },
 
     async onSubmit(event) {
-      const characterForm = event.target.closest('[data-character-form]');
-      if (characterForm) {
-        event.preventDefault();
-        await this.saveCharacter(characterForm);
-        return;
-      }
-      const uploadForm = event.target.closest('[data-character-image-upload-form]');
-      if (uploadForm) {
-        event.preventDefault();
-        await this.uploadCharacterImage(uploadForm);
-        return;
-      }
-      const animationForm = event.target.closest('[data-character-animation-form]');
-      if (animationForm) {
-        event.preventDefault();
-        await this.saveAnimation(animationForm);
-        return;
-      }
-      const objectForm = event.target.closest('[data-character-object-form]');
-      if (objectForm) {
-        event.preventDefault();
-        await this.saveObject(objectForm);
-        return;
-      }
-      const visemesForm = event.target.closest('[data-generate-visemes-form]');
-      if (visemesForm) {
-        event.preventDefault();
-        await this.generateVisemes();
-        return;
-      }
-      const posesForm = event.target.closest('[data-generate-poses-form]');
-      if (posesForm) {
-        event.preventDefault();
-        await this.generatePoses(posesForm);
-      }
+      const form = event.target.closest('[data-character-form]');
+      if (!form) return;
+      event.preventDefault();
+      await this.saveCharacter(form);
     },
 
-    async saveCharacter(form) {
-      const payload = {
+    readCharacterForm(form) {
+      return {
         name: String(form.elements.name.value || '').trim(),
         description: String(form.elements.description.value || ''),
         sort_order: Number(form.elements.sort_order.value || 0),
         default_x: Number(form.elements.default_x.value || 960),
         default_y: Number(form.elements.default_y.value || 540),
-        default_scale: Number(form.elements.default_scale.value || 1),
+        default_scale: Number(form.elements.default_scale.value || 1)
       };
+    },
+
+    async saveCharacter(form) {
+      const payload = this.readCharacterForm(form);
       if (!payload.name) return;
       const characterId = Number(form.elements.character_id.value || 0);
-      this.setStatus(characterId ? 'Saving character...' : 'Creating character...');
+      if (characterId) {
+        await this.saveCharacterPayload(characterId, payload);
+        return;
+      }
+      this.setStatus('Creating character...');
       try {
-        const saved = await apiFetch(characterId ? `/api/characters/${characterId}` : '/api/characters', {
-          method: characterId ? 'PATCH' : 'POST',
+        const saved = await apiFetch('/api/characters', {
+          method: 'POST',
           body: JSON.stringify(payload)
         });
         this.selectedCharacterId = saved.id;
+        this.characterFormStatus = '';
         await this.refreshData();
         this.refreshView();
-        this.setStatus(characterId ? 'Character saved.' : 'Character created.');
+        this.setStatus('Character created.');
       } catch {
-        this.setStatus(characterId ? 'Could not save character.' : 'Could not create character.');
+        this.setStatus('Could not create character.');
       }
     },
 
-    async uploadCharacterImage(form) {
-      if (!this.selectedCharacter) return;
-      const formData = new FormData(form);
-      this.setStatus('Uploading character image...');
+    async saveCharacterPayload(characterId, payload, {statusMessage = 'Saving...', successMessage = 'All character changes saved.', failureMessage = 'Could not save character.'} = {}) {
+      this.characterFormStatus = statusMessage;
+      this.refreshView();
       try {
-        await apiFetch(`/api/characters/${this.selectedCharacter.id}/images`, {
-          method: 'POST',
-          body: formData
+        await apiFetch(`/api/characters/${characterId}`, {
+          method: 'PATCH',
+          body: JSON.stringify(payload)
         });
-        form.reset();
+        this.selectedCharacterId = characterId;
         await this.refreshData();
+        this.characterFormStatus = successMessage;
         this.refreshView();
-        this.setStatus('Character image uploaded.');
+        return true;
       } catch {
-        this.setStatus('Could not upload character image.');
+        this.characterFormStatus = failureMessage;
+        this.refreshView();
+        return false;
       }
     },
 
-    async generateVisemes() {
-      if (!this.selectedCharacter) return;
-      this.setStatus('Generating visemes...');
-      try {
-        await apiFetch(`/api/characters/${this.selectedCharacter.id}/generate-visemes`, {method: 'POST'});
-        await this.refreshData();
-        this.refreshView();
-        this.setStatus('Visemes generated.');
-      } catch {
-        this.setStatus('Could not generate visemes.');
-      }
-    },
-
-    async generatePoses(form) {
-      if (!this.selectedCharacter) return;
-      const pose_subfolder = String(form.elements.pose_subfolder.value || '').trim();
-      if (!pose_subfolder) return;
-      this.setStatus('Generating poses...');
-      try {
-        await apiFetch(`/api/characters/${this.selectedCharacter.id}/generate-poses`, {
-          method: 'POST',
-          body: JSON.stringify({pose_subfolder})
-        });
-        await this.refreshData();
-        this.refreshView();
-        this.setStatus('Poses generated.');
-      } catch {
-        this.setStatus('Could not generate poses.');
-      }
-    },
-
-    async saveAnimation(form) {
-      if (!this.selectedCharacter) return;
-      const payload = {
-        name: String(form.elements.animation_name.value || '').trim(),
-        frames: this.animationFrameDrafts
-          .map(frame => ({
-            character_image_id: Number(this.root?.querySelector(`[data-frame-image-id="${frame.key}"]`)?.value || frame.character_image_id || 0),
-            duration_seconds: Number(this.root?.querySelector(`[data-frame-duration="${frame.key}"]`)?.value || frame.duration_seconds || 0)
-          }))
-          .filter(frame => frame.character_image_id > 0 && frame.duration_seconds > 0)
+    async autosaveSelectedCharacterForm(form) {
+      const characterId = Number(form.elements.character_id.value || 0);
+      if (!characterId || !this.selectedCharacter) return;
+      const previousPayload = {
+        name: String(this.selectedCharacter.name ?? ''),
+        description: String(this.selectedCharacter.description ?? ''),
+        sort_order: Number(this.selectedCharacter.sort_order ?? 0),
+        default_x: Number(this.selectedCharacter.default_x ?? 960),
+        default_y: Number(this.selectedCharacter.default_y ?? 540),
+        default_scale: Number(this.selectedCharacter.default_scale ?? 1)
       };
-      if (!payload.name) return;
-      const animationId = Number(form.elements.animation_id.value || 0);
-      this.setStatus(animationId ? 'Saving animation...' : 'Creating animation...');
-      try {
-        const saved = await apiFetch(
-          animationId ? `/api/character-animations/${animationId}` : `/api/characters/${this.selectedCharacter.id}/animations`,
-          {
-            method: animationId ? 'PATCH' : 'POST',
-            body: JSON.stringify(payload)
-          }
-        );
-        this.selectedAnimationId = saved.id;
-        await this.refreshData();
-        this.refreshView();
-        this.setStatus(animationId ? 'Animation saved.' : 'Animation created.');
-      } catch {
-        this.setStatus(animationId ? 'Could not save animation.' : 'Could not create animation.');
-      }
+      const nextPayload = this.readCharacterForm(form);
+      if (JSON.stringify(previousPayload) === JSON.stringify(nextPayload)) return;
+      const saved = await this.saveCharacterPayload(characterId, nextPayload);
+      if (!saved) return;
+      this.recordGlobalHistoryEntry({
+        label: 'Edit character',
+        undo: () => this.restoreCharacterPayload(characterId, previousPayload),
+        redo: () => this.restoreCharacterPayload(characterId, nextPayload)
+      });
     },
 
-    async saveObject(form) {
-      if (!this.selectedCharacter) return;
-      const payload = {
-        name: String(form.elements.name.value || '').trim(),
-        description: String(form.elements.description.value || ''),
-        prompt: String(form.elements.prompt.value || ''),
-        sort_order: Number(form.elements.sort_order.value || 0),
-        is_viseme_target: Boolean(form.elements.is_viseme_target.checked)
-      };
-      if (!payload.name) return;
-      const objectId = Number(form.elements.character_object_id.value || 0);
-      this.setStatus(objectId ? 'Saving object...' : 'Adding object...');
-      try {
-        const saved = await apiFetch(
-          objectId ? `/api/character-objects/${objectId}` : `/api/characters/${this.selectedCharacter.id}/objects`,
-          {
-            method: objectId ? 'PATCH' : 'POST',
-            body: JSON.stringify(payload)
-          }
-        );
-        this.selectedObjectId = saved.id;
-        await this.refreshData();
-        this.refreshView();
-        this.setStatus(objectId ? 'Object saved.' : 'Object added.');
-      } catch {
-        this.setStatus(objectId ? 'Could not save object.' : 'Could not add object.');
-      }
+    async restoreCharacterPayload(characterId, payload) {
+      await this.saveCharacterPayload(characterId, payload, {
+        statusMessage: 'Saving...',
+        successMessage: 'All character changes saved.',
+        failureMessage: 'Could not restore character.'
+      });
     },
 
     async deleteCharacter(characterId) {
-      if (!window.confirm('Remove this character and all of its images and animations?')) return;
+      if (!window.confirm('Remove this character and its backing scene?')) return;
       this.setStatus('Removing character...');
       try {
         await apiFetch(`/api/characters/${characterId}`, {method: 'DELETE'});
         if (Number(this.selectedCharacterId) === Number(characterId)) this.selectedCharacterId = null;
+        this.characterFormStatus = '';
         await this.refreshData();
         this.refreshView();
         this.setStatus('Character removed.');
@@ -370,43 +257,30 @@ const CharactersCtrl = app => async () => {
       }
     },
 
-    async deleteImage(imageId) {
-      this.setStatus('Removing image...');
-      try {
-        await apiFetch(`/api/character-images/${imageId}`, {method: 'DELETE'});
-        await this.refreshData();
-        this.refreshView();
-        this.setStatus('Image removed.');
-      } catch {
-        this.setStatus('Could not remove image.');
-      }
+    recordGlobalHistoryEntry(entry) {
+      this.globalHistoryUndoStack.push(entry);
+      if (this.globalHistoryUndoStack.length > 200) this.globalHistoryUndoStack.shift();
+      this.globalHistoryRedoStack = [];
+      this.prepareState();
+      this.refreshView();
     },
 
-    async deleteAnimation(animationId) {
-      this.setStatus('Removing animation...');
-      try {
-        await apiFetch(`/api/character-animations/${animationId}`, {method: 'DELETE'});
-        if (Number(this.selectedAnimationId) === Number(animationId)) this.selectedAnimationId = null;
-        await this.refreshData();
-        this.refreshView();
-        this.setStatus('Animation removed.');
-      } catch {
-        this.setStatus('Could not remove animation.');
-      }
+    async undoGlobalHistoryChange() {
+      const entry = this.globalHistoryUndoStack.pop();
+      if (!entry) return;
+      await entry.undo();
+      this.globalHistoryRedoStack.push(entry);
+      this.prepareState();
+      this.refreshView();
     },
 
-    async deleteObject(objectId) {
-      if (!window.confirm('Remove this character object? Any masks linked to it will be removed too.')) return;
-      this.setStatus('Removing object...');
-      try {
-        await apiFetch(`/api/character-objects/${objectId}`, {method: 'DELETE'});
-        if (Number(this.selectedObjectId) === Number(objectId)) this.selectedObjectId = null;
-        await this.refreshData();
-        this.refreshView();
-        this.setStatus('Object removed.');
-      } catch {
-        this.setStatus('Could not remove object.');
-      }
+    async redoGlobalHistoryChange() {
+      const entry = this.globalHistoryRedoStack.pop();
+      if (!entry) return;
+      await entry.redo();
+      this.globalHistoryUndoStack.push(entry);
+      this.prepareState();
+      this.refreshView();
     }
   };
 
@@ -414,8 +288,8 @@ const CharactersCtrl = app => async () => {
   return controller;
 };
 
-function resolvePreferredImageId(character, componentKey) {
-  const images = (character?.images ?? []).filter(image => image.component_key === componentKey);
+function resolvePreferredImageId(character) {
+  const images = character?.images ?? [];
   return images.find(image => image.is_default)?.id ?? images[0]?.id ?? 0;
 }
 

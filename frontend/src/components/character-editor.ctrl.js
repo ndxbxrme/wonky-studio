@@ -81,6 +81,15 @@ const CharacterEditorCtrl = app => async params => {
       await baseController.onClick.call(this, event);
     },
 
+    async onChange(event) {
+      const characterForm = event.target.closest('[data-character-settings-form]');
+      if (characterForm) {
+        await this.autosaveCharacterSettingsForm(characterForm);
+        return;
+      }
+      await baseController.onChange.call(this, event);
+    },
+
     async analyzeWithVlm(button) {
       button.disabled = true;
       button.textContent = 'Analyzing...';
@@ -107,29 +116,59 @@ const CharacterEditorCtrl = app => async params => {
       const characterForm = event.target.closest('[data-character-settings-form]');
       if (characterForm) {
         event.preventDefault();
-        await this.saveCharacterSettings(characterForm);
+        await this.autosaveCharacterSettingsForm(characterForm);
         return;
       }
       await baseController.onSubmit.call(this, event);
     },
 
-    async saveCharacterSettings(form) {
+    currentCharacterSettingsPayload() {
+      return {
+        name: String(this.character?.name ?? ''),
+        description: String(this.character?.description ?? ''),
+        default_x: Number(this.character?.default_x ?? 960),
+        default_y: Number(this.character?.default_y ?? 540),
+        default_scale: Number(this.character?.default_scale ?? 1),
+        mouth_scene_object_id: this.character?.mouth_scene_object_id ? Number(this.character.mouth_scene_object_id) : null,
+        clear_mouth_scene_object_id: !this.character?.mouth_scene_object_id
+      };
+    },
+
+    readCharacterSettingsPayload(form) {
       const formData = new FormData(form);
+      return {
+        name: String(formData.get('character_name') ?? '').trim() || '',
+        description: String(formData.get('character_description') ?? ''),
+        default_x: Number(formData.get('default_x') ?? 960),
+        default_y: Number(formData.get('default_y') ?? 540),
+        default_scale: Number(formData.get('default_scale') ?? 1),
+        mouth_scene_object_id: formData.get('mouth_scene_object_id')
+          ? Number(formData.get('mouth_scene_object_id'))
+          : null,
+        clear_mouth_scene_object_id: !formData.get('mouth_scene_object_id')
+      };
+    },
+
+    async autosaveCharacterSettingsForm(form) {
+      const previousPayload = this.currentCharacterSettingsPayload();
+      const nextPayload = this.readCharacterSettingsPayload(form);
+      if (JSON.stringify(previousPayload) === JSON.stringify(nextPayload)) return;
+      const saved = await this.saveCharacterSettings(form, nextPayload);
+      if (!saved) return;
+      this.recordGlobalHistoryEntry({
+        label: 'Edit character settings',
+        undo: () => this.restoreCharacterSettingsPayload(previousPayload),
+        redo: () => this.restoreCharacterSettingsPayload(nextPayload)
+      });
+    },
+
+    async saveCharacterSettings(form, payload = null) {
+      const nextPayload = payload ?? this.readCharacterSettingsPayload(form);
       this.setStatus('[data-character-settings-status]', 'Saving character settings...');
       try {
         const nextCharacter = await apiFetch(`/api/characters/${this.characterId}`, {
           method: 'PATCH',
-          body: JSON.stringify({
-            name: String(formData.get('character_name') ?? '').trim() || undefined,
-            description: String(formData.get('character_description') ?? ''),
-            default_x: Number(formData.get('default_x') ?? 960),
-            default_y: Number(formData.get('default_y') ?? 540),
-            default_scale: Number(formData.get('default_scale') ?? 1),
-            mouth_scene_object_id: formData.get('mouth_scene_object_id')
-              ? Number(formData.get('mouth_scene_object_id'))
-              : null,
-            clear_mouth_scene_object_id: !formData.get('mouth_scene_object_id')
-          })
+          body: JSON.stringify(nextPayload)
         });
         this.character = nextCharacter;
         if (this.scene) {
@@ -138,9 +177,17 @@ const CharacterEditorCtrl = app => async params => {
         }
         this.setStatus('[data-character-settings-status]', 'Character settings saved.');
         this.refreshView();
+        return true;
       } catch {
         this.setStatus('[data-character-settings-status]', 'Could not save character settings.');
+        return false;
       }
+    },
+
+    async restoreCharacterSettingsPayload(payload) {
+      const form = this.root?.querySelector('[data-character-settings-form]');
+      if (!form) return;
+      await this.saveCharacterSettings(form, payload);
     },
 
     async generateVisemes(button) {

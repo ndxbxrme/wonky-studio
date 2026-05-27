@@ -49,12 +49,19 @@ const VariablesCtrl = app => async () => {
     isEditingVariable: false,
     variableSubmitLabel: 'Add variable',
     status: '',
+    variableFormStatus: '',
+    globalHistoryUndoStack: [],
+    globalHistoryRedoStack: [],
+    canUndoGlobalHistory: false,
+    canRedoGlobalHistory: false,
     unloadHandlers: [],
 
     async postLoad() {
       this.root = document.querySelector('[data-variables-page]');
       this.bind(this.root, 'click', event => this.onClick(event));
       this.bind(this.root, 'submit', event => this.onSubmit(event));
+      this.bind(this.root, 'change', event => this.onChange(event));
+      this.bind(window, 'keydown', event => this.onKeyDown(event));
       this.setControlValues();
     },
 
@@ -102,6 +109,8 @@ const VariablesCtrl = app => async () => {
         : this.isEditingVariable
           ? 'Update variable'
           : 'Add variable';
+      this.canUndoGlobalHistory = this.globalHistoryUndoStack.length > 0;
+      this.canRedoGlobalHistory = this.globalHistoryRedoStack.length > 0;
     },
 
     refreshView() {
@@ -120,18 +129,19 @@ const VariablesCtrl = app => async () => {
       variableForm.elements.description.value = selectedVariable?.description ?? '';
       variableForm.elements.name.disabled = Boolean(selectedVariable?.isSystem);
       variableForm.elements.value_type.disabled = Boolean(selectedVariable?.isSystem);
+      applyStatus(this.root?.querySelector('[data-variable-form-status]'), this.variableFormStatus);
     },
 
     setStatus(message) {
       this.status = message;
-      const status = this.root?.querySelector('[data-variables-status]');
-      applyStatus(status, message);
+      applyStatus(this.root?.querySelector('[data-variables-status]'), message);
     },
 
     async onClick(event) {
       const selectVariableButton = event.target.closest('[data-action="select-variable"]');
       if (selectVariableButton) {
         this.selectedVariableId = Number(selectVariableButton.dataset.variableId);
+        this.variableFormStatus = '';
         this.prepareState();
         this.refreshView();
         return;
@@ -140,8 +150,51 @@ const VariablesCtrl = app => async () => {
       const cancelVariableEditButton = event.target.closest('[data-action="cancel-variable-edit"]');
       if (cancelVariableEditButton) {
         this.selectedVariableId = null;
+        this.variableFormStatus = '';
         this.prepareState();
         this.refreshView();
+        return;
+      }
+
+      const undoButton = event.target.closest('[data-action="undo-variable-change"]');
+      if (undoButton) {
+        await this.undoGlobalHistoryChange();
+        return;
+      }
+
+      const redoButton = event.target.closest('[data-action="redo-variable-change"]');
+      if (redoButton) {
+        await this.redoGlobalHistoryChange();
+      }
+    },
+
+    async onChange(event) {
+      const variableForm = event.target.closest('[data-variable-form]');
+      if (!variableForm) return;
+      if (!Number(variableForm.elements.variable_id?.value)) return;
+      await this.autosaveSelectedVariableForm(variableForm);
+    },
+
+    async onKeyDown(event) {
+      if (!(event.ctrlKey || event.metaKey) || event.altKey) return;
+      const target = event.target;
+      if (
+        target instanceof HTMLInputElement
+        || target instanceof HTMLTextAreaElement
+        || target instanceof HTMLSelectElement
+        || target?.isContentEditable
+      ) {
+        return;
+      }
+      const key = String(event.key || '').toLowerCase();
+      if (key === 'z' && !event.shiftKey) {
+        event.preventDefault();
+        await this.undoGlobalHistoryChange();
+        return;
+      }
+      if (key === 'y' || (key === 'z' && event.shiftKey)) {
+        event.preventDefault();
+        await this.redoGlobalHistoryChange();
       }
     },
 
@@ -155,7 +208,7 @@ const VariablesCtrl = app => async () => {
     async createVariable(form) {
       const variableId = Number(form.elements.variable_id?.value);
       if (variableId) {
-        await this.saveVariable(form);
+        await this.autosaveSelectedVariableForm(form);
         return;
       }
       const payload = readVariableForm(form);
@@ -165,6 +218,7 @@ const VariablesCtrl = app => async () => {
         await apiFetch('/api/variables', {method: 'POST', body: JSON.stringify(payload)});
         form.reset();
         this.selectedVariableId = null;
+        this.variableFormStatus = '';
         await this.refreshData();
         this.refreshView();
         notifyScenePreview(null, 'variable-updated');
@@ -174,25 +228,85 @@ const VariablesCtrl = app => async () => {
       }
     },
 
-    async saveVariable(form) {
-      const variableId = Number(form.elements.variable_id?.value);
-      if (!variableId) return;
-      const payload = readVariableForm(form);
-      if (!payload.name) return;
-      this.setStatus('Saving variable...');
+    async saveVariablePayload(variableId, payload, {statusMessage = 'Saving...', successMessage = 'All variable changes saved.', failureMessage = 'Could not save variable.'} = {}) {
+      if (!variableId || !payload.name) return false;
+      this.variableFormStatus = statusMessage;
+      this.refreshView();
       try {
         await apiFetch(`/api/variables/${variableId}`, {
           method: 'PATCH',
           body: JSON.stringify(payload)
         });
-        this.selectedVariableId = null;
+        this.selectedVariableId = variableId;
         await this.refreshData();
-        this.refreshView();
         notifyScenePreview(null, 'variable-updated');
-        this.setStatus('Variable saved.');
+        this.variableFormStatus = successMessage;
+        this.refreshView();
+        return true;
       } catch {
-        this.setStatus('Could not save variable.');
+        this.variableFormStatus = failureMessage;
+        this.refreshView();
+        return false;
       }
+    },
+
+    currentSelectedVariablePayload() {
+      return this.selectedVariable ? {
+        name: String(this.selectedVariable.name ?? ''),
+        value_type: String(this.selectedVariable.value_type ?? 'bool'),
+        default_value: this.selectedVariable.default_value,
+        description: String(this.selectedVariable.description ?? '')
+      } : null;
+    },
+
+    async autosaveSelectedVariableForm(form) {
+      const variableId = Number(form.elements.variable_id?.value);
+      if (!variableId) return;
+      const previousPayload = this.currentSelectedVariablePayload();
+      const nextPayload = readVariableForm(form);
+      if (!previousPayload) return;
+      if (JSON.stringify(previousPayload) === JSON.stringify(nextPayload)) return;
+      const saved = await this.saveVariablePayload(variableId, nextPayload);
+      if (!saved) return;
+      this.recordGlobalHistoryEntry({
+        label: 'Edit variable',
+        undo: () => this.restoreVariablePayload(variableId, previousPayload),
+        redo: () => this.restoreVariablePayload(variableId, nextPayload)
+      });
+    },
+
+    async restoreVariablePayload(variableId, payload) {
+      await this.saveVariablePayload(variableId, payload, {
+        statusMessage: 'Saving...',
+        successMessage: 'All variable changes saved.',
+        failureMessage: 'Could not restore variable.'
+      });
+    },
+
+    recordGlobalHistoryEntry(entry) {
+      this.globalHistoryUndoStack.push(entry);
+      if (this.globalHistoryUndoStack.length > 200) this.globalHistoryUndoStack.shift();
+      this.globalHistoryRedoStack = [];
+      this.prepareState();
+      this.refreshView();
+    },
+
+    async undoGlobalHistoryChange() {
+      const entry = this.globalHistoryUndoStack.pop();
+      if (!entry) return;
+      await entry.undo();
+      this.globalHistoryRedoStack.push(entry);
+      this.prepareState();
+      this.refreshView();
+    },
+
+    async redoGlobalHistoryChange() {
+      const entry = this.globalHistoryRedoStack.pop();
+      if (!entry) return;
+      await entry.redo();
+      this.globalHistoryUndoStack.push(entry);
+      this.prepareState();
+      this.refreshView();
     }
   };
 

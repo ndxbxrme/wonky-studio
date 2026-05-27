@@ -23,7 +23,13 @@
       <h1>Library</h1>
       <p>Upload background music and sound effects for actions and preview playback.</p>
     </div>
-    <p class="form-status" data-audio-library-status aria-live="polite">{{status}}</p>
+    <div class="scene-header__actions">
+      <div class="scene-header__button-group">
+        <button class="button secondary compact" type="button" data-action="undo-audio-change" {{#if not canUndoGlobalHistory}}disabled{{/if}}>Undo</button>
+        <button class="button secondary compact" type="button" data-action="redo-audio-change" {{#if not canRedoGlobalHistory}}disabled{{/if}}>Redo</button>
+      </div>
+      <p class="form-status" data-audio-library-status aria-live="polite">{{status}}</p>
+    </div>
   </header>
 
   <section class="actions-grid">
@@ -76,7 +82,7 @@
                       <option value="sfx" {{#if asset.isSfx}}selected{{/if}}>Sound effect</option>
                     </select>
                   </label>
-                  <button class="button secondary compact" type="submit">Save</button>
+                  <p class="form-status" data-audio-asset-status="{{asset.id}}" aria-live="polite"></p>
                 </form>
                 <audio controls preload="metadata" src="{{asset.audioUrl}}"></audio>
                 <button class="button danger compact" type="button" data-action="delete-audio-asset" data-audio-asset-id="{{asset.id}}" data-audio-asset-name="{{asset.name}}">Delete</button>
@@ -110,7 +116,7 @@
                       <option value="sfx" {{#if asset.isSfx}}selected{{/if}}>Sound effect</option>
                     </select>
                   </label>
-                  <button class="button secondary compact" type="submit">Save</button>
+                  <p class="form-status" data-audio-asset-status="{{asset.id}}" aria-live="polite"></p>
                 </form>
                 <audio controls preload="metadata" src="{{asset.audioUrl}}"></audio>
                 <button class="button danger compact" type="button" data-action="delete-audio-asset" data-audio-asset-id="{{asset.id}}" data-audio-asset-name="{{asset.name}}">Delete</button>

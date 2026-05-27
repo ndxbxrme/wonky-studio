@@ -30,6 +30,11 @@ const SceneCtrl = app => async params => {
     hasExtractionJob: false,
     extractionJobRunning: false,
     extractionJobTracker: null,
+    objectFormSaveStates: new Map(),
+    globalHistoryUndoStack: [],
+    globalHistoryRedoStack: [],
+    canUndoGlobalHistory: false,
+    canRedoGlobalHistory: false,
     unloadHandlers: [],
     pollTimer: null,
 
@@ -38,6 +43,7 @@ const SceneCtrl = app => async params => {
       this.bind(this.root, 'click', event => this.onClick(event));
       this.bind(this.root, 'submit', event => this.onSubmit(event));
       this.bind(this.root, 'change', event => this.onChange(event));
+      this.bind(window, 'keydown', event => this.onKeyDown(event));
       this.bind(this.root, 'dragenter', event => this.onDrag(event));
       this.bind(this.root, 'dragover', event => this.onDrag(event));
       this.bind(this.root, 'dragleave', event => this.onDrag(event));
@@ -107,6 +113,18 @@ const SceneCtrl = app => async params => {
         return;
       }
 
+      const undoButton = event.target.closest('[data-action="undo-scene-change"]');
+      if (undoButton) {
+        await this.undoGlobalHistoryChange();
+        return;
+      }
+
+      const redoButton = event.target.closest('[data-action="redo-scene-change"]');
+      if (redoButton) {
+        await this.redoGlobalHistoryChange();
+        return;
+      }
+
       const uploadImagesButton = event.target.closest('[data-action="browse-scene-images"]');
       if (uploadImagesButton) {
         this.root?.querySelector('[data-scene-image-input]')?.click();
@@ -133,9 +151,44 @@ const SceneCtrl = app => async params => {
     },
 
     async onChange(event) {
-      if (!event.target.matches('[data-scene-image-input]')) return;
-      await this.uploadSceneImages(event.target.files);
-      event.target.value = '';
+      if (event.target.matches('[data-scene-image-input]')) {
+        await this.uploadSceneImages(event.target.files);
+        event.target.value = '';
+        return;
+      }
+      const sceneSettingsForm = event.target.closest('[data-scene-settings-form]');
+      if (sceneSettingsForm) {
+        await this.autosaveSceneSettingsForm(sceneSettingsForm);
+        return;
+      }
+      const objectPromptForm = event.target.closest('[data-object-prompt-form]');
+      if (objectPromptForm) {
+        await this.autosaveObjectPromptForm(objectPromptForm);
+      }
+    },
+
+    async onKeyDown(event) {
+      if (!(event.ctrlKey || event.metaKey)) return;
+      if (event.altKey) return;
+      const target = event.target;
+      if (
+        target instanceof HTMLInputElement
+        || target instanceof HTMLTextAreaElement
+        || target instanceof HTMLSelectElement
+        || target?.isContentEditable
+      ) {
+        return;
+      }
+      const key = String(event.key || '').toLowerCase();
+      if (key === 'z' && !event.shiftKey) {
+        event.preventDefault();
+        await this.undoGlobalHistoryChange();
+        return;
+      }
+      if (key === 'y' || (key === 'z' && event.shiftKey)) {
+        event.preventDefault();
+        await this.redoGlobalHistoryChange();
+      }
     },
 
     onDrag(event) {
@@ -180,7 +233,7 @@ const SceneCtrl = app => async params => {
       const sceneSettingsForm = event.target.closest('[data-scene-settings-form]');
       if (sceneSettingsForm) {
         event.preventDefault();
-        await this.saveSceneSettings(sceneSettingsForm);
+        await this.autosaveSceneSettingsForm(sceneSettingsForm);
         return;
       }
 
@@ -249,6 +302,8 @@ const SceneCtrl = app => async params => {
       this.nextSceneId = currentIndex >= 0 && currentIndex < this.sceneOptions.length - 1
         ? this.sceneOptions[currentIndex + 1].id
         : null;
+      this.canUndoGlobalHistory = this.globalHistoryUndoStack.length > 0;
+      this.canRedoGlobalHistory = this.globalHistoryRedoStack.length > 0;
     },
 
     setStatus(selector, message) {
@@ -669,18 +724,109 @@ const SceneCtrl = app => async params => {
       }
     },
 
+    ensureObjectFormSaveState(objectId) {
+      const key = Number(objectId);
+      let state = this.objectFormSaveStates.get(key);
+      if (!state) {
+        state = {
+          isSaving: false,
+          saveQueued: false
+        };
+        this.objectFormSaveStates.set(key, state);
+      }
+      return state;
+    },
+
+    readObjectPromptPayload(form) {
+      const formData = new FormData(form);
+      return {
+        prompt: String(formData.get('prompt') ?? '').trim(),
+        inventory_image_prompt: String(formData.get('inventory_image_prompt') ?? '').trim(),
+        visible: formData.get('visible') === 'on',
+        enabled: formData.get('enabled') === 'on',
+        keyboard_target_enabled: formData.get('keyboard_target_enabled') === 'on'
+      };
+    },
+
+    readSceneSettingsPayload(form) {
+      const formData = new FormData(form);
+      return {
+        title: String(formData.get('title') ?? '').trim() || '',
+        description: String(formData.get('description') ?? ''),
+        presentation_mode: String(formData.get('presentation_mode') ?? 'base'),
+        background_frame_index: Number(formData.get('background_frame_index') ?? 0)
+      };
+    },
+
+    currentSceneSettingsPayload() {
+      return {
+        title: String(this.scene?.title ?? ''),
+        description: String(this.scene?.description ?? ''),
+        presentation_mode: String(this.scene?.presentation_mode ?? 'base'),
+        background_frame_index: Number(this.scene?.background_frame_index ?? 0)
+      };
+    },
+
+    async autosaveSceneSettingsForm(form) {
+      const previousPayload = this.currentSceneSettingsPayload();
+      const nextPayload = this.readSceneSettingsPayload(form);
+      if (JSON.stringify(previousPayload) === JSON.stringify(nextPayload)) return;
+      const updatedScene = await this.saveSceneSettings(form, nextPayload);
+      if (!updatedScene) return;
+      this.recordGlobalHistoryEntry({
+        label: 'Edit scene settings',
+        undo: () => this.restoreSceneSettingsPayload(previousPayload),
+        redo: () => this.restoreSceneSettingsPayload(nextPayload)
+      });
+    },
+
+    async autosaveObjectPromptForm(form) {
+      const objectId = form.dataset.objectId;
+      if (!objectId) return;
+      const currentObject = (this.scene?.objects ?? []).find(sceneObject => Number(sceneObject.id) === Number(objectId));
+      if (!currentObject) return;
+      const nextPayload = this.readObjectPromptPayload(form);
+      const currentPayload = {
+        prompt: String(currentObject.prompt ?? '').trim(),
+        inventory_image_prompt: String(currentObject.inventory_image_prompt ?? '').trim(),
+        visible: Boolean(currentObject.visible),
+        enabled: Boolean(currentObject.enabled),
+        keyboard_target_enabled: Boolean(currentObject.keyboard_target_enabled)
+      };
+      if (JSON.stringify(nextPayload) === JSON.stringify(currentPayload)) return;
+      const state = this.ensureObjectFormSaveState(objectId);
+      state.saveQueued = true;
+      if (state.isSaving) return;
+      while (state.saveQueued) {
+        state.saveQueued = false;
+        state.isSaving = true;
+        try {
+          const updatedObject = await this.updateObjectPrompt(form);
+          if (updatedObject) {
+            this.recordGlobalHistoryEntry({
+              label: 'Edit object',
+              undo: () => this.restoreObjectPromptPayload(objectId, currentPayload),
+              redo: () => this.restoreObjectPromptPayload(objectId, nextPayload)
+            });
+          }
+        } finally {
+          state.isSaving = false;
+        }
+      }
+    },
+
     async updateObjectPrompt(form) {
       const objectId = form.dataset.objectId;
       if (!objectId) return;
       const numericObjectId = Number(objectId);
       const status = form.querySelector('[data-object-prompt-status]');
-      const formData = new FormData(form);
-      const prompt = String(formData.get('prompt') ?? '').trim();
-      const inventoryImagePrompt = String(formData.get('inventory_image_prompt') ?? '').trim();
+      const payload = this.readObjectPromptPayload(form);
+      const prompt = payload.prompt;
+      const inventoryImagePrompt = payload.inventory_image_prompt;
       const previousInventoryImagePrompt = String(form.dataset.inventoryImagePrompt ?? '').trim();
-      const visible = formData.get('visible') === 'on';
-      const enabled = formData.get('enabled') === 'on';
-      const keyboardTargetEnabled = formData.get('keyboard_target_enabled') === 'on';
+      const visible = payload.visible;
+      const enabled = payload.enabled;
+      const keyboardTargetEnabled = payload.keyboard_target_enabled;
       if (!prompt) return;
       applyStatus(status, 'Saving...');
       try {
@@ -729,12 +875,25 @@ const SceneCtrl = app => async params => {
           }
           await this.refreshScene();
         } else if (status) {
-          applyStatus(status, 'Saved.');
+          applyStatus(status, 'All object changes saved.');
         }
         notifyScenePreview(this.sceneId, 'object-updated');
+        return updatedObject;
       } catch {
-        applyStatus(status, 'Could not save prompt.');
+        applyStatus(status, 'Could not save the latest object changes.');
+        return null;
       }
+    },
+
+    async restoreObjectPromptPayload(objectId, payload) {
+      const form = this.root?.querySelector(`[data-object-prompt-form][data-object-id="${objectId}"]`);
+      if (!form) return;
+      form.elements.prompt.value = payload.prompt ?? '';
+      form.elements.inventory_image_prompt.value = payload.inventory_image_prompt ?? '';
+      form.elements.visible.checked = Boolean(payload.visible);
+      form.elements.enabled.checked = Boolean(payload.enabled);
+      form.elements.keyboard_target_enabled.checked = Boolean(payload.keyboard_target_enabled);
+      await this.updateObjectPrompt(form);
     },
 
     async deleteObject(button) {
@@ -796,6 +955,9 @@ const SceneCtrl = app => async params => {
       if (nextIndex < 0 || nextIndex >= objects.length) return;
       const currentObject = objects[currentIndex];
       const swapObject = objects[nextIndex];
+      const previousOrder = objects.map(object => Number(object.id));
+      const nextOrder = [...previousOrder];
+      [nextOrder[currentIndex], nextOrder[nextIndex]] = [nextOrder[nextIndex], nextOrder[currentIndex]];
       button.disabled = true;
       this.setStatus('[data-object-list-status]', `Moving ${currentObject.name}...`);
       try {
@@ -812,6 +974,11 @@ const SceneCtrl = app => async params => {
         await this.refreshScene();
         notifyScenePreview(this.sceneId, 'object-updated');
         this.setStatus('[data-object-list-status]', 'Object order updated.');
+        this.recordGlobalHistoryEntry({
+          label: 'Reorder objects',
+          undo: () => this.restoreObjectOrder(previousOrder),
+          redo: () => this.restoreObjectOrder(nextOrder)
+        });
       } catch {
         this.setStatus('[data-object-list-status]', 'Could not change object order.');
       } finally {
@@ -819,28 +986,86 @@ const SceneCtrl = app => async params => {
       }
     },
 
-    async saveSceneSettings(form) {
-      const formData = new FormData(form);
+    async saveSceneSettings(form, payload = this.readSceneSettingsPayload(form)) {
       this.setStatus('[data-scene-settings-status]', 'Saving scene settings...');
       try {
         const updatedScene = await apiFetch(`/api/scenes/${this.sceneId}`, {
           method: 'PATCH',
           body: JSON.stringify({
-            title: String(formData.get('title') ?? '').trim() || undefined,
-            description: String(formData.get('description') ?? ''),
-            presentation_mode: String(formData.get('presentation_mode') ?? 'base'),
-            background_frame_index: Number(formData.get('background_frame_index') ?? 0)
+            title: payload.title || undefined,
+            description: payload.description,
+            presentation_mode: payload.presentation_mode,
+            background_frame_index: payload.background_frame_index
           })
         });
         this.scene = replaceScene(updatedScene);
         this.sceneFound = true;
         this.sceneMissing = false;
         notifyScenePreview(this.sceneId, 'scene-updated');
-        this.setStatus('[data-scene-settings-status]', 'Scene settings saved.');
+        this.setStatus('[data-scene-settings-status]', 'All scene settings saved.');
         app.refresh();
+        return updatedScene;
       } catch {
-        this.setStatus('[data-scene-settings-status]', 'Could not save scene settings.');
+        this.setStatus('[data-scene-settings-status]', 'Could not save the latest scene settings.');
+        return null;
       }
+    },
+
+    async restoreSceneSettingsPayload(payload) {
+      const form = this.root?.querySelector('[data-scene-settings-form]');
+      if (!form) return;
+      form.elements.title.value = payload.title ?? '';
+      form.elements.description.value = payload.description ?? '';
+      form.elements.presentation_mode.value = payload.presentation_mode ?? 'base';
+      form.elements.background_frame_index.value = payload.background_frame_index ?? 0;
+      await this.saveSceneSettings(form, payload);
+    },
+
+    async restoreObjectOrder(orderedIds) {
+      if (!Array.isArray(orderedIds) || !orderedIds.length) return;
+      this.setStatus('[data-object-list-status]', 'Restoring object order...');
+      try {
+        await Promise.all(
+          orderedIds.map((objectId, index) => apiFetch(`/api/scenes/${this.sceneId}/objects/${objectId}`, {
+            method: 'PATCH',
+            body: JSON.stringify({sort_order: index})
+          }))
+        );
+        await this.refreshScene();
+        notifyScenePreview(this.sceneId, 'object-updated');
+        this.setStatus('[data-object-list-status]', 'Object order updated.');
+      } catch {
+        this.setStatus('[data-object-list-status]', 'Could not restore object order.');
+      }
+    },
+
+    recordGlobalHistoryEntry(entry) {
+      this.globalHistoryUndoStack.push(entry);
+      if (this.globalHistoryUndoStack.length > 200) this.globalHistoryUndoStack.shift();
+      this.globalHistoryRedoStack = [];
+      this.canUndoGlobalHistory = this.globalHistoryUndoStack.length > 0;
+      this.canRedoGlobalHistory = this.globalHistoryRedoStack.length > 0;
+      app.refresh();
+    },
+
+    async undoGlobalHistoryChange() {
+      const entry = this.globalHistoryUndoStack.pop();
+      if (!entry) return;
+      await entry.undo();
+      this.globalHistoryRedoStack.push(entry);
+      this.canUndoGlobalHistory = this.globalHistoryUndoStack.length > 0;
+      this.canRedoGlobalHistory = this.globalHistoryRedoStack.length > 0;
+      app.refresh();
+    },
+
+    async redoGlobalHistoryChange() {
+      const entry = this.globalHistoryRedoStack.pop();
+      if (!entry) return;
+      await entry.redo();
+      this.globalHistoryUndoStack.push(entry);
+      this.canUndoGlobalHistory = this.globalHistoryUndoStack.length > 0;
+      this.canRedoGlobalHistory = this.globalHistoryRedoStack.length > 0;
+      app.refresh();
     },
 
     async mergeIntoScene(form) {

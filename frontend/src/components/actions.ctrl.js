@@ -92,6 +92,14 @@ const ActionsCtrl = app => async params => {
     actionRows: [],
     selectedStepId: null,
     selectedStep: null,
+    interactionEditorStates: new Map(),
+    selectedInteractionEditorState: null,
+    canUndoStepChange: false,
+    canRedoStepChange: false,
+    actionTreeStatus: '',
+    hasActionTreeSaveError: false,
+    interactionFormStatus: '',
+    hasInteractionFormSaveError: false,
     scriptLineSummaryById: {},
     scriptSearchResults: [],
     scriptSearchLanguage: 'en',
@@ -107,6 +115,10 @@ const ActionsCtrl = app => async params => {
     systemVariableCount: 0,
     gameVariableCount: 0,
     hasScriptSearchResults: false,
+    globalHistoryUndoStack: [],
+    globalHistoryRedoStack: [],
+    canUndoGlobalHistory: false,
+    canRedoGlobalHistory: false,
     editorReady: false,
     editorMissing: false,
     editorLoadError: '',
@@ -117,6 +129,7 @@ const ActionsCtrl = app => async params => {
       this.bind(this.root, 'click', event => this.onClick(event));
       this.bind(this.root, 'submit', event => this.onSubmit(event));
       this.bind(this.root, 'change', event => this.onChange(event));
+      this.bind(window, 'keydown', event => this.onKeyDown(event));
       this.setControlValues();
     },
 
@@ -154,6 +167,7 @@ const ActionsCtrl = app => async params => {
         this.prepareSceneNavigation();
         await this.loadAnimations();
         this.interactions = await apiFetch(`/api/scenes/${this.sceneId}/interactions`);
+        this.syncInteractionEditorStatesFromServer();
         await this.loadReferencedScriptLineSummaries();
         if (!this.selectedInteractionId && this.interactions.length) {
           this.selectedInteractionId = this.interactions[0].id;
@@ -316,6 +330,9 @@ const ActionsCtrl = app => async params => {
       }));
       this.interactions = this.interactions.map(interaction => ({
         ...interaction,
+        action_tree: structuredClone(
+          this.ensureInteractionEditorState(interaction.id, interaction.action_tree ?? []).workingActionTree
+        ),
         triggerLabel: triggerLabel(interaction, this.scene, this.variables, this.verbs, this.inventoryObjectOptions),
         stepCount: countSteps(interaction.action_tree ?? []),
         isSelected: interaction.id === this.selectedInteractionId
@@ -328,10 +345,19 @@ const ActionsCtrl = app => async params => {
       this.selectedInteraction = this.interactions.find(
         interaction => interaction.id === this.selectedInteractionId
       ) ?? null;
+      this.selectedInteractionEditorState = this.selectedInteraction
+        ? this.ensureInteractionEditorState(this.selectedInteraction.id, this.selectedInteraction.action_tree ?? [])
+        : null;
       this.selectedStep = this.selectedInteraction
         ? findStepById(this.selectedInteraction.action_tree ?? [], this.selectedStepId)
         : null;
       if (!this.selectedStep) this.selectedStepId = null;
+      this.canUndoStepChange = Boolean(this.selectedInteractionEditorState?.undoStack?.length);
+      this.canRedoStepChange = Boolean(this.selectedInteractionEditorState?.redoStack?.length);
+      this.canUndoGlobalHistory = this.globalHistoryUndoStack.length > 0;
+      this.canRedoGlobalHistory = this.globalHistoryRedoStack.length > 0;
+      this.hasActionTreeSaveError = Boolean(this.selectedInteractionEditorState?.error);
+      this.actionTreeStatus = formatActionTreeStatus(this.selectedInteractionEditorState);
       this.hasInteractions = Boolean(this.interactions.length);
       this.hasVisibleInteractions = Boolean(this.visibleInteractions.length);
       this.hasSelectedInteraction = Boolean(this.selectedInteraction);
@@ -381,6 +407,18 @@ const ActionsCtrl = app => async params => {
       const moveStepButton = event.target.closest('[data-action="move-step"]');
       if (moveStepButton) {
         await this.moveStep(moveStepButton.dataset.stepId, moveStepButton.dataset.direction);
+        return;
+      }
+
+      const undoStepChangeButton = event.target.closest('[data-action="undo-action-change"]');
+      if (undoStepChangeButton) {
+        await this.undoGlobalHistoryChange();
+        return;
+      }
+
+      const redoStepChangeButton = event.target.closest('[data-action="redo-action-change"]');
+      if (redoStepChangeButton) {
+        await this.redoGlobalHistoryChange();
         return;
       }
 
@@ -447,6 +485,18 @@ const ActionsCtrl = app => async params => {
     },
 
     async onChange(event) {
+      const interactionEditForm = event.target.closest('[data-interaction-edit-form]');
+      if (interactionEditForm) {
+        this.updateInteractionFormVisibility(interactionEditForm);
+        await this.autosaveSelectedInteractionForm(interactionEditForm);
+        return;
+      }
+      const actionStepForm = event.target.closest('[data-action-step-form]');
+      if (actionStepForm && this.selectedStep) {
+        this.updateActionFormVisibility(actionStepForm);
+        await this.autosaveSelectedStep(actionStepForm);
+        return;
+      }
       if (event.target.matches('[data-interaction-filter-trigger], [data-interaction-filter-object]')) {
         this.interactionTriggerFilter = this.root?.querySelector('[data-interaction-filter-trigger]')?.value ?? 'all';
         this.interactionObjectFilter = this.root?.querySelector('[data-interaction-filter-object]')?.value ?? 'all';
@@ -461,6 +511,30 @@ const ActionsCtrl = app => async params => {
       }
       if (event.target.matches('[name="property"]')) {
         this.updateActionFormVisibility(event.target.closest('[data-action-step-form]'));
+      }
+    },
+
+    async onKeyDown(event) {
+      if (!(event.ctrlKey || event.metaKey)) return;
+      if (event.altKey) return;
+      const target = event.target;
+      if (
+        target instanceof HTMLInputElement
+        || target instanceof HTMLTextAreaElement
+        || target instanceof HTMLSelectElement
+        || target?.isContentEditable
+      ) {
+        return;
+      }
+      const key = String(event.key || '').toLowerCase();
+      if (key === 'z' && !event.shiftKey) {
+        event.preventDefault();
+        await this.undoGlobalHistoryChange();
+        return;
+      }
+      if (key === 'y' || (key === 'z' && event.shiftKey)) {
+        event.preventDefault();
+        await this.redoGlobalHistoryChange();
       }
     },
 
@@ -520,19 +594,60 @@ const ActionsCtrl = app => async params => {
 
     async saveSelectedInteraction(payload) {
       if (!this.selectedInteraction) return;
+      this.interactionFormStatus = 'Saving trigger changes...';
+      this.hasInteractionFormSaveError = false;
       this.setStatus('Saving interaction...');
       try {
-        await apiFetch(`/api/scenes/${this.sceneId}/interactions/${this.selectedInteraction.id}`, {
+        const updatedInteraction = await apiFetch(`/api/scenes/${this.sceneId}/interactions/${this.selectedInteraction.id}`, {
           method: 'PATCH',
           body: JSON.stringify(payload)
         });
-        await this.refreshData();
+        this.replaceInteractionInMemory(updatedInteraction);
+        this.interactionFormStatus = 'All trigger changes saved';
+        this.hasInteractionFormSaveError = false;
+        this.prepareState();
         this.refreshView();
         notifyScenePreview(this.sceneId, 'interaction-updated');
         this.setStatus('Interaction saved.');
+        return updatedInteraction;
       } catch {
+        this.interactionFormStatus = 'Could not save the latest trigger changes.';
+        this.hasInteractionFormSaveError = true;
+        await this.refreshData();
+        this.prepareState();
+        this.refreshView();
         this.setStatus('Could not save interaction.');
+        return null;
       }
+    },
+
+    async autosaveSelectedInteractionForm(form) {
+      if (!this.selectedInteraction) return;
+      const previousPayload = interactionPayload(this.selectedInteraction);
+      const payload = readInteractionForm(form, this.selectedInteraction);
+      if (JSON.stringify(previousPayload) === JSON.stringify(payload)) return;
+      const updatedInteraction = await this.saveSelectedInteraction(payload);
+      if (!updatedInteraction) return;
+      const interactionId = Number(updatedInteraction.id || this.selectedInteraction?.id);
+      this.recordGlobalHistoryEntry({
+        label: 'Edit trigger',
+        undo: () => this.restoreInteractionPayload(interactionId, previousPayload),
+        redo: () => this.restoreInteractionPayload(interactionId, payload)
+      });
+    },
+
+    async restoreInteractionPayload(interactionId, payload) {
+      const restoredInteraction = await apiFetch(`/api/scenes/${this.sceneId}/interactions/${interactionId}`, {
+        method: 'PATCH',
+        body: JSON.stringify(payload)
+      });
+      this.selectedInteractionId = interactionId;
+      this.replaceInteractionInMemory(restoredInteraction);
+      this.interactionFormStatus = 'All trigger changes saved';
+      this.hasInteractionFormSaveError = false;
+      this.prepareState();
+      this.refreshView();
+      notifyScenePreview(this.sceneId, 'interaction-updated');
     },
 
     async deleteInteraction(button) {
@@ -555,50 +670,62 @@ const ActionsCtrl = app => async params => {
 
     async addActionStep(form) {
       if (!this.selectedInteraction) return;
-      const step = readActionStepForm(form);
+      const step = withLocalStepIds(readActionStepForm(form));
       const nextTree = insertStep(this.selectedInteraction.action_tree ?? [], form.elements.branch.value, step);
-      await this.saveSelectedInteraction({
-        ...interactionPayload(this.selectedInteraction),
-        action_tree: nextTree
-      });
+      this.applyLocalActionTreeChange(nextTree);
       form.reset();
       this.clearSelectedStep();
+      this.prepareState();
+      this.refreshView();
     },
 
     async updateActionStep(form) {
       if (!this.selectedInteraction || !this.selectedStep) return;
-      const updatedStep = {
+      const updatedStep = withLocalStepIds({
         ...this.selectedStep,
         ...readActionStepForm(form),
         id: this.selectedStep.id,
         then_steps: this.selectedStep.then_steps ?? [],
         else_steps: this.selectedStep.else_steps ?? []
-      };
-      const nextTree = replaceStepById(this.selectedInteraction.action_tree ?? [], this.selectedStepId, updatedStep);
-      await this.saveSelectedInteraction({
-        ...interactionPayload(this.selectedInteraction),
-        action_tree: nextTree
       });
+      const nextTree = replaceStepById(this.selectedInteraction.action_tree ?? [], this.selectedStepId, updatedStep);
+      this.applyLocalActionTreeChange(nextTree);
       this.clearSelectedStep();
+      this.prepareState();
+      this.refreshView();
+    },
+
+    async autosaveSelectedStep(form) {
+      if (!this.selectedInteraction || !this.selectedStep) return;
+      const updatedStep = withLocalStepIds({
+        ...this.selectedStep,
+        ...readActionStepForm(form),
+        id: this.selectedStep.id,
+        then_steps: this.selectedStep.then_steps ?? [],
+        else_steps: this.selectedStep.else_steps ?? []
+      });
+      if (JSON.stringify(updatedStep) === JSON.stringify(this.selectedStep)) return;
+      const nextTree = replaceStepById(this.selectedInteraction.action_tree ?? [], this.selectedStepId, updatedStep);
+      this.applyLocalActionTreeChange(nextTree);
+      this.prepareState();
+      this.refreshView();
     },
 
     async removeStep(stepId) {
       if (!this.selectedInteraction) return;
       const nextTree = removeStepById(this.selectedInteraction.action_tree ?? [], stepId);
-      await this.saveSelectedInteraction({
-        ...interactionPayload(this.selectedInteraction),
-        action_tree: nextTree
-      });
+      this.applyLocalActionTreeChange(nextTree);
       if (String(this.selectedStepId) === String(stepId)) this.clearSelectedStep();
+      this.prepareState();
+      this.refreshView();
     },
 
     async moveStep(stepId, direction) {
       if (!this.selectedInteraction) return;
       const nextTree = moveStepById(this.selectedInteraction.action_tree ?? [], stepId, direction);
-      await this.saveSelectedInteraction({
-        ...interactionPayload(this.selectedInteraction),
-        action_tree: nextTree
-      });
+      this.applyLocalActionTreeChange(nextTree);
+      this.prepareState();
+      this.refreshView();
     },
 
     async searchScriptLines(form) {
@@ -801,6 +928,221 @@ const ActionsCtrl = app => async params => {
       requestAnimationFrame(() => this.setControlValues());
     },
 
+    ensureInteractionEditorState(interactionId, actionTree) {
+      const key = Number(interactionId);
+      let state = this.interactionEditorStates.get(key);
+      if (!state) {
+        state = createInteractionEditorState(actionTree ?? []);
+        this.interactionEditorStates.set(key, state);
+        return state;
+      }
+      return state;
+    },
+
+    syncInteractionEditorStatesFromServer() {
+      const nextStates = new Map();
+      for (const interaction of this.interactions) {
+        const interactionId = Number(interaction.id);
+        const serverTree = structuredClone(interaction.action_tree ?? []);
+        const existing = this.interactionEditorStates.get(interactionId);
+        if (existing?.isDirty || existing?.isSaving) {
+          nextStates.set(interactionId, existing);
+          continue;
+        }
+        nextStates.set(interactionId, createInteractionEditorState(serverTree));
+      }
+      this.interactionEditorStates = nextStates;
+    },
+
+    replaceInteractionInMemory(updatedInteraction) {
+      const interactionId = Number(updatedInteraction.id);
+      this.interactions = this.interactions.map(interaction => (
+        Number(interaction.id) === interactionId
+          ? {...updatedInteraction}
+          : interaction
+      ));
+    },
+
+    setInteractionWorkingTree(interactionId, nextTree) {
+      const editorState = this.ensureInteractionEditorState(interactionId, nextTree);
+      editorState.workingActionTree = structuredClone(nextTree);
+      editorState.isDirty = !treesEqual(editorState.workingActionTree, editorState.baseActionTree);
+      this.replaceInteractionInMemory({
+        ...(this.interactions.find(interaction => Number(interaction.id) === Number(interactionId)) ?? {}),
+        action_tree: structuredClone(editorState.workingActionTree),
+        id: interactionId
+      });
+    },
+
+    async persistInteractionActionTree(interactionId) {
+      const editorState = this.ensureInteractionEditorState(interactionId, []);
+      editorState.saveQueued = true;
+      if (editorState.isSaving) {
+        this.prepareState();
+        this.refreshView();
+        return;
+      }
+      while (editorState.saveQueued) {
+        editorState.saveQueued = false;
+        if (!editorState.isDirty) break;
+        const interaction = this.interactions.find(item => Number(item.id) === Number(interactionId));
+        if (!interaction) break;
+        const payloadTree = structuredClone(editorState.workingActionTree);
+        const saveVersion = editorState.mutationVersion;
+        editorState.isSaving = true;
+        editorState.error = '';
+        this.prepareState();
+        this.refreshView();
+        try {
+          const updatedInteraction = await apiFetch(
+            `/api/scenes/${this.sceneId}/interactions/${interactionId}`,
+            {
+              method: 'PATCH',
+              body: JSON.stringify({
+                ...interactionPayload(interaction),
+                action_tree: payloadTree
+              })
+            }
+          );
+          this.replaceInteractionInMemory(updatedInteraction);
+          editorState.baseActionTree = structuredClone(updatedInteraction.action_tree ?? []);
+          if (editorState.mutationVersion === saveVersion) {
+            editorState.workingActionTree = structuredClone(updatedInteraction.action_tree ?? []);
+            editorState.isDirty = false;
+          } else {
+            editorState.isDirty = !treesEqual(editorState.workingActionTree, editorState.baseActionTree);
+            editorState.saveQueued = editorState.isDirty || editorState.saveQueued;
+          }
+          editorState.error = '';
+          notifyScenePreview(this.sceneId, 'interaction-updated');
+        } catch {
+          editorState.workingActionTree = structuredClone(editorState.baseActionTree);
+          editorState.isDirty = false;
+          editorState.error = 'Could not save the latest step changes. Reverted to the last saved version.';
+          editorState.redoStack = [];
+          this.replaceInteractionInMemory({
+            ...(interaction ?? {}),
+            action_tree: structuredClone(editorState.workingActionTree),
+            id: interactionId
+          });
+          this.clearSelectedStep();
+          editorState.saveQueued = false;
+        } finally {
+          editorState.isSaving = false;
+          this.prepareState();
+          this.refreshView();
+        }
+      }
+    },
+
+    applyLocalActionTreeChange(nextTree, options = {}) {
+      if (!this.selectedInteraction) return;
+      const interactionId = Number(this.selectedInteraction.id);
+      const editorState = this.ensureInteractionEditorState(interactionId, this.selectedInteraction.action_tree ?? []);
+      editorState.undoStack.push(structuredClone(editorState.workingActionTree));
+      if (editorState.undoStack.length > 100) editorState.undoStack.shift();
+      editorState.redoStack = [];
+      editorState.mutationVersion += 1;
+      editorState.error = '';
+      this.setInteractionWorkingTree(interactionId, withLocalStepIds(nextTree));
+      if (options.clearSelectedStep) this.clearSelectedStep();
+      this.recordGlobalHistoryEntry({
+        label: 'Edit action steps',
+        undo: () => this.undoInteractionActionTree(interactionId),
+        redo: () => this.redoInteractionActionTree(interactionId)
+      });
+      void this.ensureScriptLineSummariesForTree(nextTree);
+      void this.persistInteractionActionTree(interactionId);
+    },
+
+    async undoSelectedInteractionActionTree() {
+      if (!this.selectedInteraction) return;
+      await this.undoInteractionActionTree(this.selectedInteraction.id);
+    },
+
+    async undoInteractionActionTree(interactionId) {
+      const editorState = this.ensureInteractionEditorState(interactionId, []);
+      if (!editorState.undoStack.length) return;
+      const previousTree = editorState.undoStack.pop();
+      editorState.redoStack.push(structuredClone(editorState.workingActionTree));
+      editorState.mutationVersion += 1;
+      editorState.error = '';
+      this.setInteractionWorkingTree(interactionId, previousTree);
+      this.clearSelectedStep();
+      this.prepareState();
+      this.refreshView();
+      void this.ensureScriptLineSummariesForTree(previousTree);
+      void this.persistInteractionActionTree(interactionId);
+    },
+
+    async redoSelectedInteractionActionTree() {
+      if (!this.selectedInteraction) return;
+      await this.redoInteractionActionTree(this.selectedInteraction.id);
+    },
+
+    async redoInteractionActionTree(interactionId) {
+      const editorState = this.ensureInteractionEditorState(interactionId, []);
+      if (!editorState.redoStack.length) return;
+      const nextTree = editorState.redoStack.pop();
+      editorState.undoStack.push(structuredClone(editorState.workingActionTree));
+      editorState.mutationVersion += 1;
+      editorState.error = '';
+      this.setInteractionWorkingTree(interactionId, nextTree);
+      this.clearSelectedStep();
+      this.prepareState();
+      this.refreshView();
+      void this.ensureScriptLineSummariesForTree(nextTree);
+      void this.persistInteractionActionTree(interactionId);
+    },
+
+    recordGlobalHistoryEntry(entry) {
+      this.globalHistoryUndoStack.push(entry);
+      if (this.globalHistoryUndoStack.length > 200) this.globalHistoryUndoStack.shift();
+      this.globalHistoryRedoStack = [];
+      this.prepareState();
+      this.refreshView();
+    },
+
+    async undoGlobalHistoryChange() {
+      const entry = this.globalHistoryUndoStack.pop();
+      if (!entry) return;
+      await entry.undo();
+      this.globalHistoryRedoStack.push(entry);
+      this.prepareState();
+      this.refreshView();
+    },
+
+    async redoGlobalHistoryChange() {
+      const entry = this.globalHistoryRedoStack.pop();
+      if (!entry) return;
+      await entry.redo();
+      this.globalHistoryUndoStack.push(entry);
+      this.prepareState();
+      this.refreshView();
+    },
+
+    async ensureScriptLineSummariesForTree(tree) {
+      const missingLineIds = [...collectScriptLineIds([{action_tree: tree}])]
+        .filter(lineId => !this.scriptLineSummaryById[lineId]);
+      if (!missingLineIds.length) return;
+      const entries = await Promise.all(
+        missingLineIds.map(async lineId => {
+          try {
+            const detail = await apiFetch(`/api/script-lines/${lineId}`);
+            return [lineId, summarizeScriptLine(detail)];
+          } catch {
+            return [lineId, `Line ${lineId}`];
+          }
+        })
+      );
+      this.scriptLineSummaryById = {
+        ...this.scriptLineSummaryById,
+        ...Object.fromEntries(entries)
+      };
+      this.prepareState();
+      this.refreshView();
+    },
+
     clearSelectedStep() {
       this.selectedStepId = null;
       this.selectedStep = null;
@@ -864,6 +1206,46 @@ function interactionPayload(interaction) {
     trigger: interaction.trigger,
     action_tree: interaction.action_tree ?? []
   };
+}
+
+function createInteractionEditorState(actionTree) {
+  const clonedTree = structuredClone(actionTree ?? []);
+  return {
+    baseActionTree: structuredClone(clonedTree),
+    workingActionTree: structuredClone(clonedTree),
+    undoStack: [],
+    redoStack: [],
+    isDirty: false,
+    isSaving: false,
+    saveQueued: false,
+    mutationVersion: 0,
+    error: ''
+  };
+}
+
+function treesEqual(left, right) {
+  return JSON.stringify(left ?? []) === JSON.stringify(right ?? []);
+}
+
+function withLocalStepIds(stepOrTree) {
+  if (Array.isArray(stepOrTree)) {
+    return stepOrTree.map(item => withLocalStepIds(item));
+  }
+  if (!stepOrTree || typeof stepOrTree !== 'object') return stepOrTree;
+  return {
+    ...stepOrTree,
+    id: String(stepOrTree.id || `local-${crypto.randomUUID()}`),
+    then_steps: withLocalStepIds(stepOrTree.then_steps ?? []),
+    else_steps: withLocalStepIds(stepOrTree.else_steps ?? [])
+  };
+}
+
+function formatActionTreeStatus(editorState) {
+  if (!editorState) return '';
+  if (editorState.error) return editorState.error;
+  if (editorState.isSaving) return 'Saving step changes...';
+  if (editorState.isDirty) return 'Unsaved step changes';
+  return 'All step changes saved';
 }
 
 function readTrigger(formData) {

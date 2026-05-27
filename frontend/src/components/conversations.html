@@ -22,6 +22,10 @@
       <p>Build branching dialog with reusable lines, choices, and actions.</p>
     </div>
     <div class="scene-header__actions">
+      <div class="scene-header__button-group">
+        <button class="button secondary compact" type="button" data-action="undo-conversation-change" {{#if not canUndoGlobalHistory}}disabled{{/if}}>Undo</button>
+        <button class="button secondary compact" type="button" data-action="redo-conversation-change" {{#if not canRedoGlobalHistory}}disabled{{/if}}>Redo</button>
+      </div>
       <p class="form-status" data-conversations-status aria-live="polite">{{status}}</p>
     </div>
   </header>
@@ -33,6 +37,11 @@
           <p class="eyebrow">Editor</p>
           <h2>{{#if selectedConversation}}Edit conversation{{/if}}{{#if not selectedConversation}}Add conversation{{/if}}</h2>
         </div>
+        {{#if selectedConversation}}
+          <div class="form-actions">
+            <button class="button secondary compact" type="button" data-action="new-conversation">New conversation</button>
+          </div>
+        {{/if}}
         <form class="stack-form" data-conversation-form>
           <input type="hidden" name="conversation_id" value="{{selectedConversation.id}}" />
           <label>
@@ -44,11 +53,14 @@
             <input name="description" type="text" placeholder="Optional note" />
           </label>
           <div class="form-actions">
-            <button class="button secondary compact" type="submit">{{#if selectedConversation}}Save conversation{{/if}}{{#if not selectedConversation}}Add conversation{{/if}}</button>
+            {{#if not selectedConversation}}
+              <button class="button secondary compact" type="submit">Add conversation</button>
+            {{/if}}
             {{#if selectedConversation}}
               <button class="button danger compact" type="button" data-action="delete-conversation" data-conversation-id="{{selectedConversation.id}}">Remove conversation</button>
             {{/if}}
           </div>
+          <p class="form-status" data-conversation-form-status aria-live="polite"></p>
         </form>
       </section>
     </aside>

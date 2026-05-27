@@ -23,6 +23,10 @@
         <p>{{conversation.description}}</p>
       </div>
       <div class="scene-header__actions">
+        <div class="scene-header__button-group">
+          <button class="button secondary compact" type="button" data-action="undo-conversation-change" {{#if not canUndoGlobalHistory}}disabled{{/if}}>Undo</button>
+          <button class="button secondary compact" type="button" data-action="redo-conversation-change" {{#if not canRedoGlobalHistory}}disabled{{/if}}>Redo</button>
+        </div>
         <p class="form-status" data-conversation-editor-status aria-live="polite">{{status}}</p>
       </div>
     </header>
@@ -57,10 +61,13 @@
         </section>
 
         <section class="actions-panel">
-          <div>
-            <p class="eyebrow">Nodes</p>
-            <h2>Outline</h2>
+          <div class="interaction-editor__header">
+            <div>
+              <p class="eyebrow">Nodes</p>
+              <h2>Outline</h2>
+            </div>
           </div>
+          <p class="form-status {{#if hasNodeOrderSaveError}}is-error{{/if}}" aria-live="polite">{{nodeOrderStatus}}</p>
           <div class="interaction-list">
             {{#each conversation.nodes as node}}
               <article class="interaction-list__item {{#if node.isSelected}}is-selected{{/if}}">
@@ -91,8 +98,8 @@
               NPC line
               <div class="script-line-picker">
                 <div class="script-line-picker__selected">
-                  {{#if selectedNode.scriptLineLabel}}{{selectedNode.scriptLineLabel}}{{/if}}
-                  {{#if not selectedNode.scriptLineLabel}}No spoken line selected{{/if}}
+                  {{#if nodeFormLineLabel}}{{nodeFormLineLabel}}{{/if}}
+                  {{#if not nodeFormLineLabel}}No spoken line selected{{/if}}
                 </div>
                 <div class="form-actions">
                   <button class="button secondary compact" type="button" data-action="clear-node-line">Clear line</button>
@@ -126,8 +133,13 @@
                 {{/each}}
               </select>
             </label>
+            {{#if selectedNode}}
+              <p class="form-status {{#if hasNodeFormSaveError}}is-error{{/if}}" aria-live="polite">{{nodeFormStatus}}</p>
+            {{/if}}
             <div class="form-actions">
-              <button class="button secondary compact" type="submit">{{#if selectedNode}}Save node{{/if}}{{#if not selectedNode}}Add node{{/if}}</button>
+              {{#if not selectedNode}}
+                <button class="button secondary compact" type="submit">Add node</button>
+              {{/if}}
               {{#if selectedNode}}
                 <button class="button secondary compact" type="button" data-action="clear-node-selection">New node</button>
                 <button class="button danger compact" type="button" data-action="delete-node" data-node-id="{{selectedNode.id}}">Remove node</button>
@@ -140,12 +152,15 @@
       <section class="actions-workbench">
         {{#if selectedNode}}
           <section class="actions-panel">
-            <div>
-              <p class="eyebrow">Selected node</p>
-              <h2>{{selectedNode.name}}</h2>
-              <p>{{#if selectedNode.scriptLineLabel}}Line: {{selectedNode.scriptLineLabel}}{{/if}}{{#if not selectedNode.scriptLineLabel}}No spoken line yet.{{/if}}</p>
+            <div class="interaction-editor__header">
+              <div>
+                <p class="eyebrow">Selected node</p>
+                <h2>{{selectedNode.name}}</h2>
+                <p>{{#if selectedNode.scriptLineLabel}}Line: {{selectedNode.scriptLineLabel}}{{/if}}{{#if not selectedNode.scriptLineLabel}}No spoken line yet.{{/if}}</p>
+              </div>
             </div>
             <p class="muted">Node enter actions run before the node line and choices appear.</p>
+            <p class="form-status {{#if hasNodeActionTreeSaveError}}is-error{{/if}}" aria-live="polite">{{nodeActionTreeStatus}}</p>
             <form class="action-step-form" data-conversation-action-form data-action-target="node">
               <label data-form-field="branch" {{#if nodeSelectedStep}}hidden{{/if}}>
                 Add to
@@ -512,10 +527,13 @@
           </section>
 
           <section class="actions-panel">
-            <div>
-              <p class="eyebrow">Choices</p>
-              <h2>Player options</h2>
+            <div class="interaction-editor__header">
+              <div>
+                <p class="eyebrow">Choices</p>
+                <h2>Player options</h2>
+              </div>
             </div>
+            <p class="form-status {{#if hasChoiceOrderSaveError}}is-error{{/if}}" aria-live="polite">{{choiceOrderStatus}}</p>
             <div class="interaction-list">
               {{#each selectedNode.choices as choice}}
                 <article class="interaction-list__item {{#if choice.isSelected}}is-selected{{/if}}">
@@ -539,10 +557,10 @@
               <label>
                 Choice line
                 <div class="script-line-picker">
-                  <div class="script-line-picker__selected">
-                    {{#if selectedChoice.linePreview}}{{selectedChoice.linePreview}}{{/if}}
-                    {{#if not selectedChoice.linePreview}}No player line selected{{/if}}
-                  </div>
+                <div class="script-line-picker__selected">
+                    {{#if choiceFormLineLabel}}{{choiceFormLineLabel}}{{/if}}
+                    {{#if not choiceFormLineLabel}}No player line selected{{/if}}
+                </div>
                   <div class="form-actions">
                     <button class="button secondary compact" type="button" data-action="clear-choice-line">Clear line</button>
                   </div>
@@ -579,8 +597,13 @@
                 <input name="end_conversation" type="checkbox" {{#if selectedChoice.end_conversation}}checked{{/if}} />
                 End conversation after this choice
               </label>
+              {{#if selectedChoice}}
+                <p class="form-status {{#if hasChoiceFormSaveError}}is-error{{/if}}" aria-live="polite">{{choiceFormStatus}}</p>
+              {{/if}}
               <div class="form-actions">
-                <button class="button secondary compact" type="submit">{{#if selectedChoice}}Save choice{{/if}}{{#if not selectedChoice}}Add choice{{/if}}</button>
+                {{#if not selectedChoice}}
+                  <button class="button secondary compact" type="submit">Add choice</button>
+                {{/if}}
                 {{#if selectedChoice}}
                   <button class="button secondary compact" type="button" data-action="clear-choice-selection">New choice</button>
                   <button class="button danger compact" type="button" data-action="delete-choice" data-choice-id="{{selectedChoice.id}}">Remove choice</button>
@@ -589,11 +612,14 @@
             </form>
 
             {{#if selectedChoice}}
-              <div>
-                <p class="eyebrow">Choice result</p>
-                <h3>{{selectedChoice.linePreview}}</h3>
-                <p class="muted">These actions run after this choice is selected and before the next node opens.</p>
+              <div class="interaction-editor__header">
+                <div>
+                  <p class="eyebrow">Choice result</p>
+                  <h3>{{selectedChoice.linePreview}}</h3>
+                  <p class="muted">These actions run after this choice is selected and before the next node opens.</p>
+                </div>
               </div>
+              <p class="form-status {{#if hasChoiceActionTreeSaveError}}is-error{{/if}}" aria-live="polite">{{choiceActionTreeStatus}}</p>
               <form class="action-step-form" data-conversation-action-form data-action-target="choice">
                 <label data-form-field="branch" {{#if choiceSelectedStep}}hidden{{/if}}>
                   Add to

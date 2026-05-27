@@ -487,7 +487,7 @@ class SceneObjectUpdate(BaseModel):
     description: str | None = Field(default=None, max_length=500)
     prompt: str | None = Field(default=None, min_length=1, max_length=160)
     inventory_image_prompt: str | None = Field(default=None, max_length=240)
-    sort_order: int | None = Field(default=None, ge=1, le=100000)
+    sort_order: int | None = Field(default=None, ge=0, le=100000)
     visible: bool | None = None
     enabled: bool | None = None
     keyboard_target_enabled: bool | None = None
