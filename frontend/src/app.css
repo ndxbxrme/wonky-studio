@@ -915,7 +915,7 @@ wonky-animation-preview {
   min-width: 0;
   min-height: 0;
   display: grid;
-  grid-template-rows: auto auto auto minmax(0, 1fr);
+  grid-template-rows: auto auto minmax(0, 1fr) minmax(0, 1fr);
   overflow: hidden;
   border-left: 1px solid #d7ded6;
   background: #ffffff;
@@ -923,10 +923,16 @@ wonky-animation-preview {
 
 .animation-sidebar__section {
   min-width: 0;
+  min-height: 0;
   padding: 16px;
   border-bottom: 1px solid #e3e8e2;
   display: grid;
   gap: 12px;
+}
+
+.animation-sidebar__section--fill {
+  overflow: hidden;
+  align-content: start;
 }
 
 .animation-create-form {
@@ -939,6 +945,9 @@ wonky-animation-preview {
 .animation-list {
   display: grid;
   gap: 8px;
+  min-height: 0;
+  overflow-y: auto;
+  align-content: start;
 }
 
 .animation-list__item {
@@ -2282,6 +2291,73 @@ textarea {
 
 .scene-runtime-inventory-shell.is-hidden {
   display: none;
+}
+
+.scene-runtime-conversation-shell {
+  position: absolute;
+  inset: 14px;
+  display: grid;
+  align-items: end;
+  justify-items: center;
+  z-index: 5;
+  pointer-events: none;
+}
+
+.scene-runtime-conversation-shell.is-hidden {
+  display: none;
+}
+
+.scene-runtime-page.is-touch-mode .scene-runtime-conversation-shell {
+  inset: 0;
+  padding: 0 14px 18px;
+}
+
+.scene-runtime-conversation-card {
+  width: min(100%, 860px);
+  pointer-events: auto;
+}
+
+.scene-runtime-conversation-card__inner {
+  display: grid;
+  gap: 0.75rem;
+  padding: 1rem 1.1rem;
+  border-radius: 18px;
+  background: rgba(15, 19, 25, 0.9);
+  color: #f7f2e5;
+  box-shadow: 0 20px 40px rgba(0, 0, 0, 0.28);
+  backdrop-filter: blur(8px);
+}
+
+.scene-runtime-conversation-card__inner .eyebrow {
+  color: rgba(247, 242, 229, 0.72);
+}
+
+.scene-runtime-conversation-card__inner h2,
+.scene-runtime-conversation-card__inner p {
+  margin: 0;
+}
+
+.scene-runtime-conversation-card__node {
+  font-size: 0.82rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: rgba(247, 242, 229, 0.66);
+}
+
+.scene-runtime-conversation-card__line {
+  font-size: 1rem;
+  line-height: 1.5;
+}
+
+.scene-runtime-conversation-choice-list {
+  display: grid;
+  gap: 0.55rem;
+}
+
+.scene-runtime-conversation-choice {
+  justify-content: flex-start;
+  text-align: left;
+  width: 100%;
 }
 
 .scene-runtime-inventory-frame {

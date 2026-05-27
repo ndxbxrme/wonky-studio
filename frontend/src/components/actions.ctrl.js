@@ -22,9 +22,12 @@ const ACTION_TYPES = [
   {value: 'crossfade_bgm', label: 'Crossfade BGM'},
   {value: 'play_sfx', label: 'Play SFX'},
   {value: 'change_scene', label: 'Change scene'},
+  {value: 'start_conversation', label: 'Start conversation'},
   {value: 'show_character', label: 'Show character'},
   {value: 'hide_character', label: 'Hide character'},
   {value: 'set_character_transform', label: 'Set character transform'},
+  {value: 'start_random_idle', label: 'Start random idle'},
+  {value: 'stop_random_idle', label: 'Stop random idle'},
   {value: 'tween_to', label: 'Tween to'},
   {value: 'play_character_animation', label: 'Play character animation'},
   {value: 'open_overlay_scene', label: 'Open overlay scene'},
@@ -73,8 +76,10 @@ const ActionsCtrl = app => async params => {
     sfxOptions: [],
     overlayBindings: [],
     overlaySceneOptions: [],
+    conversationOptions: [],
     characterOptions: [],
     characterAnimationOptions: [],
+    randomIdleCharacterAnimationOptions: [],
     verbs: [],
     inventoryObjectOptions: [],
     keyCodeOptions: KEY_CODE_OPTIONS,
@@ -139,6 +144,7 @@ const ActionsCtrl = app => async params => {
         this.overlayBindings = await apiFetch('/api/overlay-bindings');
         this.verbs = await apiFetch('/api/verbs');
         this.characterOptions = await apiFetch('/api/characters');
+        this.conversationOptions = await apiFetch('/api/conversations');
         this.inventoryObjectOptions = await apiFetch('/api/scene-objects');
         this.audioAssetOptions = await apiFetch('/api/audio-assets');
         this.bgmOptions = this.audioAssetOptions.filter(asset => asset.kind === 'bgm');
@@ -175,17 +181,31 @@ const ActionsCtrl = app => async params => {
         }))
       ));
       this.targetObjectOptions = [...this.objectOptions, ...characterObjectOptions];
+      const staticTargets = [
+        ...objects.map(object => ({
+          id: object.id,
+          labelPrefix: object.name
+        })),
+        ...(this.characterOptions ?? []).flatMap(character => (
+          (character.scene?.objects ?? []).map(object => ({
+            id: object.id,
+            labelPrefix: `${character.name} / ${object.name}`
+          }))
+        ))
+      ];
+      const uniqueTargets = new Map();
+      for (const target of staticTargets) {
+        if (!uniqueTargets.has(Number(target.id))) uniqueTargets.set(Number(target.id), target);
+      }
       const animationGroups = await Promise.all(
-        objects.map(async object => {
+        [...uniqueTargets.values()].map(async target => {
           try {
-            const animations = object.animationCount
-              ? await apiFetch(`/api/scene-objects/${object.id}/animations`)
-              : [];
+            const animations = await apiFetch(`/api/scene-objects/${target.id}/animations`);
             return animations.map(animation => ({
-              objectId: object.id,
+              objectId: target.id,
               animationId: animation.id,
               name: animation.name,
-              label: `${object.name} / ${animation.name}`
+              label: `${target.labelPrefix} / ${animation.name}`
             }));
           } catch {
             return [];
@@ -204,6 +224,32 @@ const ActionsCtrl = app => async params => {
           label: `${character.name} / ${animation.name}`
         }))
       ));
+      const characterObjectIds = new Set(
+        (this.characterOptions ?? []).flatMap(character => (
+          (character.scene?.objects ?? []).map(object => Number(object.id))
+        ))
+      );
+      this.randomIdleCharacterAnimationOptions = [
+        ...this.characterAnimationOptions.map(animation => ({
+          ...animation,
+          scope: 'character'
+        })),
+        ...this.animationOptions
+          .filter(animation => characterObjectIds.has(Number(animation.objectId)))
+          .map(animation => {
+            const owner = (this.characterOptions ?? []).find(character => (
+              (character.scene?.objects ?? []).some(object => Number(object.id) === Number(animation.objectId))
+            ));
+            return {
+              characterId: owner?.id ?? null,
+              animationId: animation.animationId,
+              objectId: animation.objectId,
+              label: animation.label,
+              scope: 'object'
+            };
+          })
+          .filter(animation => Number(animation.characterId) > 0)
+      ];
     },
 
     async loadReferencedScriptLineSummaries() {
@@ -408,7 +454,7 @@ const ActionsCtrl = app => async params => {
         this.refreshView();
         return;
       }
-      if (event.target.matches('[name="action_type"], [name="target_scope"], [name="target_object_mode"], [name="scene_object_mode"], [name="trigger_type"], [name="trigger_match_mode"]')) {
+      if (event.target.matches('[name="action_type"], [name="target_scope"], [name="target_object_mode"], [name="scene_object_mode"], [name="random_idle_scope"], [name="trigger_type"], [name="trigger_match_mode"]')) {
         this.updateActionFormVisibility(event.target.closest('[data-action-step-form]'));
         this.updateInteractionFormVisibility(event.target.closest('[data-interaction-create-form], [data-interaction-edit-form]'));
         return;
@@ -668,6 +714,7 @@ const ActionsCtrl = app => async params => {
       const targetScope = form.elements.target_scope?.value ?? 'object';
       const targetObjectMode = form.elements.target_object_mode?.value ?? 'static';
       const sceneObjectMode = form.elements.scene_object_mode?.value ?? 'static';
+      const randomIdleScope = form.elements.random_idle_scope?.value ?? 'scene_object';
       form.querySelector('[data-action-type-help]')?.replaceChildren(
         document.createTextNode(actionTypeHelp(selectedType))
       );
@@ -725,6 +772,28 @@ const ActionsCtrl = app => async params => {
         const visibleFor = (field.dataset.propertyVisibleFor ?? '').split(/\s+/);
         field.hidden = selectedType !== 'set_object_property' || !visibleFor.includes(selectedProperty);
       });
+      const randomIdleSceneObjectField = form.querySelector('[data-form-field="random-idle-scene-object"]');
+      if (randomIdleSceneObjectField) {
+        randomIdleSceneObjectField.hidden = !(['start_random_idle', 'stop_random_idle'].includes(selectedType) && randomIdleScope === 'scene_object');
+      }
+      const randomIdleCharacterField = form.querySelector('[data-form-field="random-idle-character"]');
+      if (randomIdleCharacterField) {
+        randomIdleCharacterField.hidden = !(['start_random_idle', 'stop_random_idle'].includes(selectedType) && randomIdleScope === 'character');
+      }
+      const randomIdleObjectAnimationsField = form.querySelector('[data-form-field="random-idle-object-animations"]');
+      if (randomIdleObjectAnimationsField) {
+        randomIdleObjectAnimationsField.hidden = !(selectedType === 'start_random_idle' && randomIdleScope === 'scene_object');
+      }
+      const randomIdleCharacterAnimationsField = form.querySelector('[data-form-field="random-idle-character-animations"]');
+      if (randomIdleCharacterAnimationsField) {
+        randomIdleCharacterAnimationsField.hidden = !(selectedType === 'start_random_idle' && randomIdleScope === 'character');
+      }
+      const randomIdleMinDelayField = form.querySelector('[data-form-field="random-idle-min-delay"]');
+      if (randomIdleMinDelayField) randomIdleMinDelayField.hidden = selectedType !== 'start_random_idle';
+      const randomIdleMaxDelayField = form.querySelector('[data-form-field="random-idle-max-delay"]');
+      if (randomIdleMaxDelayField) randomIdleMaxDelayField.hidden = selectedType !== 'start_random_idle';
+      const randomIdleAvoidRepeatField = form.querySelector('[data-form-field="random-idle-avoid-repeat"]');
+      if (randomIdleAvoidRepeatField) randomIdleAvoidRepeatField.hidden = selectedType !== 'start_random_idle';
     },
 
     refreshView() {
@@ -959,6 +1028,13 @@ function readActionStepForm(form) {
       wait: 'wait'
     };
   }
+  if (type === 'start_conversation') {
+    return {
+      type,
+      conversation_id: Number(formData.get('conversation_id')),
+      wait: 'wait'
+    };
+  }
   if (type === 'show_character') {
     return {
       type,
@@ -987,6 +1063,34 @@ function readActionStepForm(form) {
       y: Number(formData.get('character_y') || 540),
       scale: Number(formData.get('character_scale') || 1),
       wait
+    };
+  }
+  if (type === 'start_random_idle') {
+    const idleScope = String(formData.get('random_idle_scope') || 'scene_object');
+    return {
+      type,
+      idle_scope: idleScope,
+      scene_object_id: idleScope === 'scene_object' ? Number(formData.get('random_idle_scene_object_id')) : null,
+      character_id: idleScope === 'character' ? Number(formData.get('random_idle_character_id')) : null,
+      animation_ids: (idleScope === 'scene_object'
+        ? formData.getAll('random_idle_object_animation_ids')
+        : formData.getAll('random_idle_character_animation_ids'))
+        .map(value => Number(value))
+        .filter(value => Number.isFinite(value) && value > 0),
+      min_delay_seconds: Number(formData.get('random_idle_min_delay_seconds') || 1),
+      max_delay_seconds: Number(formData.get('random_idle_max_delay_seconds') || 3),
+      avoid_immediate_repeat: formData.get('random_idle_avoid_immediate_repeat') === 'on',
+      wait: 'continue'
+    };
+  }
+  if (type === 'stop_random_idle') {
+    const idleScope = String(formData.get('random_idle_scope') || 'scene_object');
+    return {
+      type,
+      idle_scope: idleScope,
+      scene_object_id: idleScope === 'scene_object' ? Number(formData.get('random_idle_scene_object_id')) : null,
+      character_id: idleScope === 'character' ? Number(formData.get('random_idle_character_id')) : null,
+      wait: 'continue'
     };
   }
   if (type === 'tween_to') {
@@ -1088,6 +1192,18 @@ function setActionStepFormValues(form, step) {
   if (form.elements.sfx_audio_asset_id) form.elements.sfx_audio_asset_id.value = step.audio_asset_id ?? '';
   if (form.elements.speaker_character_id) form.elements.speaker_character_id.value = step.speaker_character_id ?? '';
   if (form.elements.character_id) form.elements.character_id.value = step.character_id ?? '';
+  if (form.elements.random_idle_scope) form.elements.random_idle_scope.value = step.idle_scope ?? 'scene_object';
+  if (form.elements.random_idle_scene_object_id) form.elements.random_idle_scene_object_id.value = step.scene_object_id ?? '';
+  if (form.elements.random_idle_character_id) form.elements.random_idle_character_id.value = step.character_id ?? '';
+  if (form.elements.random_idle_min_delay_seconds) form.elements.random_idle_min_delay_seconds.value = step.min_delay_seconds ?? 1;
+  if (form.elements.random_idle_max_delay_seconds) form.elements.random_idle_max_delay_seconds.value = step.max_delay_seconds ?? 3;
+  if (form.elements.random_idle_avoid_immediate_repeat) form.elements.random_idle_avoid_immediate_repeat.checked = Boolean(step.avoid_immediate_repeat ?? true);
+  if (form.elements.random_idle_object_animation_ids) {
+    setSelectMultipleValues(form.elements.random_idle_object_animation_ids, step.idle_scope === 'scene_object' ? (step.animation_ids ?? []) : []);
+  }
+  if (form.elements.random_idle_character_animation_ids) {
+    setSelectMultipleValues(form.elements.random_idle_character_animation_ids, step.idle_scope === 'character' ? (step.animation_ids ?? []) : []);
+  }
   if (form.elements.character_x) form.elements.character_x.value = step.x ?? 960;
   if (form.elements.character_y) form.elements.character_y.value = step.y ?? 540;
   if (form.elements.character_scale) form.elements.character_scale.value = step.scale ?? 1;
@@ -1097,6 +1213,7 @@ function setActionStepFormValues(form, step) {
   if (form.elements.tween_value) form.elements.tween_value.value = step.value ?? 1;
   if (form.elements.tween_curve) form.elements.tween_curve.value = step.curve ?? 'ease_in_out';
   if (form.elements.character_animation_id) form.elements.character_animation_id.value = step.animation_id ?? '';
+  if (form.elements.conversation_id) form.elements.conversation_id.value = step.conversation_id ?? '';
   if (form.elements.fade_color) form.elements.fade_color.value = step.color ?? '#000000';
   if (form.elements.affect_audio) form.elements.affect_audio.checked = Boolean(step.affect_audio);
   if (form.elements.animation_mode) form.elements.animation_mode.value = step.mode ?? 'queued';
@@ -1106,6 +1223,13 @@ function inferValueType(value) {
   if (typeof value === 'boolean') return 'bool';
   if (typeof value === 'number') return 'number';
   return 'string';
+}
+
+function setSelectMultipleValues(select, values) {
+  const selected = new Set((values ?? []).map(value => String(value)));
+  for (const option of select.options ?? []) {
+    option.selected = selected.has(String(option.value));
+  }
 }
 
 function formatTypedValue(value) {
@@ -1311,6 +1435,23 @@ function actionLabel(step) {
   return String(step.type ?? 'action').replace(/_/g, ' ');
 }
 
+function describeRandomIdleTarget(step, context) {
+  if (step.idle_scope === 'character') return `${findCharacterName(context, step.character_id)} idle`;
+  const objectName = context?.targetObjectOptions?.find(object => Number(object.id) === Number(step.scene_object_id))?.name
+    ?? context?.inventoryObjectOptions?.find(object => Number(object.id) === Number(step.scene_object_id))?.name
+    ?? `object ${step.scene_object_id}`;
+  return `${objectName} idle`;
+}
+
+function describeRandomIdleStep(step, context) {
+  const ids = (step.animation_ids ?? []).map(Number).filter(Boolean);
+  const animationSummary = step.idle_scope === 'character'
+    ? ids.map(animationId => findRandomIdleCharacterAnimationById(context, animationId)).filter(Boolean)
+    : ids.map(animationId => findAnimationName(context, animationId)).filter(Boolean);
+  const names = animationSummary.length ? animationSummary.join(', ') : `${ids.length} animation${ids.length === 1 ? '' : 's'}`;
+  return `${describeRandomIdleTarget(step, context)} · ${step.min_delay_seconds}-${step.max_delay_seconds}s · ${names}${step.avoid_immediate_repeat === false ? '' : ' · no repeat'}`;
+}
+
 function actionMeta(step, context) {
   if (step.type === 'play_audio') {
     const speaker = step.speaker_character_id ? ` · ${findCharacterName(context, step.speaker_character_id)}` : '';
@@ -1338,9 +1479,12 @@ function actionMeta(step, context) {
   if (step.type === 'crossfade_bgm') return `${findAudioAssetName(context, step.audio_asset_id)} · ${step.duration_seconds}s`;
   if (step.type === 'play_sfx') return findAudioAssetName(context, step.audio_asset_id);
   if (step.type === 'change_scene') return findSceneName(context, step.scene_id);
+  if (step.type === 'start_conversation') return findConversationName(context, step.conversation_id);
   if (step.type === 'show_character') return `${findCharacterName(context, step.character_id)} · ${step.x}, ${step.y} · ${step.scale}${step.opacity != null ? ` · α ${step.opacity}` : ''}`;
   if (step.type === 'hide_character') return findCharacterName(context, step.character_id);
   if (step.type === 'set_character_transform') return `${findCharacterName(context, step.character_id)} · ${step.x}, ${step.y} · ${step.scale}`;
+  if (step.type === 'start_random_idle') return describeRandomIdleStep(step, context);
+  if (step.type === 'stop_random_idle') return `stop ${describeRandomIdleTarget(step, context)}`;
   if (step.type === 'tween_to') return `${findCharacterName(context, step.character_id)} · ${step.property} → ${step.value} · ${step.duration_seconds}s · ${step.curve}`;
   if (step.type === 'play_character_animation') return `${findCharacterAnimationName(context, step.character_id, step.animation_id)}`;
   if (step.type === 'open_overlay_scene') return `open overlay ${findSceneName(context, step.scene_id)}`;
@@ -1377,7 +1521,10 @@ function actionTypeHelp(type) {
     show_character: 'Shows a character in the foreground and optionally starts it on a pose or animation.',
     hide_character: 'Hides a currently visible character.',
     set_character_transform: 'Moves or rescales a visible character.',
+    start_random_idle: 'Starts an automatic idle loop that waits a random delay, plays one animation, then repeats until stopped.',
+    stop_random_idle: 'Stops a running random idle loop for a scene object or character.',
     tween_to: 'Tweens a character numeric property such as x, y, scale, or opacity over time. Back out gives a nice overshoot-and-settle entrance.',
+    start_conversation: 'Starts a conversation and hands control over to the conversation UI.',
     play_character_animation: 'Plays a saved character animation.',
     open_overlay_scene: 'Opens an overlay scene on top of the current base scene.',
     close_overlay_scene: 'Closes the current overlay scene and resumes the base scene.',
@@ -1451,10 +1598,27 @@ function findCharacterName(context, characterId) {
   return context?.characterOptions?.find(character => Number(character.id) === Number(characterId))?.name ?? `character ${characterId}`;
 }
 
+function findConversationName(context, conversationId) {
+  return context?.conversationOptions?.find(conversation => Number(conversation.id) === Number(conversationId))?.name
+    ?? `conversation ${conversationId}`;
+}
+
 function findCharacterAnimationName(context, characterId, animationId) {
   return context?.characterAnimationOptions?.find(
     animation => Number(animation.characterId) === Number(characterId) && Number(animation.animationId) === Number(animationId)
   )?.label ?? `character animation ${animationId}`;
+}
+
+function findCharacterAnimationById(context, animationId) {
+  return context?.characterAnimationOptions?.find(
+    animation => Number(animation.animationId) === Number(animationId)
+  )?.label ?? `character animation ${animationId}`;
+}
+
+function findRandomIdleCharacterAnimationById(context, animationId) {
+  return context?.randomIdleCharacterAnimationOptions?.find(
+    animation => Number(animation.animationId) === Number(animationId)
+  )?.label ?? findCharacterAnimationById(context, animationId);
 }
 
 function formatTriggerLabelPrefix(triggerType, matchMode, objectName) {
@@ -1481,4 +1645,18 @@ function describeInventoryTarget(step, context) {
   return findInventoryObjectName(context, step.scene_object_id);
 }
 
-export {ActionsCtrl};
+export {
+  ActionsCtrl,
+  ACTION_TYPES,
+  readActionStepForm,
+  setActionStepFormValues,
+  findStepById,
+  insertStep,
+  replaceStepById,
+  removeStepById,
+  moveStepById,
+  buildBranchOptions,
+  flattenActionRows,
+  actionTypeHelp,
+  summarizeScriptLine
+};

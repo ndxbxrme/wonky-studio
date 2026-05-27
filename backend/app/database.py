@@ -772,6 +772,69 @@ def init_database(
         )
         connection.execute(
             """
+            CREATE TABLE IF NOT EXISTS conversations (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                organization_id TEXT NOT NULL,
+                name TEXT NOT NULL,
+                description TEXT NOT NULL DEFAULT '',
+                start_node_id INTEGER,
+                sort_order INTEGER NOT NULL DEFAULT 0,
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE (organization_id, name),
+                FOREIGN KEY (organization_id) REFERENCES organizations(id),
+                FOREIGN KEY (start_node_id) REFERENCES conversation_nodes(id)
+            )
+            """
+        )
+        connection.execute(
+            "CREATE INDEX IF NOT EXISTS idx_conversations_org_sort ON conversations (organization_id, sort_order, id)"
+        )
+        connection.execute(
+            """
+            CREATE TABLE IF NOT EXISTS conversation_nodes (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                conversation_id INTEGER NOT NULL,
+                name TEXT NOT NULL,
+                script_line_id INTEGER,
+                speaker_character_id INTEGER,
+                enter_actions_json TEXT NOT NULL DEFAULT '[]',
+                sort_order INTEGER NOT NULL DEFAULT 0,
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (conversation_id) REFERENCES conversations(id),
+                FOREIGN KEY (script_line_id) REFERENCES script_lines(id),
+                FOREIGN KEY (speaker_character_id) REFERENCES characters(id)
+            )
+            """
+        )
+        connection.execute(
+            "CREATE INDEX IF NOT EXISTS idx_conversation_nodes_conversation ON conversation_nodes (conversation_id, sort_order, id)"
+        )
+        connection.execute(
+            """
+            CREATE TABLE IF NOT EXISTS conversation_choices (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                node_id INTEGER NOT NULL,
+                script_line_id INTEGER,
+                conditions_json TEXT NOT NULL DEFAULT '[]',
+                actions_json TEXT NOT NULL DEFAULT '[]',
+                next_node_id INTEGER,
+                end_conversation INTEGER NOT NULL DEFAULT 0,
+                sort_order INTEGER NOT NULL DEFAULT 0,
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (node_id) REFERENCES conversation_nodes(id),
+                FOREIGN KEY (script_line_id) REFERENCES script_lines(id),
+                FOREIGN KEY (next_node_id) REFERENCES conversation_nodes(id)
+            )
+            """
+        )
+        connection.execute(
+            "CREATE INDEX IF NOT EXISTS idx_conversation_choices_node ON conversation_choices (node_id, sort_order, id)"
+        )
+        connection.execute(
+            """
             CREATE TABLE IF NOT EXISTS game_variables (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 organization_id TEXT NOT NULL,
@@ -1820,6 +1883,526 @@ def delete_character(db_path: Path, organization_id: str, character_id: int) -> 
         connection.execute("DELETE FROM character_images WHERE character_id = ?", (character_id,))
         connection.execute("DELETE FROM characters WHERE id = ?", (character_id,))
     return True
+
+
+def list_conversations(db_path: Path, organization_id: str) -> list[dict[str, Any]]:
+    with connect(db_path) as connection:
+        rows = connection.execute(
+            """
+            SELECT id,
+                   organization_id,
+                   name,
+                   description,
+                   start_node_id,
+                   sort_order,
+                   created_at,
+                   updated_at
+            FROM conversations
+            WHERE organization_id = ?
+            ORDER BY sort_order ASC, id ASC
+            """,
+            (organization_id,),
+        ).fetchall()
+    return [_conversation_from_row(row) for row in rows]
+
+
+def get_conversation_by_id(
+    db_path: Path,
+    organization_id: str,
+    conversation_id: int,
+) -> dict[str, Any] | None:
+    with connect(db_path) as connection:
+        row = connection.execute(
+            """
+            SELECT id,
+                   organization_id,
+                   name,
+                   description,
+                   start_node_id,
+                   sort_order,
+                   created_at,
+                   updated_at
+            FROM conversations
+            WHERE id = ?
+              AND organization_id = ?
+            """,
+            (conversation_id, organization_id),
+        ).fetchone()
+    return _conversation_from_row(row) if row else None
+
+
+def create_conversation(
+    db_path: Path,
+    organization_id: str,
+    name: str,
+    description: str,
+    sort_order: int = 0,
+) -> dict[str, Any]:
+    with connect(db_path) as connection:
+        cursor = connection.execute(
+            """
+            INSERT INTO conversations (
+                organization_id,
+                name,
+                description,
+                sort_order
+            )
+            VALUES (?, ?, ?, ?)
+            """,
+            (
+                organization_id,
+                name.strip(),
+                description,
+                int(sort_order),
+            ),
+        )
+    created = get_conversation_by_id(db_path, organization_id, int(cursor.lastrowid))
+    if created is None:
+        raise RuntimeError("Created conversation could not be loaded")
+    return created
+
+
+def update_conversation(
+    db_path: Path,
+    organization_id: str,
+    conversation_id: int,
+    name: str | None = None,
+    description: str | None = None,
+    start_node_id: int | None = None,
+    update_start_node_id: bool = False,
+    sort_order: int | None = None,
+) -> dict[str, Any] | None:
+    assignments = ["updated_at = CURRENT_TIMESTAMP"]
+    values: list[Any] = []
+    if name is not None:
+        assignments.append("name = ?")
+        values.append(name.strip())
+    if description is not None:
+        assignments.append("description = ?")
+        values.append(description)
+    if update_start_node_id:
+        assignments.append("start_node_id = ?")
+        values.append(start_node_id if start_node_id is None else int(start_node_id))
+    if sort_order is not None:
+        assignments.append("sort_order = ?")
+        values.append(int(sort_order))
+    with connect(db_path) as connection:
+        cursor = connection.execute(
+            f"""
+            UPDATE conversations
+            SET {", ".join(assignments)}
+            WHERE id = ?
+              AND organization_id = ?
+            """,
+            (*values, conversation_id, organization_id),
+        )
+    if cursor.rowcount == 0:
+        return None
+    return get_conversation_by_id(db_path, organization_id, conversation_id)
+
+
+def delete_conversation(db_path: Path, organization_id: str, conversation_id: int) -> bool:
+    with connect(db_path) as connection:
+        row = connection.execute(
+            "SELECT 1 FROM conversations WHERE id = ? AND organization_id = ?",
+            (conversation_id, organization_id),
+        ).fetchone()
+        if row is None:
+            return False
+        connection.execute(
+            """
+            DELETE FROM conversation_choices
+            WHERE node_id IN (
+                SELECT id
+                FROM conversation_nodes
+                WHERE conversation_id = ?
+            )
+            """,
+            (conversation_id,),
+        )
+        connection.execute(
+            "DELETE FROM conversation_nodes WHERE conversation_id = ?",
+            (conversation_id,),
+        )
+        connection.execute("DELETE FROM conversations WHERE id = ?", (conversation_id,))
+    return True
+
+
+def list_conversation_nodes(
+    db_path: Path,
+    organization_id: str,
+    conversation_id: int,
+) -> list[dict[str, Any]]:
+    with connect(db_path) as connection:
+        rows = connection.execute(
+            """
+            SELECT cn.id,
+                   cn.conversation_id,
+                   cn.name,
+                   cn.script_line_id,
+                   cn.speaker_character_id,
+                   cn.enter_actions_json,
+                   cn.sort_order,
+                   cn.created_at,
+                   cn.updated_at
+            FROM conversation_nodes cn
+            JOIN conversations c ON c.id = cn.conversation_id
+            WHERE cn.conversation_id = ?
+              AND c.organization_id = ?
+            ORDER BY cn.sort_order ASC, cn.id ASC
+            """,
+            (conversation_id, organization_id),
+        ).fetchall()
+    return [_conversation_node_from_row(row) for row in rows]
+
+
+def get_conversation_node_by_id(
+    db_path: Path,
+    organization_id: str,
+    node_id: int,
+) -> dict[str, Any] | None:
+    with connect(db_path) as connection:
+        row = connection.execute(
+            """
+            SELECT cn.id,
+                   cn.conversation_id,
+                   cn.name,
+                   cn.script_line_id,
+                   cn.speaker_character_id,
+                   cn.enter_actions_json,
+                   cn.sort_order,
+                   cn.created_at,
+                   cn.updated_at
+            FROM conversation_nodes cn
+            JOIN conversations c ON c.id = cn.conversation_id
+            WHERE cn.id = ?
+              AND c.organization_id = ?
+            """,
+            (node_id, organization_id),
+        ).fetchone()
+    return _conversation_node_from_row(row) if row else None
+
+
+def create_conversation_node(
+    db_path: Path,
+    organization_id: str,
+    conversation_id: int,
+    name: str,
+    script_line_id: int | None = None,
+    speaker_character_id: int | None = None,
+    enter_actions: list[dict[str, Any]] | None = None,
+    sort_order: int = 0,
+) -> dict[str, Any]:
+    with connect(db_path) as connection:
+        cursor = connection.execute(
+            """
+            INSERT INTO conversation_nodes (
+                conversation_id,
+                name,
+                script_line_id,
+                speaker_character_id,
+                enter_actions_json,
+                sort_order
+            )
+            SELECT ?, ?, ?, ?, ?, ?
+            WHERE EXISTS (
+                SELECT 1
+                FROM conversations
+                WHERE id = ?
+                  AND organization_id = ?
+            )
+            """,
+            (
+                int(conversation_id),
+                name.strip(),
+                script_line_id if script_line_id is None else int(script_line_id),
+                speaker_character_id if speaker_character_id is None else int(speaker_character_id),
+                json.dumps(enter_actions or [], separators=(",", ":")),
+                int(sort_order),
+                int(conversation_id),
+                organization_id,
+            ),
+        )
+    created = get_conversation_node_by_id(db_path, organization_id, int(cursor.lastrowid))
+    if created is None:
+        raise RuntimeError("Created conversation node could not be loaded")
+    return created
+
+
+def update_conversation_node(
+    db_path: Path,
+    organization_id: str,
+    node_id: int,
+    name: str | None = None,
+    script_line_id: int | None = None,
+    update_script_line_id: bool = False,
+    speaker_character_id: int | None = None,
+    update_speaker_character_id: bool = False,
+    enter_actions: list[dict[str, Any]] | None = None,
+    update_enter_actions: bool = False,
+    sort_order: int | None = None,
+) -> dict[str, Any] | None:
+    assignments = ["updated_at = CURRENT_TIMESTAMP"]
+    values: list[Any] = []
+    if name is not None:
+        assignments.append("name = ?")
+        values.append(name.strip())
+    if update_script_line_id:
+        assignments.append("script_line_id = ?")
+        values.append(script_line_id if script_line_id is None else int(script_line_id))
+    if update_speaker_character_id:
+        assignments.append("speaker_character_id = ?")
+        values.append(
+            speaker_character_id if speaker_character_id is None else int(speaker_character_id)
+        )
+    if update_enter_actions:
+        assignments.append("enter_actions_json = ?")
+        values.append(json.dumps(enter_actions or [], separators=(",", ":")))
+    if sort_order is not None:
+        assignments.append("sort_order = ?")
+        values.append(int(sort_order))
+    with connect(db_path) as connection:
+        cursor = connection.execute(
+            f"""
+            UPDATE conversation_nodes
+            SET {", ".join(assignments)}
+            WHERE id = ?
+              AND conversation_id IN (
+                  SELECT id
+                  FROM conversations
+                  WHERE organization_id = ?
+              )
+            """,
+            (*values, node_id, organization_id),
+        )
+    if cursor.rowcount == 0:
+        return None
+    return get_conversation_node_by_id(db_path, organization_id, node_id)
+
+
+def delete_conversation_node(db_path: Path, organization_id: str, node_id: int) -> bool:
+    with connect(db_path) as connection:
+        row = connection.execute(
+            """
+            SELECT cn.id,
+                   cn.conversation_id
+            FROM conversation_nodes cn
+            JOIN conversations c ON c.id = cn.conversation_id
+            WHERE cn.id = ?
+              AND c.organization_id = ?
+            """,
+            (node_id, organization_id),
+        ).fetchone()
+        if row is None:
+            return False
+        connection.execute(
+            "DELETE FROM conversation_choices WHERE node_id = ?",
+            (node_id,),
+        )
+        connection.execute(
+            """
+            UPDATE conversation_choices
+            SET next_node_id = NULL,
+                end_conversation = 1,
+                updated_at = CURRENT_TIMESTAMP
+            WHERE next_node_id = ?
+            """,
+            (node_id,),
+        )
+        connection.execute(
+            """
+            UPDATE conversations
+            SET start_node_id = NULL,
+                updated_at = CURRENT_TIMESTAMP
+            WHERE id = ?
+              AND start_node_id = ?
+            """,
+            (int(row["conversation_id"]), node_id),
+        )
+        connection.execute("DELETE FROM conversation_nodes WHERE id = ?", (node_id,))
+    return True
+
+
+def list_conversation_choices(
+    db_path: Path,
+    organization_id: str,
+    node_id: int,
+) -> list[dict[str, Any]]:
+    with connect(db_path) as connection:
+        rows = connection.execute(
+            """
+            SELECT cc.id,
+                   cc.node_id,
+                   cc.script_line_id,
+                   cc.conditions_json,
+                   cc.actions_json,
+                   cc.next_node_id,
+                   cc.end_conversation,
+                   cc.sort_order,
+                   cc.created_at,
+                   cc.updated_at
+            FROM conversation_choices cc
+            JOIN conversation_nodes cn ON cn.id = cc.node_id
+            JOIN conversations c ON c.id = cn.conversation_id
+            WHERE cc.node_id = ?
+              AND c.organization_id = ?
+            ORDER BY cc.sort_order ASC, cc.id ASC
+            """,
+            (node_id, organization_id),
+        ).fetchall()
+    return [_conversation_choice_from_row(row) for row in rows]
+
+
+def get_conversation_choice_by_id(
+    db_path: Path,
+    organization_id: str,
+    choice_id: int,
+) -> dict[str, Any] | None:
+    with connect(db_path) as connection:
+        row = connection.execute(
+            """
+            SELECT cc.id,
+                   cc.node_id,
+                   cc.script_line_id,
+                   cc.conditions_json,
+                   cc.actions_json,
+                   cc.next_node_id,
+                   cc.end_conversation,
+                   cc.sort_order,
+                   cc.created_at,
+                   cc.updated_at
+            FROM conversation_choices cc
+            JOIN conversation_nodes cn ON cn.id = cc.node_id
+            JOIN conversations c ON c.id = cn.conversation_id
+            WHERE cc.id = ?
+              AND c.organization_id = ?
+            """,
+            (choice_id, organization_id),
+        ).fetchone()
+    return _conversation_choice_from_row(row) if row else None
+
+
+def create_conversation_choice(
+    db_path: Path,
+    organization_id: str,
+    node_id: int,
+    script_line_id: int | None = None,
+    conditions: list[dict[str, Any]] | None = None,
+    actions: list[dict[str, Any]] | None = None,
+    next_node_id: int | None = None,
+    end_conversation: bool = False,
+    sort_order: int = 0,
+) -> dict[str, Any]:
+    with connect(db_path) as connection:
+        cursor = connection.execute(
+            """
+            INSERT INTO conversation_choices (
+                node_id,
+                script_line_id,
+                conditions_json,
+                actions_json,
+                next_node_id,
+                end_conversation,
+                sort_order
+            )
+            SELECT ?, ?, ?, ?, ?, ?, ?
+            WHERE EXISTS (
+                SELECT 1
+                FROM conversation_nodes cn
+                JOIN conversations c ON c.id = cn.conversation_id
+                WHERE cn.id = ?
+                  AND c.organization_id = ?
+            )
+            """,
+            (
+                int(node_id),
+                script_line_id if script_line_id is None else int(script_line_id),
+                json.dumps(conditions or [], separators=(",", ":")),
+                json.dumps(actions or [], separators=(",", ":")),
+                next_node_id if next_node_id is None else int(next_node_id),
+                int(bool(end_conversation)),
+                int(sort_order),
+                int(node_id),
+                organization_id,
+            ),
+        )
+    created = get_conversation_choice_by_id(db_path, organization_id, int(cursor.lastrowid))
+    if created is None:
+        raise RuntimeError("Created conversation choice could not be loaded")
+    return created
+
+
+def update_conversation_choice(
+    db_path: Path,
+    organization_id: str,
+    choice_id: int,
+    script_line_id: int | None = None,
+    update_script_line_id: bool = False,
+    conditions: list[dict[str, Any]] | None = None,
+    update_conditions: bool = False,
+    actions: list[dict[str, Any]] | None = None,
+    update_actions: bool = False,
+    next_node_id: int | None = None,
+    update_next_node_id: bool = False,
+    end_conversation: bool | None = None,
+    sort_order: int | None = None,
+) -> dict[str, Any] | None:
+    assignments = ["updated_at = CURRENT_TIMESTAMP"]
+    values: list[Any] = []
+    if update_script_line_id:
+        assignments.append("script_line_id = ?")
+        values.append(script_line_id if script_line_id is None else int(script_line_id))
+    if update_conditions:
+        assignments.append("conditions_json = ?")
+        values.append(json.dumps(conditions or [], separators=(",", ":")))
+    if update_actions:
+        assignments.append("actions_json = ?")
+        values.append(json.dumps(actions or [], separators=(",", ":")))
+    if update_next_node_id:
+        assignments.append("next_node_id = ?")
+        values.append(next_node_id if next_node_id is None else int(next_node_id))
+    if end_conversation is not None:
+        assignments.append("end_conversation = ?")
+        values.append(int(bool(end_conversation)))
+    if sort_order is not None:
+        assignments.append("sort_order = ?")
+        values.append(int(sort_order))
+    with connect(db_path) as connection:
+        cursor = connection.execute(
+            f"""
+            UPDATE conversation_choices
+            SET {", ".join(assignments)}
+            WHERE id = ?
+              AND node_id IN (
+                  SELECT cn.id
+                  FROM conversation_nodes cn
+                  JOIN conversations c ON c.id = cn.conversation_id
+                  WHERE c.organization_id = ?
+              )
+            """,
+            (*values, choice_id, organization_id),
+        )
+    if cursor.rowcount == 0:
+        return None
+    return get_conversation_choice_by_id(db_path, organization_id, choice_id)
+
+
+def delete_conversation_choice(db_path: Path, organization_id: str, choice_id: int) -> bool:
+    with connect(db_path) as connection:
+        cursor = connection.execute(
+            """
+            DELETE FROM conversation_choices
+            WHERE id = ?
+              AND node_id IN (
+                  SELECT cn.id
+                  FROM conversation_nodes cn
+                  JOIN conversations c ON c.id = cn.conversation_id
+                  WHERE c.organization_id = ?
+              )
+            """,
+            (choice_id, organization_id),
+        )
+    return cursor.rowcount > 0
 
 
 def list_character_images(
@@ -5603,6 +6186,46 @@ def delete_scene_object(db_path: Path, scene_id: int, object_id: int) -> None:
         )
 
 
+def delete_scene_object_masks(db_path: Path, scene_id: int, object_id: int) -> bool:
+    with connect(db_path) as connection:
+        row = connection.execute(
+            """
+            SELECT id
+            FROM scene_objects
+            WHERE id = ?
+              AND scene_id = ?
+            """,
+            (object_id, scene_id),
+        ).fetchone()
+        if row is None:
+            return False
+        connection.execute(
+            """
+            UPDATE scene_objects
+            SET default_uploaded_file_id = NULL,
+                updated_at = CURRENT_TIMESTAMP
+            WHERE id = ?
+              AND scene_id = ?
+            """,
+            (object_id, scene_id),
+        )
+        connection.execute(
+            """
+            DELETE FROM object_masks
+            WHERE scene_object_id = ?
+            """,
+            (object_id,),
+        )
+        connection.execute(
+            """
+            DELETE FROM object_mask_images
+            WHERE scene_object_id = ?
+            """,
+            (object_id,),
+        )
+    return True
+
+
 def get_scene_object(
     db_path: Path,
     scene_id: int,
@@ -6937,6 +7560,24 @@ def _character_animation_frame_from_row(row: sqlite3.Row) -> dict[str, Any]:
             "height": int(row["height"] or 0),
         },
     }
+
+
+def _conversation_from_row(row: sqlite3.Row) -> dict[str, Any]:
+    return dict(row)
+
+
+def _conversation_node_from_row(row: sqlite3.Row) -> dict[str, Any]:
+    result = dict(row)
+    result["enter_actions"] = _json_loads(result.pop("enter_actions_json", "[]"), [])
+    return result
+
+
+def _conversation_choice_from_row(row: sqlite3.Row) -> dict[str, Any]:
+    result = dict(row)
+    result["conditions"] = _json_loads(result.pop("conditions_json", "[]"), [])
+    result["actions"] = _json_loads(result.pop("actions_json", "[]"), [])
+    result["end_conversation"] = bool(result.get("end_conversation"))
+    return result
 
 
 def _script_audio_candidate_viseme_event_from_row(row: sqlite3.Row) -> dict[str, Any]:

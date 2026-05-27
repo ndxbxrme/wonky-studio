@@ -60,6 +60,7 @@ var sfx_player: AudioStreamPlayer = null
 var pointer_global_position: Vector2 = Vector2.ZERO
 var active_bgm_player_index: int = 0
 var current_bgm_asset_path: String = ""
+var random_idle_states: Dictionary = {}
 
 
 func _ready() -> void:
@@ -323,6 +324,7 @@ func _load_runtime_bundle(path: String) -> void:
 	current_inventory_details = {}
 	current_held_inventory_object_id = -1
 	inventory_overlay_open = false
+	_clear_random_idle_states()
 	texture_cache.clear()
 	audio_stream_cache.clear()
 	scene_data_cache.clear()
@@ -382,6 +384,7 @@ func _load_scene_from_ref(scene_ref: Dictionary) -> void:
 	current_object_states = _build_initial_object_states(current_scene.get("objects", []))
 	current_character_states = _build_initial_character_states(current_runtime.get("characters", []))
 	inventory_overlay_open = false
+	_clear_random_idle_states()
 	pending_object_id = -1
 	hovered_object_id = -1
 	pressed_object_id = -1
@@ -1075,6 +1078,10 @@ func _execute_step(step_data: Dictionary, metadata: Dictionary = {}) -> void:
 			_apply_hide_character(step_data)
 		"set_character_transform":
 			_apply_set_character_transform(step_data)
+		"start_random_idle":
+			_start_random_idle(step_data)
+		"stop_random_idle":
+			_stop_random_idle(step_data)
 		"tween_to":
 			if str(step_data.get("wait", "wait")) == "continue":
 				_tween_character_property(step_data)
@@ -1217,6 +1224,10 @@ func _apply_hide_character(step_data: Dictionary) -> void:
 	var character_state: Dictionary = current_character_states.get(character_id, {})
 	if character_state.is_empty():
 		return
+	_stop_random_idle({
+		"idle_scope": "character",
+		"character_id": character_id,
+	})
 	character_state["visible"] = false
 	character_state["viseme_image_id"] = 0
 	current_character_states[character_id] = character_state
@@ -1289,6 +1300,134 @@ func _tween_character_property(step_data: Dictionary) -> void:
 	await tween.finished
 
 
+func _random_idle_key(step_data: Dictionary) -> String:
+	var idle_scope: String = str(step_data.get("idle_scope", "scene_object"))
+	var target_id: int = int(step_data.get("character_id", 0)) if idle_scope == "character" else int(step_data.get("scene_object_id", 0))
+	var animation_ids: Array = step_data.get("animation_ids", [])
+	var numeric_ids: Array[int] = []
+	for value in animation_ids:
+		var numeric_id: int = int(value)
+		if numeric_id > 0:
+			numeric_ids.append(numeric_id)
+	numeric_ids.sort()
+	var animation_signature_parts: PackedStringArray = PackedStringArray()
+	for numeric_id in numeric_ids:
+		animation_signature_parts.append(str(numeric_id))
+	return "%s:%d:%s" % [idle_scope, target_id, ",".join(animation_signature_parts)]
+
+
+func _random_idle_prefix(idle_scope: String, target_id: int) -> String:
+	return "%s:%d:" % [idle_scope if idle_scope == "character" else "scene_object", target_id]
+
+
+func _clear_random_idle_states() -> void:
+	random_idle_states.clear()
+
+
+func _start_random_idle(step_data: Dictionary) -> void:
+	var controller_key: String = _random_idle_key(step_data)
+	random_idle_states[controller_key] = {
+		"active": true,
+		"idle_scope": str(step_data.get("idle_scope", "scene_object")),
+		"scene_object_id": int(step_data.get("scene_object_id", 0)),
+		"character_id": int(step_data.get("character_id", 0)),
+		"animation_ids": step_data.get("animation_ids", []),
+		"min_delay_seconds": float(step_data.get("min_delay_seconds", 1.0)),
+		"max_delay_seconds": float(step_data.get("max_delay_seconds", 1.0)),
+		"avoid_immediate_repeat": bool(step_data.get("avoid_immediate_repeat", true)),
+		"last_animation_id": 0,
+	}
+	_run_random_idle_loop(controller_key)
+
+
+func _stop_random_idle(step_data: Dictionary) -> void:
+	var idle_scope: String = str(step_data.get("idle_scope", "scene_object"))
+	var target_id: int = int(step_data.get("character_id", 0)) if idle_scope == "character" else int(step_data.get("scene_object_id", 0))
+	var controller_prefix: String = _random_idle_prefix(idle_scope, target_id)
+	for controller_key in random_idle_states.keys():
+		if str(controller_key).begins_with(controller_prefix):
+			random_idle_states.erase(controller_key)
+
+
+func _pick_random_idle_animation_id(animation_ids: Array, last_animation_id: int, avoid_immediate_repeat: bool) -> int:
+	var candidates: Array[int] = []
+	for value in animation_ids:
+		var numeric_id: int = int(value)
+		if numeric_id > 0:
+			candidates.append(numeric_id)
+	if candidates.is_empty():
+		return 0
+	if avoid_immediate_repeat and candidates.size() > 1:
+		var filtered: Array[int] = []
+		for animation_id in candidates:
+			if animation_id != last_animation_id:
+				filtered.append(animation_id)
+		if not filtered.is_empty():
+			candidates = filtered
+	return candidates[randi() % candidates.size()]
+
+
+func _run_random_idle_loop(controller_key: String) -> void:
+	while random_idle_states.has(controller_key):
+		var controller: Dictionary = random_idle_states.get(controller_key, {})
+		if controller.is_empty() or not bool(controller.get("active", false)):
+			random_idle_states.erase(controller_key)
+			return
+		var min_delay_seconds: float = maxf(0.05, float(controller.get("min_delay_seconds", 1.0)))
+		var max_delay_seconds: float = maxf(min_delay_seconds, float(controller.get("max_delay_seconds", min_delay_seconds)))
+		var delay_seconds: float = min_delay_seconds if is_equal_approx(min_delay_seconds, max_delay_seconds) else randf_range(min_delay_seconds, max_delay_seconds)
+		await get_tree().create_timer(delay_seconds).timeout
+		if not random_idle_states.has(controller_key):
+			return
+		controller = random_idle_states.get(controller_key, {})
+		var animation_id: int = _pick_random_idle_animation_id(
+			controller.get("animation_ids", []),
+			int(controller.get("last_animation_id", 0)),
+			bool(controller.get("avoid_immediate_repeat", true))
+		)
+		if animation_id <= 0:
+			random_idle_states.erase(controller_key)
+			return
+		controller["last_animation_id"] = animation_id
+		random_idle_states[controller_key] = controller
+		if str(controller.get("idle_scope", "scene_object")) == "character":
+			var character_id: int = int(controller.get("character_id", 0))
+			var character_state: Dictionary = current_character_states.get(character_id, {})
+			if character_state.is_empty() or not bool(character_state.get("visible", false)):
+				random_idle_states.erase(controller_key)
+				return
+			var character_animation: Dictionary = _find_character_animation(character_id, animation_id)
+			if not character_animation.is_empty():
+				await _play_character_animation({
+					"character_id": character_id,
+					"animation_id": animation_id,
+				})
+			else:
+				var object_target_id: int = _find_character_object_animation_target(character_id, animation_id)
+				if object_target_id <= 0:
+					random_idle_states.erase(controller_key)
+					return
+				await _play_animation({
+					"type": "play_animation",
+					"target_object_mode": "static",
+					"target_object_id": object_target_id,
+					"animation_id": animation_id,
+					"mode": "queued",
+				}, {})
+		else:
+			var scene_object_id: int = int(controller.get("scene_object_id", 0))
+			if not current_object_states.has(scene_object_id):
+				random_idle_states.erase(controller_key)
+				return
+			await _play_animation({
+				"type": "play_animation",
+				"target_object_mode": "static",
+				"target_object_id": scene_object_id,
+				"animation_id": animation_id,
+				"mode": "queued",
+			}, {})
+
+
 func _play_character_animation(step_data: Dictionary) -> void:
 	var character_id: int = int(step_data.get("character_id", 0))
 	var animation_id: int = int(step_data.get("animation_id", 0))
@@ -1303,6 +1442,17 @@ func _play_character_animation(step_data: Dictionary) -> void:
 		current_character_states[character_id] = character_state
 		_render_current_scene()
 		await get_tree().create_timer(float(frame_data.get("duration_seconds", 0.066))).timeout
+
+
+func _find_character_object_animation_target(character_id: int, animation_id: int) -> int:
+	for character_data in runtime_data.get("characters", []):
+		if int(character_data.get("id", 0)) != character_id:
+			continue
+		for object_data in character_data.get("objects", []):
+			for animation_data in object_data.get("animations", []):
+				if int(animation_data.get("id", 0)) == animation_id:
+					return int(object_data.get("id", 0))
+	return 0
 
 
 func _apply_add_inventory_item(step_data: Dictionary, metadata: Dictionary = {}) -> void:

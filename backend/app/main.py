@@ -29,11 +29,15 @@ from .database import (
     create_character,
     create_character_animation,
     create_character_object,
+    create_conversation,
+    create_conversation_choice,
+    create_conversation_node,
     create_audio_asset,
     create_asset,
     create_empty_scene,
     create_game_variable,
     create_invite,
+    create_mask_candidate,
     create_or_update_overlay_scene_binding,
     create_object_animation,
     create_script_line,
@@ -53,11 +57,15 @@ from .database import (
     delete_character_animation,
     delete_character_image,
     delete_character_object,
+    delete_conversation,
+    delete_conversation_choice,
+    delete_conversation_node,
     delete_verb,
     delete_script_line,
     delete_scene_mask_prompt,
     delete_scene_and_unhook_references,
     delete_scene_object,
+    delete_scene_object_masks,
     delete_scene_interaction,
     delete_session,
     ensure_system_game_variables,
@@ -74,6 +82,9 @@ from .database import (
     get_character_image_by_id,
     get_character_animation_by_id,
     get_character_object_by_id,
+    get_conversation_by_id,
+    get_conversation_choice_by_id,
+    get_conversation_node_by_id,
     get_script_line_detail,
     get_scene_interaction,
     get_scene_object_for_organization,
@@ -97,6 +108,9 @@ from .database import (
     list_character_animations,
     list_character_images,
     list_character_objects,
+    list_conversation_choices,
+    list_conversation_nodes,
+    list_conversations,
     list_game_variables,
     list_overlay_scene_bindings,
     list_object_animations_for_object,
@@ -108,6 +122,7 @@ from .database import (
     list_script_path_options,
     list_script_audio_candidate_viseme_events,
     list_uploaded_image_files,
+    mask_candidate_exists,
     list_scene_objects_for_scene,
     list_scene_images_for_scene,
     list_scene_interactions,
@@ -139,6 +154,9 @@ from .database import (
     update_character,
     update_character_animation,
     update_character_object,
+    update_conversation,
+    update_conversation_choice,
+    update_conversation_node,
     update_scene_interaction,
     update_script_audio_candidate,
     update_script_translation_review,
@@ -1096,6 +1114,105 @@ class CharacterGenerateRequest(BaseModel):
     pose_subfolder: str | None = Field(default=None, max_length=240)
 
 
+class ConversationCondition(BaseModel):
+    variable_id: int
+    operator: str = Field(pattern="^(equals|not_equals|gt|lt|contains)$")
+    value: Any = None
+
+
+class ConversationChoiceBase(BaseModel):
+    script_line_id: int | None = None
+    conditions: list[ConversationCondition] = Field(default_factory=list, max_length=50)
+    actions: list[dict[str, Any]] = Field(default_factory=list, max_length=500)
+    next_node_id: int | None = None
+    end_conversation: bool = False
+    sort_order: int = Field(default=0, ge=0, le=100000)
+
+
+class ConversationChoiceCreate(ConversationChoiceBase):
+    pass
+
+
+class ConversationChoiceUpdate(BaseModel):
+    script_line_id: int | None = None
+    clear_script_line_id: bool = False
+    conditions: list[ConversationCondition] | None = None
+    actions: list[dict[str, Any]] | None = None
+    next_node_id: int | None = None
+    clear_next_node_id: bool = False
+    end_conversation: bool | None = None
+    sort_order: int | None = Field(default=None, ge=0, le=100000)
+
+
+class ConversationChoice(ConversationChoiceBase):
+    id: int
+    node_id: int
+    created_at: str
+    updated_at: str
+    script_line: ScriptLineDetail | None = None
+
+
+class ConversationNodeBase(BaseModel):
+    name: str = Field(min_length=1, max_length=160)
+    script_line_id: int | None = None
+    speaker_character_id: int | None = None
+    enter_actions: list[dict[str, Any]] = Field(default_factory=list, max_length=500)
+    sort_order: int = Field(default=0, ge=0, le=100000)
+
+
+class ConversationNodeCreate(ConversationNodeBase):
+    pass
+
+
+class ConversationNodeUpdate(BaseModel):
+    name: str | None = Field(default=None, min_length=1, max_length=160)
+    script_line_id: int | None = None
+    clear_script_line_id: bool = False
+    speaker_character_id: int | None = None
+    clear_speaker_character_id: bool = False
+    enter_actions: list[dict[str, Any]] | None = None
+    sort_order: int | None = Field(default=None, ge=0, le=100000)
+
+
+class ConversationNode(ConversationNodeBase):
+    id: int
+    conversation_id: int
+    created_at: str
+    updated_at: str
+    script_line: ScriptLineDetail | None = None
+    speaker_character: Character | None = None
+    choices: list[ConversationChoice] = []
+
+
+class ConversationBase(BaseModel):
+    name: str = Field(min_length=1, max_length=160)
+    description: str = Field(default="", max_length=1000)
+    sort_order: int = Field(default=0, ge=0, le=100000)
+
+
+class ConversationCreate(ConversationBase):
+    pass
+
+
+class ConversationUpdate(BaseModel):
+    name: str | None = Field(default=None, min_length=1, max_length=160)
+    description: str | None = Field(default=None, max_length=1000)
+    start_node_id: int | None = None
+    clear_start_node_id: bool = False
+    sort_order: int | None = Field(default=None, ge=0, le=100000)
+
+
+class Conversation(ConversationBase):
+    id: int
+    organization_id: str
+    start_node_id: int | None = None
+    created_at: str
+    updated_at: str
+    nodes: list[ConversationNode] = []
+    node_count: int = 0
+    choice_count: int = 0
+
+
 class ScriptAudioCandidateVisemeEvent(BaseModel):
     id: int | None = None
     script_audio_candidate_id: int
@@ -1216,6 +1333,7 @@ class ScenePreview(BaseModel):
     variables: list[GameVariable] = []
     verbs: list[Verb] = []
     characters: list[PreviewCharacterState] = []
+    conversations: list[Conversation] = []
     interactions: list[SceneInteraction] = []
     script_lines: list[ScriptLineDetail] = []
 
@@ -1227,6 +1345,76 @@ class SceneObjectReference(BaseModel):
     name: str
     keyboard_target_enabled: bool = False
     inventory_image_relative_path: str | None = None
+
+
+def _load_conversation_detail(
+    database_path: Path,
+    organization_id: str,
+    conversation_id: int,
+) -> dict[str, Any] | None:
+    conversation = get_conversation_by_id(database_path, organization_id, conversation_id)
+    if conversation is None:
+        return None
+    nodes = list_conversation_nodes(database_path, organization_id, conversation_id)
+    node_line_ids = {
+        int(node["script_line_id"])
+        for node in nodes
+        if node.get("script_line_id") is not None
+    }
+    speaker_character_ids = {
+        int(node["speaker_character_id"])
+        for node in nodes
+        if node.get("speaker_character_id") is not None
+    }
+    choices_by_node_id: dict[int, list[dict[str, Any]]] = {}
+    choice_line_ids: set[int] = set()
+    total_choice_count = 0
+    for node in nodes:
+        node_choices = list_conversation_choices(database_path, organization_id, int(node["id"]))
+        choices_by_node_id[int(node["id"])] = node_choices
+        total_choice_count += len(node_choices)
+        for choice in node_choices:
+            if choice.get("script_line_id") is not None:
+                choice_line_ids.add(int(choice["script_line_id"]))
+    script_line_ids = sorted(node_line_ids | choice_line_ids)
+    script_line_map = {
+        line_id: get_script_line_detail(database_path, organization_id, line_id)
+        for line_id in script_line_ids
+    }
+    character_map = {
+        character_id: get_character_by_id(database_path, organization_id, character_id)
+        for character_id in sorted(speaker_character_ids)
+    }
+    enriched_nodes: list[dict[str, Any]] = []
+    for node in nodes:
+        enriched_choices = []
+        for choice in choices_by_node_id.get(int(node["id"]), []):
+            enriched_choices.append(
+                {
+                    **choice,
+                    "script_line": script_line_map.get(int(choice["script_line_id"]))
+                    if choice.get("script_line_id") is not None
+                    else None,
+                }
+            )
+        enriched_nodes.append(
+            {
+                **node,
+                "script_line": script_line_map.get(int(node["script_line_id"]))
+                if node.get("script_line_id") is not None
+                else None,
+                "speaker_character": character_map.get(int(node["speaker_character_id"]))
+                if node.get("speaker_character_id") is not None
+                else None,
+                "choices": enriched_choices,
+            }
+        )
+    return {
+        **conversation,
+        "nodes": enriched_nodes,
+        "node_count": len(nodes),
+        "choice_count": total_choice_count,
+    }
 
 
 def create_app(
@@ -2312,6 +2500,221 @@ def create_app(
         user: dict[str, Any] = Depends(current_user),
     ) -> Response:
         delete_verb(database_path, user["organization_id"], verb_id)
+        return Response(status_code=204)
+
+    @app.get("/api/conversations", response_model=list[Conversation])
+    def get_conversations(user: dict[str, Any] = Depends(current_user)) -> list[dict[str, Any]]:
+        items = []
+        for conversation in list_conversations(database_path, user["organization_id"]):
+            detail = _load_conversation_detail(database_path, user["organization_id"], int(conversation["id"]))
+            if detail is not None:
+                items.append(detail)
+        return items
+
+    @app.post("/api/conversations", response_model=Conversation, status_code=201)
+    def post_conversation(
+        payload: ConversationCreate,
+        user: dict[str, Any] = Depends(current_user),
+    ) -> dict[str, Any]:
+        try:
+            conversation = create_conversation(
+                database_path,
+                organization_id=user["organization_id"],
+                name=payload.name,
+                description=payload.description,
+                sort_order=payload.sort_order,
+            )
+        except sqlite3.IntegrityError as exc:
+            raise HTTPException(status_code=409, detail="Conversation name already exists") from exc
+        return _load_conversation_detail(database_path, user["organization_id"], int(conversation["id"]))
+
+    @app.get("/api/conversations/{conversation_id}", response_model=Conversation)
+    def get_conversation(
+        conversation_id: int,
+        user: dict[str, Any] = Depends(current_user),
+    ) -> dict[str, Any]:
+        conversation = _load_conversation_detail(database_path, user["organization_id"], conversation_id)
+        if conversation is None:
+            raise HTTPException(status_code=404, detail="Conversation not found")
+        return conversation
+
+    @app.patch("/api/conversations/{conversation_id}", response_model=Conversation)
+    def patch_conversation(
+        conversation_id: int,
+        payload: ConversationUpdate,
+        user: dict[str, Any] = Depends(current_user),
+    ) -> dict[str, Any]:
+        existing = get_conversation_by_id(database_path, user["organization_id"], conversation_id)
+        if existing is None:
+            raise HTTPException(status_code=404, detail="Conversation not found")
+        update_start_node_id = payload.clear_start_node_id or payload.start_node_id is not None
+        start_node_id = payload.start_node_id
+        if start_node_id is not None:
+            node = get_conversation_node_by_id(database_path, user["organization_id"], start_node_id)
+            if node is None or int(node["conversation_id"]) != conversation_id:
+                raise HTTPException(status_code=400, detail="Start node must belong to this conversation")
+        try:
+            updated = update_conversation(
+                database_path,
+                organization_id=user["organization_id"],
+                conversation_id=conversation_id,
+                name=payload.name,
+                description=payload.description,
+                start_node_id=start_node_id,
+                update_start_node_id=update_start_node_id,
+                sort_order=payload.sort_order,
+            )
+        except sqlite3.IntegrityError as exc:
+            raise HTTPException(status_code=409, detail="Conversation name already exists") from exc
+        if updated is None:
+            raise HTTPException(status_code=404, detail="Conversation not found")
+        return _load_conversation_detail(database_path, user["organization_id"], conversation_id)
+
+    @app.delete("/api/conversations/{conversation_id}", status_code=204)
+    def delete_conversation_endpoint(
+        conversation_id: int,
+        user: dict[str, Any] = Depends(current_user),
+    ) -> Response:
+        if not delete_conversation(database_path, user["organization_id"], conversation_id):
+            raise HTTPException(status_code=404, detail="Conversation not found")
+        return Response(status_code=204)
+
+    @app.post("/api/conversations/{conversation_id}/nodes", response_model=ConversationNode, status_code=201)
+    def post_conversation_node(
+        conversation_id: int,
+        payload: ConversationNodeCreate,
+        user: dict[str, Any] = Depends(current_user),
+    ) -> dict[str, Any]:
+        if get_conversation_by_id(database_path, user["organization_id"], conversation_id) is None:
+            raise HTTPException(status_code=404, detail="Conversation not found")
+        if payload.script_line_id is not None and get_script_line_detail(database_path, user["organization_id"], payload.script_line_id) is None:
+            raise HTTPException(status_code=400, detail="Script line does not exist")
+        if payload.speaker_character_id is not None:
+            _require_character(database_path, user["organization_id"], payload.speaker_character_id)
+        node = create_conversation_node(
+            database_path,
+            organization_id=user["organization_id"],
+            conversation_id=conversation_id,
+            name=payload.name,
+            script_line_id=payload.script_line_id,
+            speaker_character_id=payload.speaker_character_id,
+            enter_actions=payload.enter_actions,
+            sort_order=payload.sort_order,
+        )
+        return {**node, "choices": []}
+
+    @app.patch("/api/conversation-nodes/{node_id}", response_model=ConversationNode)
+    def patch_conversation_node(
+        node_id: int,
+        payload: ConversationNodeUpdate,
+        user: dict[str, Any] = Depends(current_user),
+    ) -> dict[str, Any]:
+        existing = get_conversation_node_by_id(database_path, user["organization_id"], node_id)
+        if existing is None:
+            raise HTTPException(status_code=404, detail="Conversation node not found")
+        update_script_line_id = payload.clear_script_line_id or payload.script_line_id is not None
+        if payload.script_line_id is not None and get_script_line_detail(database_path, user["organization_id"], payload.script_line_id) is None:
+            raise HTTPException(status_code=400, detail="Script line does not exist")
+        update_speaker_character_id = payload.clear_speaker_character_id or payload.speaker_character_id is not None
+        if payload.speaker_character_id is not None:
+            _require_character(database_path, user["organization_id"], payload.speaker_character_id)
+        updated = update_conversation_node(
+            database_path,
+            organization_id=user["organization_id"],
+            node_id=node_id,
+            name=payload.name,
+            script_line_id=payload.script_line_id,
+            update_script_line_id=update_script_line_id,
+            speaker_character_id=payload.speaker_character_id,
+            update_speaker_character_id=update_speaker_character_id,
+            enter_actions=payload.enter_actions,
+            update_enter_actions=payload.enter_actions is not None,
+            sort_order=payload.sort_order,
+        )
+        if updated is None:
+            raise HTTPException(status_code=404, detail="Conversation node not found")
+        return {**updated, "choices": list_conversation_choices(database_path, user["organization_id"], node_id)}
+
+    @app.delete("/api/conversation-nodes/{node_id}", status_code=204)
+    def delete_conversation_node_endpoint(
+        node_id: int,
+        user: dict[str, Any] = Depends(current_user),
+    ) -> Response:
+        if not delete_conversation_node(database_path, user["organization_id"], node_id):
+            raise HTTPException(status_code=404, detail="Conversation node not found")
+        return Response(status_code=204)
+
+    @app.post("/api/conversation-nodes/{node_id}/choices", response_model=ConversationChoice, status_code=201)
+    def post_conversation_choice(
+        node_id: int,
+        payload: ConversationChoiceCreate,
+        user: dict[str, Any] = Depends(current_user),
+    ) -> dict[str, Any]:
+        node = get_conversation_node_by_id(database_path, user["organization_id"], node_id)
+        if node is None:
+            raise HTTPException(status_code=404, detail="Conversation node not found")
+        if payload.script_line_id is not None and get_script_line_detail(database_path, user["organization_id"], payload.script_line_id) is None:
+            raise HTTPException(status_code=400, detail="Script line does not exist")
+        if payload.next_node_id is not None:
+            next_node = get_conversation_node_by_id(database_path, user["organization_id"], payload.next_node_id)
+            if next_node is None or int(next_node["conversation_id"]) != int(node["conversation_id"]):
+                raise HTTPException(status_code=400, detail="Next node must belong to this conversation")
+        return create_conversation_choice(
+            database_path,
+            organization_id=user["organization_id"],
+            node_id=node_id,
+            script_line_id=payload.script_line_id,
+            conditions=[condition.model_dump() for condition in payload.conditions],
+            actions=payload.actions,
+            next_node_id=payload.next_node_id,
+            end_conversation=payload.end_conversation,
+            sort_order=payload.sort_order,
+        )
+
+    @app.patch("/api/conversation-choices/{choice_id}", response_model=ConversationChoice)
+    def patch_conversation_choice(
+        choice_id: int,
+        payload: ConversationChoiceUpdate,
+        user: dict[str, Any] = Depends(current_user),
+    ) -> dict[str, Any]:
+        existing = get_conversation_choice_by_id(database_path, user["organization_id"], choice_id)
+        if existing is None:
+            raise HTTPException(status_code=404, detail="Conversation choice not found")
+        update_script_line_id = payload.clear_script_line_id or payload.script_line_id is not None
+        if payload.script_line_id is not None and get_script_line_detail(database_path, user["organization_id"], payload.script_line_id) is None:
+            raise HTTPException(status_code=400, detail="Script line does not exist")
+        update_next_node_id = payload.clear_next_node_id or payload.next_node_id is not None
+        if payload.next_node_id is not None:
+            owner_node = get_conversation_node_by_id(database_path, user["organization_id"], int(existing["node_id"]))
+            next_node = get_conversation_node_by_id(database_path, user["organization_id"], payload.next_node_id)
+            if owner_node is None or next_node is None or int(owner_node["conversation_id"]) != int(next_node["conversation_id"]):
+                raise HTTPException(status_code=400, detail="Next node must belong to this conversation")
+        updated = update_conversation_choice(
+            database_path,
+            organization_id=user["organization_id"],
+            choice_id=choice_id,
+            script_line_id=payload.script_line_id,
+            update_script_line_id=update_script_line_id,
+            conditions=[condition.model_dump() for condition in payload.conditions] if payload.conditions is not None else None,
+            update_conditions=payload.conditions is not None,
+            actions=payload.actions,
+            update_actions=payload.actions is not None,
+            next_node_id=payload.next_node_id,
+            update_next_node_id=update_next_node_id,
+            end_conversation=payload.end_conversation,
+            sort_order=payload.sort_order,
+        )
+        if updated is None:
+            raise HTTPException(status_code=404, detail="Conversation choice not found")
+        return updated
+
+    @app.delete("/api/conversation-choices/{choice_id}", status_code=204)
+    def delete_conversation_choice_endpoint(
+        choice_id: int,
+        user: dict[str, Any] = Depends(current_user),
+    ) -> Response:
+        if not delete_conversation_choice(database_path, user["organization_id"], choice_id):
+            raise HTTPException(status_code=404, detail="Conversation choice not found")
         return Response(status_code=204)
 
     @app.get("/api/characters", response_model=list[Character])
@@ -3825,6 +4228,24 @@ def create_app(
         _invalidate_scene_preview_manifest_cache(app_settings.storage_root, user["organization_id"], scene_id)
         return Response(status_code=204)
 
+    @app.delete("/api/scenes/{scene_id}/objects/{object_id}/masks", status_code=204)
+    def delete_scene_object_masks_endpoint(
+        scene_id: int,
+        object_id: int,
+        user: dict[str, Any] = Depends(current_user),
+    ) -> Response:
+        if not scene_belongs_to_organization(
+            database_path,
+            scene_id=scene_id,
+            organization_id=user["organization_id"],
+        ):
+            raise HTTPException(status_code=404, detail="Scene not found")
+        cleared = delete_scene_object_masks(database_path, scene_id=scene_id, object_id=object_id)
+        if not cleared:
+            raise HTTPException(status_code=404, detail="Object not found")
+        _invalidate_scene_preview_manifest_cache(app_settings.storage_root, user["organization_id"], scene_id)
+        return Response(status_code=204)
+
     @app.get("/api/scene-objects/{object_id}/animations", response_model=list[ObjectAnimation])
     def get_object_animations(
         object_id: int,
@@ -4513,15 +4934,58 @@ def create_app(
         if object_mask is None:
             raise HTTPException(status_code=404, detail="Object mask not found")
         if request.operation == "combine":
-            target_masks = list_object_masks_for_object(
+            existing_target_masks = list_object_masks_for_object(
                 database_path,
                 scene_object_id=object_mask["scene_object_id"],
                 organization_id=user["organization_id"],
             )
             combined_image = _combine_object_mask_images(
                 app_settings.storage_root,
-                target_masks,
+                existing_target_masks,
             )
+            target_masks = existing_target_masks
+            if request.apply_all:
+                scene_object = get_scene_object_for_organization(
+                    database_path,
+                    object_id=int(object_mask["scene_object_id"]),
+                    organization_id=user["organization_id"],
+                )
+                if scene_object is None:
+                    raise HTTPException(status_code=404, detail="Object not found")
+                scene_images = list_scene_images_for_scene(database_path, int(object_mask["scene_id"]))
+                masks_by_uploaded_file_id = {
+                    int(target_mask["uploaded_file_id"]): target_mask
+                    for target_mask in existing_target_masks
+                }
+                target_masks = []
+                for scene_image in scene_images:
+                    uploaded_file_id = int(scene_image["uploaded_file_id"])
+                    target_mask = masks_by_uploaded_file_id.get(uploaded_file_id)
+                    if target_mask is None:
+                        output_root = (
+                            app_settings.storage_root
+                            / _safe_path_segment(user["organization_id"])
+                            / "derived"
+                            / "scenes"
+                            / str(object_mask["scene_id"])
+                            / "images"
+                            / str(uploaded_file_id)
+                        )
+                        safe_object_stem = _safe_path_segment(str(scene_object["name"]))
+                        raw_mask_path = output_root / f"{safe_object_stem}_00.png"
+                        soft_mask_path = output_root / f"{safe_object_stem}_00_soft.png"
+                        target_mask = create_object_mask(
+                            database_path,
+                            scene_object_id=int(object_mask["scene_object_id"]),
+                            uploaded_file_id=uploaded_file_id,
+                            relative_path=_relative_storage_path(app_settings.storage_root, raw_mask_path),
+                            soft_relative_path=_relative_storage_path(app_settings.storage_root, soft_mask_path),
+                            prompt_text=str(scene_object.get("prompt") or ""),
+                            bbox_json=None,
+                            score=None,
+                        )
+                        masks_by_uploaded_file_id[uploaded_file_id] = target_mask
+                    target_masks.append(target_mask)
             updated_masks = []
             for target_mask in target_masks:
                 _write_object_mask_image(app_settings.storage_root, target_mask, combined_image)
@@ -5076,11 +5540,20 @@ async def _run_mask_extraction_job(
         image_path = settings.storage_root / scene_image["relative_path"]
         if not image_path.exists():
             raise RuntimeError(f"Scene image content not found: {scene_image['original_filename']}")
+        prompt_groups: dict[str, dict[str, Any]] = {}
+        for scene_object in objects_to_extract:
+            prompt_key = str(scene_object["prompt"] or "").strip().lower()
+            group = prompt_groups.setdefault(prompt_key, {
+                "prompt": scene_object["prompt"],
+                "objects": [],
+            })
+            group["objects"].append(scene_object)
         work_items.append(
             {
                 "scene_image": scene_image,
                 "image_path": image_path,
                 "objects_to_extract": objects_to_extract,
+                "prompt_groups": prompt_groups,
             }
         )
 
@@ -5090,6 +5563,7 @@ async def _run_mask_extraction_job(
             for item in work_items:
                 scene_image = item["scene_image"]
                 objects_to_extract = item["objects_to_extract"]
+                prompt_groups = item["prompt_groups"]
                 image_path = item["image_path"]
                 update_processing_job_progress(
                     database_path,
@@ -5109,7 +5583,7 @@ async def _run_mask_extraction_job(
                 )
                 prompt_results = await worker_session.extract_masks(
                     image_path=image_path,
-                    prompts=[scene_object["prompt"] for scene_object in objects_to_extract],
+                    prompts=[group["prompt"] for group in prompt_groups.values()],
                     output_dir=output_dir,
                     max_edge=settings.segmentation_max_edge,
                     threshold=settings.segmentation_threshold,
@@ -5117,31 +5591,51 @@ async def _run_mask_extraction_job(
                     blur=settings.segmentation_blur_radius,
                 )
                 processed_image_count += 1
-                object_by_prompt_text = {
-                    scene_object["prompt"].lower(): scene_object for scene_object in objects_to_extract
-                }
                 for prompt_result in prompt_results:
-                    scene_object = object_by_prompt_text.get(prompt_result.prompt.lower())
-                    if scene_object is None:
+                    prompt_group = prompt_groups.get(prompt_result.prompt.lower())
+                    if prompt_group is None:
                         continue
                     candidate = _top_segmentation_candidate(prompt_result.candidates)
                     if candidate is None:
                         continue
-                    create_object_mask(
+                    scene_prompt, _ = create_scene_mask_prompt(
                         database_path,
-                        scene_object_id=scene_object["id"],
-                        uploaded_file_id=scene_image["uploaded_file_id"],
-                        relative_path=_relative_storage_path(settings.storage_root, candidate.raw_path),
-                        soft_relative_path=(
-                            _relative_storage_path(settings.storage_root, candidate.soft_path)
-                            if candidate.soft_path
-                            else None
-                        ),
-                        prompt_text=scene_object["prompt"],
-                        bbox_json=json.dumps(candidate.bbox) if candidate.bbox else None,
-                        score=candidate.score,
+                        scene_id=scene_id,
+                        text=str(prompt_group["prompt"] or ""),
+                        source="object_prompt",
+                        enabled=True,
                     )
-                    created_candidate_count += 1
+                    raw_relative_path = _relative_storage_path(settings.storage_root, candidate.raw_path)
+                    soft_relative_path = (
+                        _relative_storage_path(settings.storage_root, candidate.soft_path)
+                        if candidate.soft_path
+                        else None
+                    )
+                    if not mask_candidate_exists(database_path, int(scene_prompt["id"]), int(scene_image["id"])):
+                        create_mask_candidate(
+                            database_path,
+                            prompt_id=int(scene_prompt["id"]),
+                            scene_image_id=int(scene_image["id"]),
+                            uploaded_file_id=int(scene_image["uploaded_file_id"]),
+                            raw_relative_path=raw_relative_path,
+                            soft_relative_path=soft_relative_path,
+                            bbox_json=json.dumps(candidate.bbox) if candidate.bbox else None,
+                            score=candidate.score,
+                        )
+                    for scene_object in prompt_group["objects"]:
+                        _materialize_object_mask_from_candidate(
+                            database_path=database_path,
+                            storage_root=settings.storage_root,
+                            organization_id=job["organization_id"],
+                            scene_id=scene_id,
+                            scene_object=scene_object,
+                            scene_image=scene_image,
+                            raw_source_path=candidate.raw_path,
+                            soft_source_path=candidate.soft_path,
+                            bbox_json=json.dumps(candidate.bbox) if candidate.bbox else None,
+                            score=candidate.score,
+                        )
+                        created_candidate_count += 1
                 progress_current += len(objects_to_extract)
                 update_processing_job_progress(
                     database_path,
@@ -5156,6 +5650,7 @@ async def _run_mask_extraction_job(
         for item in work_items:
             scene_image = item["scene_image"]
             objects_to_extract = item["objects_to_extract"]
+            prompt_groups = item["prompt_groups"]
             image_path = item["image_path"]
             update_processing_job_progress(
                 database_path,
@@ -5174,36 +5669,56 @@ async def _run_mask_extraction_job(
             )
             prompt_results = await segmentation_provider.extract_masks(
                 image_path=image_path,
-                prompts=[scene_object["prompt"] for scene_object in objects_to_extract],
+                prompts=[group["prompt"] for group in prompt_groups.values()],
                 output_dir=output_dir,
             )
 
             processed_image_count += 1
-            object_by_prompt_text = {
-                scene_object["prompt"].lower(): scene_object for scene_object in objects_to_extract
-            }
             for prompt_result in prompt_results:
-                scene_object = object_by_prompt_text.get(prompt_result.prompt.lower())
-                if scene_object is None:
+                prompt_group = prompt_groups.get(prompt_result.prompt.lower())
+                if prompt_group is None:
                     continue
                 candidate = _top_segmentation_candidate(prompt_result.candidates)
                 if candidate is None:
                     continue
-                create_object_mask(
+                scene_prompt, _ = create_scene_mask_prompt(
                     database_path,
-                    scene_object_id=scene_object["id"],
-                    uploaded_file_id=scene_image["uploaded_file_id"],
-                    relative_path=_relative_storage_path(settings.storage_root, candidate.raw_path),
-                    soft_relative_path=(
-                        _relative_storage_path(settings.storage_root, candidate.soft_path)
-                        if candidate.soft_path
-                        else None
-                    ),
-                    prompt_text=scene_object["prompt"],
-                    bbox_json=json.dumps(candidate.bbox) if candidate.bbox else None,
-                    score=candidate.score,
+                    scene_id=scene_id,
+                    text=str(prompt_group["prompt"] or ""),
+                    source="object_prompt",
+                    enabled=True,
                 )
-                created_candidate_count += 1
+                raw_relative_path = _relative_storage_path(settings.storage_root, candidate.raw_path)
+                soft_relative_path = (
+                    _relative_storage_path(settings.storage_root, candidate.soft_path)
+                    if candidate.soft_path
+                    else None
+                )
+                if not mask_candidate_exists(database_path, int(scene_prompt["id"]), int(scene_image["id"])):
+                    create_mask_candidate(
+                        database_path,
+                        prompt_id=int(scene_prompt["id"]),
+                        scene_image_id=int(scene_image["id"]),
+                        uploaded_file_id=int(scene_image["uploaded_file_id"]),
+                        raw_relative_path=raw_relative_path,
+                        soft_relative_path=soft_relative_path,
+                        bbox_json=json.dumps(candidate.bbox) if candidate.bbox else None,
+                        score=candidate.score,
+                    )
+                for scene_object in prompt_group["objects"]:
+                    _materialize_object_mask_from_candidate(
+                        database_path=database_path,
+                        storage_root=settings.storage_root,
+                        organization_id=job["organization_id"],
+                        scene_id=scene_id,
+                        scene_object=scene_object,
+                        scene_image=scene_image,
+                        raw_source_path=candidate.raw_path,
+                        soft_source_path=candidate.soft_path,
+                        bbox_json=json.dumps(candidate.bbox) if candidate.bbox else None,
+                        score=candidate.score,
+                    )
+                    created_candidate_count += 1
 
             progress_current += len(objects_to_extract)
             update_processing_job_progress(
@@ -5843,6 +6358,16 @@ def _normalize_action_step(
             }
         )
         return normalized
+    if step_type == "start_conversation":
+        conversation_id = _required_int(step.get("conversation_id"), "Conversation is required")
+        _require_conversation(db_path, organization_id, conversation_id)
+        normalized.update(
+            {
+                "conversation_id": conversation_id,
+                "wait": "wait",
+            }
+        )
+        return normalized
     if step_type == "show_character":
         character_id = _required_int(step.get("character_id"), "Character is required")
         _require_character(db_path, organization_id, character_id)
@@ -5887,6 +6412,86 @@ def _normalize_action_step(
             }
         )
         return normalized
+    if step_type == "start_random_idle":
+        idle_scope = _choice(step.get("idle_scope"), {"scene_object", "character"}, "scene_object")
+        animation_ids = [
+            _required_int(animation_id, "Random idle animation IDs must be integers")
+            for animation_id in (step.get("animation_ids") or [])
+        ]
+        if not animation_ids:
+            raise HTTPException(status_code=400, detail="Choose at least one random idle animation")
+        min_delay_seconds = _positive_float(step.get("min_delay_seconds"), "Minimum random idle delay is required")
+        max_delay_seconds = _positive_float(step.get("max_delay_seconds"), "Maximum random idle delay is required")
+        if max_delay_seconds < min_delay_seconds:
+            raise HTTPException(status_code=400, detail="Maximum random idle delay must be greater than or equal to the minimum")
+        normalized.update(
+            {
+                "idle_scope": idle_scope,
+                "animation_ids": sorted(set(animation_ids)),
+                "min_delay_seconds": float(min_delay_seconds),
+                "max_delay_seconds": float(max_delay_seconds),
+                "avoid_immediate_repeat": bool(step.get("avoid_immediate_repeat", True)),
+                "wait": "continue",
+            }
+        )
+        if idle_scope == "scene_object":
+            scene_object_id = _required_int(step.get("scene_object_id"), "Scene object is required")
+            if not scene_object_belongs_to_scene(db_path, scene_id, scene_object_id, organization_id):
+                raise HTTPException(status_code=400, detail="Random idle target object is not in this scene")
+            for animation_id in normalized["animation_ids"]:
+                if not object_animation_belongs_to_object(db_path, animation_id, scene_object_id, organization_id):
+                    raise HTTPException(status_code=400, detail="One or more random idle animations do not belong to the chosen object")
+            normalized["scene_object_id"] = scene_object_id
+        else:
+            character_id = _required_int(step.get("character_id"), "Character is required")
+            character = _require_character(db_path, organization_id, character_id)
+            character_scene_objects = (
+                list_scene_objects_for_scene(db_path, int(character["scene_id"]))
+                if character.get("scene_id") is not None
+                else []
+            )
+            character_scene_object_ids = [int(item["id"]) for item in character_scene_objects]
+            character_animation_ids = {
+                int(animation["id"])
+                for animation in list_character_animations(db_path, organization_id, character_id)
+            }
+            character_object_animation_ids: set[int] = set()
+            for scene_object_id in character_scene_object_ids:
+                for animation in list_object_animations_for_object(
+                    db_path,
+                    scene_object_id=scene_object_id,
+                    organization_id=organization_id,
+                ):
+                    character_object_animation_ids.add(int(animation["id"]))
+            for animation_id in normalized["animation_ids"]:
+                if (
+                    int(animation_id) not in character_animation_ids
+                    and int(animation_id) not in character_object_animation_ids
+                ):
+                    raise HTTPException(
+                        status_code=400,
+                        detail="One or more random idle animations do not belong to the chosen character",
+                    )
+            normalized["character_id"] = character_id
+        return normalized
+    if step_type == "stop_random_idle":
+        idle_scope = _choice(step.get("idle_scope"), {"scene_object", "character"}, "scene_object")
+        normalized.update(
+            {
+                "idle_scope": idle_scope,
+                "wait": "continue",
+            }
+        )
+        if idle_scope == "scene_object":
+            scene_object_id = _required_int(step.get("scene_object_id"), "Scene object is required")
+            if not scene_object_belongs_to_scene(db_path, scene_id, scene_object_id, organization_id):
+                raise HTTPException(status_code=400, detail="Random idle target object is not in this scene")
+            normalized["scene_object_id"] = scene_object_id
+        else:
+            character_id = _required_int(step.get("character_id"), "Character is required")
+            _require_character(db_path, organization_id, character_id)
+            normalized["character_id"] = character_id
+        return normalized
     if step_type == "play_character_animation":
         character_id = _required_int(step.get("character_id"), "Character is required")
         animation_id = _required_int(step.get("animation_id"), "Character animation is required")
@@ -5922,6 +6527,17 @@ def _require_character(db_path: Path, organization_id: str, character_id: int) -
     if character is None:
         raise HTTPException(status_code=400, detail="Character does not exist")
     return character
+
+
+def _require_conversation(
+    db_path: Path,
+    organization_id: str,
+    conversation_id: int,
+) -> dict[str, Any]:
+    conversation = get_conversation_by_id(db_path, organization_id, conversation_id)
+    if conversation is None:
+        raise HTTPException(status_code=400, detail="Conversation does not exist")
+    return conversation
 
 
 def _require_character_animation(
@@ -6045,6 +6661,48 @@ def _relative_storage_path(storage_root: Path, path: Path) -> str:
         return str(resolved_path.relative_to(resolved_root))
     except ValueError as exc:
         raise RuntimeError(f"Generated mask was written outside storage root: {path}") from exc
+
+
+def _materialize_object_mask_from_candidate(
+    database_path: Path,
+    storage_root: Path,
+    organization_id: str,
+    scene_id: int,
+    scene_object: dict[str, Any],
+    scene_image: dict[str, Any],
+    raw_source_path: Path,
+    soft_source_path: Path | None,
+    bbox_json: str | None,
+    score: float | None,
+) -> dict[str, Any]:
+    output_root = (
+        storage_root
+        / _safe_path_segment(organization_id)
+        / "derived"
+        / "scenes"
+        / str(scene_id)
+        / "images"
+        / str(scene_image["uploaded_file_id"])
+    )
+    safe_object_stem = _safe_path_segment(str(scene_object["name"]))
+    raw_mask_path = output_root / f"{safe_object_stem}_00.png"
+    soft_mask_path = output_root / f"{safe_object_stem}_00_soft.png"
+    raw_mask_path.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copyfile(raw_source_path, raw_mask_path)
+    relative_soft_path: str | None = None
+    if soft_source_path is not None and soft_source_path.exists():
+        shutil.copyfile(soft_source_path, soft_mask_path)
+        relative_soft_path = _relative_storage_path(storage_root, soft_mask_path)
+    return create_object_mask(
+        database_path,
+        scene_object_id=scene_object["id"],
+        uploaded_file_id=int(scene_image["uploaded_file_id"]),
+        relative_path=_relative_storage_path(storage_root, raw_mask_path),
+        soft_relative_path=relative_soft_path,
+        prompt_text=scene_object["prompt"],
+        bbox_json=bbox_json,
+        score=score,
+    )
 
 
 def _is_valid_inventory_image_file(path: Path | None) -> bool:
@@ -6234,10 +6892,18 @@ def _build_scene_preview_payload(
         _character_preview_payload(database_path, storage_root, organization_id, int(character["id"]))
         for character in list_characters(database_path, organization_id)
     ]
+    preview_conversations = [
+        detail
+        for conversation in list_conversations(database_path, organization_id)
+        if (detail := _load_conversation_detail(database_path, organization_id, int(conversation["id"]))) is not None
+    ]
     preview_interactions = scene_manifest["interactions"]
+    preview_script_line_ids = _collect_script_line_ids(preview_interactions)
+    for conversation in preview_conversations:
+        _collect_script_line_ids_from_conversation(conversation, preview_script_line_ids)
     preview_script_lines = [
         line
-        for line_id in sorted(_collect_script_line_ids(preview_interactions))
+        for line_id in sorted(preview_script_line_ids)
         if (line := get_script_line_detail(database_path, organization_id, line_id)) is not None
     ]
     return {
@@ -6250,6 +6916,7 @@ def _build_scene_preview_payload(
         "variables": preview_variables,
         "verbs": preview_verbs,
         "characters": preview_characters,
+        "conversations": preview_conversations,
         "script_lines": preview_script_lines,
     }
 
@@ -6461,6 +7128,25 @@ def _collect_script_line_ids_from_steps(steps: list[dict[str, Any]], line_ids: s
                     continue
         _collect_script_line_ids_from_steps(step.get("then_steps") or [], line_ids)
         _collect_script_line_ids_from_steps(step.get("else_steps") or [], line_ids)
+
+
+def _collect_script_line_ids_from_conversation(conversation: dict[str, Any], line_ids: set[int]) -> None:
+    for node in conversation.get("nodes") or []:
+        script_line_id = node.get("script_line_id")
+        if script_line_id:
+            try:
+                line_ids.add(int(script_line_id))
+            except (TypeError, ValueError):
+                pass
+        _collect_script_line_ids_from_steps(node.get("enter_actions") or [], line_ids)
+        for choice in node.get("choices") or []:
+            choice_line_id = choice.get("script_line_id")
+            if choice_line_id:
+                try:
+                    line_ids.add(int(choice_line_id))
+                except (TypeError, ValueError):
+                    pass
+            _collect_script_line_ids_from_steps(choice.get("actions") or [], line_ids)
 
 
 def _collect_go_to_frame_refs_from_steps(

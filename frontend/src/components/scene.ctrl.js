@@ -122,6 +122,13 @@ const SceneCtrl = app => async params => {
       const deleteObjectButton = event.target.closest('[data-action="delete-object"]');
       if (deleteObjectButton) {
         await this.deleteObject(deleteObjectButton);
+        return;
+      }
+
+      const clearObjectMasksButton = event.target.closest('[data-action="clear-object-masks"]');
+      if (clearObjectMasksButton) {
+        await this.clearObjectMasks(clearObjectMasksButton);
+        return;
       }
     },
 
@@ -595,6 +602,7 @@ const SceneCtrl = app => async params => {
         if (job.status === 'succeeded') {
           await this.refreshScene();
           notifyScenePreview(this.sceneId, 'mask-updated');
+          this.applyMaskExtractionResultStatus(job);
           return;
         }
         if (job.status === 'failed') {
@@ -606,6 +614,31 @@ const SceneCtrl = app => async params => {
       } catch {
         this.pollTimer = window.setTimeout(() => this.pollExtractionJob(jobId), 3000);
       }
+    },
+
+    applyMaskExtractionResultStatus(job) {
+      let result = null;
+      try {
+        result = job?.result_json ? JSON.parse(job.result_json) : null;
+      } catch {
+        result = null;
+      }
+      const createdCount = Number(result?.created_candidate_count ?? 0);
+      const skippedCount = Number(result?.skipped_existing_count ?? 0);
+      const processedImageCount = Number(result?.processed_image_count ?? 0);
+      if (createdCount <= 0) {
+        this.setStatus(
+          '[data-mask-extraction-status]',
+          processedImageCount > 0
+            ? `Mask extraction finished, but no new masks were created. Try a broader prompt or clear masks on the target object before extracting again.`
+            : 'Mask extraction finished, but no new masks were created.'
+        );
+        return;
+      }
+      this.setStatus(
+        '[data-mask-extraction-status]',
+        `Created ${createdCount} mask${createdCount === 1 ? '' : 's'}${skippedCount > 0 ? ` and skipped ${skippedCount} existing` : ''}.`
+      );
     },
 
     async addObject(form) {
@@ -719,6 +752,34 @@ const SceneCtrl = app => async params => {
       } catch {
         button.disabled = false;
         this.setStatus('[data-object-list-status]', 'Could not remove object.');
+      } finally {
+        button.disabled = false;
+      }
+    },
+
+    async clearObjectMasks(button) {
+      const objectId = button.dataset.objectId;
+      if (!objectId) return;
+      const objectName = button.dataset.objectName ?? 'this object';
+      const confirmed = window.confirm(
+        `Clear all masks for ${objectName}?\n\nThis removes every mask for this object and resets its default frame. You can then run Extract masks again or redraw them manually.`
+      );
+      if (!confirmed) return;
+      const typedName = window.prompt(
+        `Type ${objectName} to confirm clearing its masks.`
+      );
+      if (typedName !== objectName) return;
+      button.disabled = true;
+      this.setStatus('[data-object-list-status]', `Clearing masks for ${objectName}...`);
+      try {
+        await apiFetch(`/api/scenes/${this.sceneId}/objects/${objectId}/masks`, {
+          method: 'DELETE'
+        });
+        await this.refreshScene();
+        notifyScenePreview(this.sceneId, 'object-updated');
+        this.setStatus('[data-object-list-status]', `Cleared masks for ${objectName}.`);
+      } catch {
+        this.setStatus('[data-object-list-status]', `Could not clear masks for ${objectName}.`);
       } finally {
         button.disabled = false;
       }

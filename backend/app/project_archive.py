@@ -29,6 +29,9 @@ EXPORT_TABLE_ORDER = [
     "character_object_masks",
     "character_animations",
     "character_animation_frames",
+    "conversations",
+    "conversation_nodes",
+    "conversation_choices",
     "scenes",
     "scene_images",
     "scene_objects",
@@ -109,6 +112,22 @@ TABLE_SELECTS = {
         JOIN characters c ON c.id = ca.character_id
         WHERE c.organization_id = ?
         ORDER BY caf.id ASC
+    """,
+    "conversations": "SELECT * FROM conversations WHERE organization_id = ? ORDER BY id ASC",
+    "conversation_nodes": """
+        SELECT cn.*
+        FROM conversation_nodes cn
+        JOIN conversations c ON c.id = cn.conversation_id
+        WHERE c.organization_id = ?
+        ORDER BY cn.id ASC
+    """,
+    "conversation_choices": """
+        SELECT cc.*
+        FROM conversation_choices cc
+        JOIN conversation_nodes cn ON cn.id = cc.node_id
+        JOIN conversations c ON c.id = cn.conversation_id
+        WHERE c.organization_id = ?
+        ORDER BY cc.id ASC
     """,
     "scenes": "SELECT * FROM scenes WHERE organization_id = ? ORDER BY id ASC",
     "scene_images": """

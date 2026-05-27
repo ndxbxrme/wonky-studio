@@ -44,6 +44,7 @@ const PreviewCtrl = app => async params => {
     runtimeVariables: [],
     inventoryItems: [],
     runtimeState: null,
+    activeConversation: null,
     overlayRuntimeSnapshot: null,
     overlayRuntimeState: null,
     previewObjects: [],
@@ -102,6 +103,9 @@ const PreviewCtrl = app => async params => {
     stageRoot: null,
     cursorRoot: null,
     feedbackLayerRoot: null,
+    conversationOverlayRoot: null,
+    conversationCardRoot: null,
+    randomIdleControllers: new Map(),
     inventoryLayoutVersion: 0,
     loadingScreen: null,
     loadingOverlay: null,
@@ -176,6 +180,7 @@ const PreviewCtrl = app => async params => {
 
     unload() {
       this.executionVersion += 1;
+      this.stopAllRandomIdleControllers();
       this.stopMediaPlayback();
       if (!previewRouteTransitionInFlight) previewAudioRuntime.stopAll();
       if (this.preloadTimer) window.clearTimeout(this.preloadTimer);
@@ -208,6 +213,8 @@ const PreviewCtrl = app => async params => {
       this.stageRoot = this.root?.querySelector('[data-preview-stage]') ?? null;
       this.cursorRoot = this.root?.querySelector('[data-preview-cursor]') ?? null;
       this.feedbackLayerRoot = this.root?.querySelector('[data-preview-feedback-layer]') ?? null;
+      this.conversationOverlayRoot = this.root?.querySelector('[data-conversation-overlay]') ?? null;
+      this.conversationCardRoot = this.root?.querySelector('[data-conversation-card]') ?? null;
       this.verbMenuRoot = this.root?.querySelector('[data-verb-menu-root]') ?? null;
       this.loadingScreen = this.root?.querySelector('[data-preview-loading-screen]') ?? null;
       this.loadingOverlay = this.root?.querySelector('[data-preview-loading-overlay]') ?? null;
@@ -311,6 +318,7 @@ const PreviewCtrl = app => async params => {
     prepareState() {
       this.runtimeSnapshot = createRuntimeSnapshot(this.previewData);
       this.runtimeState = cloneRuntimeState(this.runtimeSnapshot);
+      this.activeConversation = null;
       this.currentSubtitle = null;
       this.currentFade = null;
       this.focusedBaseObjectId = null;
@@ -755,6 +763,7 @@ const PreviewCtrl = app => async params => {
       this.syncSubtitleOverlay('base');
       this.syncFadeOverlay('base');
       this.syncOverlayPresentation();
+      this.syncConversationOverlay();
       this.syncSubtitleOverlay('overlay');
       this.syncFadeOverlay('overlay');
       this.syncVerbMenu();
@@ -1131,6 +1140,7 @@ const PreviewCtrl = app => async params => {
 
     async reloadRuntime({rerunSceneEnter}) {
       this.executionVersion += 1;
+      this.stopAllRandomIdleControllers();
       this.stopMediaPlayback();
       const persistedInventory = structuredClone(this.runtimeState?.inventory ?? []);
       invalidatePreviewDataCache(this.sceneId);
@@ -1149,6 +1159,7 @@ const PreviewCtrl = app => async params => {
 
     async resetRuntime() {
       this.executionVersion += 1;
+      this.stopAllRandomIdleControllers();
       this.stopMediaPlayback();
       this.runtimeState = cloneRuntimeState(this.runtimeSnapshot);
       this.closeVerbMenu();
@@ -1293,6 +1304,11 @@ const PreviewCtrl = app => async params => {
         }
         return;
       }
+      const conversationChoiceButton = event.target.closest('[data-action="select-conversation-choice"]');
+      if (conversationChoiceButton) {
+        await this.selectConversationChoice(Number(conversationChoiceButton.dataset.choiceId));
+        return;
+      }
 
       const inventoryItemButton = event.target.closest('[data-action="select-inventory-item"]');
       if (inventoryItemButton) {
@@ -1355,6 +1371,10 @@ const PreviewCtrl = app => async params => {
       }
       if (this.runtimeState?.inventoryOverlayOpen && !insideInventory) {
         this.closeInventoryOverlay();
+      }
+      if (this.hasActiveConversation()) {
+        event.preventDefault();
+        event.stopPropagation();
       }
     },
 
@@ -1459,6 +1479,10 @@ const PreviewCtrl = app => async params => {
         await this.closeOverlayScene();
         return;
       }
+      if (this.hasActiveConversation()) {
+        event.preventDefault();
+        return;
+      }
 
       if (keyCode === this.getInventoryConfig().keyCode && !this.overlayPreviewData) {
         event.preventDefault();
@@ -1524,6 +1548,7 @@ const PreviewCtrl = app => async params => {
     async onPreviewObjectClick(event, layer) {
       if (layer === 'base' && this.overlayPreviewData) return;
       if (layer === 'overlay' && !this.overlayPreviewData) return;
+      if (this.hasActiveConversation()) return;
       if (this.isCharacterModalActiveForLayer(layer)) return;
       const objectId = Number(event.detail?.objectId);
       if (!objectId) return;
@@ -1545,6 +1570,7 @@ const PreviewCtrl = app => async params => {
     async onPreviewObjectMenu(event, layer) {
       if (layer === 'base' && this.overlayPreviewData) return;
       if (layer === 'overlay' && !this.overlayPreviewData) return;
+      if (this.hasActiveConversation()) return;
       if (this.isCharacterModalActiveForLayer(layer)) return;
       if (this.getHeldInventoryItem()) {
         this.clearHeldInventoryItem();
@@ -1559,6 +1585,7 @@ const PreviewCtrl = app => async params => {
       if (!this.isTouchMode) return;
       if (layer === 'base' && this.overlayPreviewData) return;
       if (layer === 'overlay' && !this.overlayPreviewData) return;
+      if (this.hasActiveConversation()) return;
       await this.ensureTouchFullscreen();
       if (this.activeVerbMenu) {
         this.closeVerbMenu();
@@ -1897,8 +1924,12 @@ const PreviewCtrl = app => async params => {
       return this.getVisibleCharacters().length > 0;
     },
 
+    hasActiveConversation() {
+      return Boolean(this.activeConversation?.conversationId);
+    },
+
     isCharacterModalActiveForLayer(layer) {
-      return layer === 'base' && this.hasVisibleCharacters();
+      return layer === 'base' && (this.hasVisibleCharacters() || this.hasActiveConversation());
     },
 
     syncCharacterModalState() {
@@ -1958,12 +1989,319 @@ const PreviewCtrl = app => async params => {
       return null;
     },
 
+    getConversationDefinition(conversationId) {
+      return (this.previewData?.conversations ?? []).find(
+        conversation => Number(conversation.id) === Number(conversationId)
+      ) ?? null;
+    },
+
+    resolveConversationChoiceLabel(choice) {
+      const text = String(
+        choice?.script_line?.source_text
+        || choice?.script_line?.selected_translation?.text
+        || ''
+      ).trim();
+      return text || 'Untitled choice';
+    },
+
+    conversationChoiceMatchesConditions(choice) {
+      return (choice?.conditions ?? []).every(condition => {
+        const variableState = this.runtimeState?.variables?.[condition.variable_id];
+        return compareVariable(variableState?.value, condition.operator, condition.value);
+      });
+    },
+
+    resolveVisibleConversationChoices(node) {
+      return (node?.choices ?? [])
+        .filter(choice => this.conversationChoiceMatchesConditions(choice))
+        .map(choice => ({
+          ...choice,
+          label: this.resolveConversationChoiceLabel(choice)
+        }));
+    },
+
+    syncConversationOverlay() {
+      if (this.conversationOverlayRoot) {
+        this.conversationOverlayRoot.classList.toggle('is-hidden', !this.hasActiveConversation());
+      }
+      if (this.conversationCardRoot) {
+        this.conversationCardRoot.innerHTML = this.hasActiveConversation()
+          ? renderConversationCard(this.activeConversation)
+          : '';
+      }
+    },
+
+    async startConversation(conversationId, version = this.executionVersion) {
+      const conversation = this.getConversationDefinition(conversationId);
+      const startNodeId = Number(conversation?.start_node_id ?? 0);
+      if (!conversation || !startNodeId) return;
+      if (this.hasActiveConversation()) this.endConversation();
+      let resolveCompletion = () => {};
+      const completionPromise = new Promise(resolve => {
+        resolveCompletion = resolve;
+      });
+      this.activeConversation = {
+        conversationId: Number(conversation.id),
+        conversationName: conversation.name || `Conversation ${conversation.id}`,
+        nodeId: null,
+        nodeName: '',
+        nodeLine: '',
+        waiting: true,
+        choices: [],
+        resolveCompletion
+      };
+      if (this.runtimeState?.inventoryOverlayOpen) this.closeInventoryOverlay();
+      if (this.activeVerbMenu) this.closeVerbMenu();
+      this.syncCharacterModalState();
+      this.syncConversationOverlay();
+      await this.enterConversationNode(Number(conversation.id), startNodeId, version);
+      await completionPromise;
+    },
+
+    async enterConversationNode(conversationId, nodeId, version = this.executionVersion) {
+      const conversation = this.getConversationDefinition(conversationId);
+      const node = conversation?.nodes?.find(item => Number(item.id) === Number(nodeId));
+      if (!conversation || !node) {
+        this.endConversation();
+        return;
+      }
+      const resolveCompletion = this.activeConversation?.resolveCompletion;
+      this.activeConversation = {
+        conversationId: Number(conversation.id),
+        conversationName: conversation.name || `Conversation ${conversation.id}`,
+        nodeId: Number(node.id),
+        nodeName: node.name || `Node ${node.id}`,
+        nodeLine: String(node?.script_line?.source_text || '').trim(),
+        waiting: true,
+        choices: [],
+        resolveCompletion
+      };
+      this.syncConversationOverlay();
+      await this.executeActionTree(
+        'base',
+        node.enter_actions ?? [],
+        {reason: 'conversation_node_enter', conversationId: Number(conversation.id), conversationNodeId: Number(node.id)},
+        {remaining: MAX_CHAINED_INTERACTIONS},
+        version
+      );
+      if (version !== this.executionVersion) return;
+      if (!this.hasActiveConversation() || Number(this.activeConversation?.conversationId) !== Number(conversation.id)) return;
+      const line = node.script_line || (node.script_line_id ? this.pickScriptLine('base', [node.script_line_id]) : null);
+      if (line) {
+        await this.playAudioForLine('base', line, version, node.speaker_character_id ?? null);
+      }
+      if (version !== this.executionVersion) return;
+      if (!this.hasActiveConversation() || Number(this.activeConversation?.conversationId) !== Number(conversation.id)) return;
+      const choices = this.resolveVisibleConversationChoices(node);
+      if (!choices.length) {
+        this.endConversation();
+        return;
+      }
+      this.activeConversation = {
+        ...this.activeConversation,
+        waiting: false,
+        choices
+      };
+      this.syncConversationOverlay();
+    },
+
+    async selectConversationChoice(choiceId) {
+      if (!this.activeConversation?.conversationId || this.activeConversation.waiting) return;
+      const conversationId = Number(this.activeConversation.conversationId);
+      const nodeId = Number(this.activeConversation.nodeId);
+      const conversation = this.getConversationDefinition(conversationId);
+      const node = conversation?.nodes?.find(item => Number(item.id) === Number(nodeId));
+      const choice = node?.choices?.find(item => Number(item.id) === Number(choiceId));
+      if (!conversation || !node || !choice) return;
+      this.activeConversation = {
+        ...this.activeConversation,
+        waiting: true,
+        choices: []
+      };
+      this.syncConversationOverlay();
+      await this.executeActionTree(
+        'base',
+        choice.actions ?? [],
+        {
+          reason: 'conversation_choice',
+          conversationId,
+          conversationNodeId: nodeId,
+          conversationChoiceId: Number(choice.id)
+        },
+        {remaining: MAX_CHAINED_INTERACTIONS},
+        this.executionVersion
+      );
+      if (!this.hasActiveConversation() || Number(this.activeConversation?.conversationId) !== Number(conversationId)) return;
+      if (choice.end_conversation || !choice.next_node_id) {
+        this.endConversation();
+        return;
+      }
+      await this.enterConversationNode(conversationId, Number(choice.next_node_id), this.executionVersion);
+    },
+
+    endConversation() {
+      const resolver = this.activeConversation?.resolveCompletion;
+      this.activeConversation = null;
+      this.syncConversationOverlay();
+      this.syncCharacterModalState();
+      if (typeof resolver === 'function') resolver();
+    },
+
+    buildRandomIdleControllerKey(step) {
+      const idleScope = step?.idle_scope === 'character' ? 'character' : 'scene_object';
+      const targetId = idleScope === 'character'
+        ? Number(step.character_id)
+        : Number(step.scene_object_id);
+      const animationIds = (step?.animation_ids ?? [])
+        .map(Number)
+        .filter(Boolean)
+        .sort((left, right) => left - right)
+        .join(',');
+      return `${idleScope}:${targetId}:${animationIds}`;
+    },
+
+    buildRandomIdleControllerPrefix(idleScope, targetId) {
+      const scope = idleScope === 'character' ? 'character' : 'scene_object';
+      return `${scope}:${Number(targetId)}:`;
+    },
+
+    stopRandomIdleControllerByKey(controllerKey) {
+      const controller = this.randomIdleControllers.get(controllerKey);
+      if (!controller) return;
+      controller.active = false;
+      if (controller.timerId) window.clearTimeout(controller.timerId);
+      this.randomIdleControllers.delete(controllerKey);
+    },
+
+    stopAllRandomIdleControllers() {
+      for (const controllerKey of this.randomIdleControllers.keys()) {
+        this.stopRandomIdleControllerByKey(controllerKey);
+      }
+    },
+
+    stopRandomIdleControllersForCharacter(characterId) {
+      this.stopRandomIdleControllersForTarget('character', characterId);
+    },
+
+    stopRandomIdleControllersForTarget(idleScope, targetId) {
+      const controllerPrefix = this.buildRandomIdleControllerPrefix(idleScope, targetId);
+      for (const controllerKey of Array.from(this.randomIdleControllers.keys())) {
+        if (!controllerKey.startsWith(controllerPrefix)) continue;
+        this.stopRandomIdleControllerByKey(controllerKey);
+      }
+    },
+
+    stopRandomIdleControllers(step) {
+      if (step?.idle_scope === 'character') {
+        this.stopRandomIdleControllersForTarget('character', Number(step.character_id || 0));
+        return;
+      }
+      this.stopRandomIdleControllersForTarget('scene_object', Number(step?.scene_object_id || 0));
+    },
+
+    async scheduleRandomIdleController(controllerKey) {
+      const controller = this.randomIdleControllers.get(controllerKey);
+      if (!controller || !controller.active) return;
+      const minDelayMs = Math.max(50, Math.round(Number(controller.minDelaySeconds || 0) * 1000));
+      const maxDelayMs = Math.max(minDelayMs, Math.round(Number(controller.maxDelaySeconds || 0) * 1000));
+      const nextDelayMs = minDelayMs >= maxDelayMs
+        ? minDelayMs
+        : Math.round(minDelayMs + (Math.random() * (maxDelayMs - minDelayMs)));
+      controller.timerId = window.setTimeout(async () => {
+        const nextController = this.randomIdleControllers.get(controllerKey);
+        if (!nextController || !nextController.active) return;
+        nextController.timerId = null;
+        const animationId = pickRandomIdleAnimationId(nextController.animationIds, nextController.lastAnimationId, nextController.avoidImmediateRepeat);
+        if (!animationId) {
+          this.stopRandomIdleControllerByKey(controllerKey);
+          return;
+        }
+        nextController.lastAnimationId = animationId;
+        if (nextController.scope === 'character') {
+          const characterState = this.getCharacterState(nextController.characterId);
+          if (!characterState?.visible) {
+            this.stopRandomIdleControllerByKey(controllerKey);
+            return;
+          }
+          const characterAnimationTarget = resolveRandomIdleCharacterAnimationTarget(
+            this.previewData,
+            nextController.characterId,
+            animationId
+          );
+          if (!characterAnimationTarget) {
+            this.stopRandomIdleControllerByKey(controllerKey);
+            return;
+          }
+          if (characterAnimationTarget.type === 'character') {
+            await this.playCharacterAnimationAction(nextController.characterId, animationId, this.executionVersion);
+          } else {
+            await this.playCharacterObjectAnimationAction(
+              nextController.characterId,
+              characterAnimationTarget.objectId,
+              animationId,
+              this.executionVersion
+            );
+          }
+        } else {
+          const objectState = this.getLayerRuntimeState('base')?.objects?.[nextController.sceneObjectId];
+          if (!objectState) {
+            this.stopRandomIdleControllerByKey(controllerKey);
+            return;
+          }
+          await this.executeActionStep('base', {
+            type: 'play_animation',
+            target_object_mode: 'static',
+            target_object_id: nextController.sceneObjectId,
+            animation_id: animationId,
+            mode: 'queued',
+            wait: 'wait'
+          }, {}, {remaining: MAX_CHAINED_INTERACTIONS}, this.executionVersion);
+        }
+        if (this.randomIdleControllers.get(controllerKey)?.active) {
+          await this.scheduleRandomIdleController(controllerKey);
+        }
+      }, nextDelayMs);
+    },
+
+    async startRandomIdleController(step) {
+      const controllerKey = this.buildRandomIdleControllerKey(step);
+      this.stopRandomIdleControllerByKey(controllerKey);
+      const controller = {
+        active: true,
+        key: controllerKey,
+        scope: String(step.idle_scope || 'scene_object'),
+        sceneObjectId: Number(step.scene_object_id || 0),
+        characterId: Number(step.character_id || 0),
+        animationIds: (step.animation_ids ?? []).map(Number).filter(Boolean),
+        minDelaySeconds: Number(step.min_delay_seconds || 1),
+        maxDelaySeconds: Number(step.max_delay_seconds || 1),
+        avoidImmediateRepeat: step.avoid_immediate_repeat !== false,
+        lastAnimationId: null,
+        timerId: null
+      };
+      this.randomIdleControllers.set(controllerKey, controller);
+      await this.scheduleRandomIdleController(controllerKey);
+    },
+
     async playCharacterAnimationAction(characterId, animationId, version) {
       const characterState = this.getCharacterState(characterId);
       const animation = getCharacterAnimationDefinition(this.previewData, characterId, animationId);
       if (!characterState || !animation?.frames?.length) return;
       for (const frame of animation.frames) {
         if (version !== this.executionVersion) return;
+        this.pushRuntimeToPreview('base');
+        await wait(frame.duration_seconds);
+      }
+    },
+
+    async playCharacterObjectAnimationAction(characterId, objectId, animationId, version) {
+      const characterState = this.getCharacterState(characterId);
+      const objectState = characterState?.objects?.[Number(objectId)] ?? null;
+      const animation = getCharacterObjectAnimationDefinition(this.previewData, characterId, objectId, animationId);
+      if (!characterState || !objectState || !animation?.frames?.length) return;
+      for (const frame of animation.frames) {
+        if (version !== this.executionVersion) return;
+        objectState.render = frame.render ?? objectState.render ?? null;
         this.pushRuntimeToPreview('base');
         await wait(frame.duration_seconds);
       }
@@ -2052,15 +2390,20 @@ const PreviewCtrl = app => async params => {
         if (!resolvedObjectId) return;
         const resolvedAnimationId = resolveStepAnimationId(previewData, step, resolvedObjectId);
         if (!resolvedAnimationId) return;
-        const runPromise = preview?.playAnimation(resolvedObjectId, resolvedAnimationId, {
-          mode: step.mode ?? 'queued'
-        });
+        const characterObjectOwner = findCharacterIdForObjectId(this.previewData, resolvedObjectId);
+        const runPromise = characterObjectOwner
+          ? this.playCharacterObjectAnimationAction(characterObjectOwner, resolvedObjectId, resolvedAnimationId, version)
+          : preview?.playAnimation(resolvedObjectId, resolvedAnimationId, {
+              mode: step.mode ?? 'queued'
+            });
         if (step.wait !== 'continue') await runPromise;
         else void runPromise;
         const render = getAnimationLastRender(previewData, resolvedObjectId, resolvedAnimationId);
-        if (render && runtimeState?.objects?.[resolvedObjectId]) {
-          runtimeState.objects[resolvedObjectId].render = render;
-          this.pushRuntimeToPreview(layer);
+        const {state: objectState} = this.findRuntimeObjectState(resolvedObjectId);
+        if (render && objectState) {
+          objectState.render = render;
+          this.pushRuntimeToPreview('base');
+          if (layer === 'overlay') this.pushRuntimeToPreview('overlay');
         }
         return;
       }
@@ -2093,10 +2436,13 @@ const PreviewCtrl = app => async params => {
         const resolvedObjectId = resolveStepTargetObjectId(step, metadata);
         if (!resolvedObjectId) return;
         const render = getObjectRenderForFrame(previewData, resolvedObjectId, step.frame_index);
-        if (runtimeState?.objects?.[resolvedObjectId]) {
-          runtimeState.objects[resolvedObjectId].render = render;
+        const {state: objectState} = this.findRuntimeObjectState(resolvedObjectId);
+        if (objectState) objectState.render = render;
+        if (findCharacterIdForObjectId(this.previewData, resolvedObjectId)) {
+          this.pushRuntimeToPreview('base');
+        } else {
+          preview?.setObjectRender?.(resolvedObjectId, render);
         }
-        preview?.setObjectRender?.(resolvedObjectId, render);
         this.refreshInspectorState();
         return;
       }
@@ -2138,6 +2484,7 @@ const PreviewCtrl = app => async params => {
       if (step.type === 'hide_character') {
         const characterState = this.getCharacterState(step.character_id);
         if (!characterState) return;
+        this.stopRandomIdleControllersForCharacter(step.character_id);
         characterState.visible = false;
         const definition = getCharacterDefinition(this.previewData, step.character_id);
         characterState.objects = createCharacterObjectRuntimeState(definition);
@@ -2153,6 +2500,16 @@ const PreviewCtrl = app => async params => {
         characterState.y = Number(step.y ?? characterState.y ?? 540);
         characterState.scale = Number(step.scale ?? characterState.scale ?? 1);
         this.pushRuntimeToPreview('base');
+        return;
+      }
+
+      if (step.type === 'start_random_idle') {
+        await this.startRandomIdleController(step);
+        return;
+      }
+
+      if (step.type === 'stop_random_idle') {
+        this.stopRandomIdleControllers(step);
         return;
       }
 
@@ -2321,6 +2678,11 @@ const PreviewCtrl = app => async params => {
           await this.closeOverlayScene();
         }
         await this.changeScene(step.scene_id);
+        return;
+      }
+
+      if (step.type === 'start_conversation') {
+        await this.startConversation(step.conversation_id, version);
         return;
       }
 
@@ -2808,7 +3170,9 @@ function cloneRuntimeState(snapshot) {
 }
 
 function getAnimationLastRender(previewData, objectId, animationId) {
-  const object = (previewData?.objects ?? []).find(item => Number(item.id) === Number(objectId));
+  const object = (previewData?.objects ?? []).find(item => Number(item.id) === Number(objectId))
+    ?? getCharacterObjectDefinition(previewData, objectId)?.object
+    ?? null;
   const animation = object?.animations?.find(item => Number(item.id) === Number(animationId));
   const frames = animation?.frames ?? [];
   for (let index = frames.length - 1; index >= 0; index -= 1) {
@@ -2818,7 +3182,9 @@ function getAnimationLastRender(previewData, objectId, animationId) {
 }
 
 function getAnimationIdForName(previewData, objectId, animationName) {
-  const object = (previewData?.objects ?? []).find(item => Number(item.id) === Number(objectId));
+  const object = (previewData?.objects ?? []).find(item => Number(item.id) === Number(objectId))
+    ?? getCharacterObjectDefinition(previewData, objectId)?.object
+    ?? null;
   if (!object) return null;
   const normalizedName = String(animationName ?? '').trim().toLowerCase();
   if (!normalizedName) return null;
@@ -2829,7 +3195,9 @@ function getAnimationIdForName(previewData, objectId, animationName) {
 }
 
 function getObjectRenderForFrame(previewData, objectId, frameIndex) {
-  const object = (previewData?.objects ?? []).find(item => Number(item.id) === Number(objectId));
+  const object = (previewData?.objects ?? []).find(item => Number(item.id) === Number(objectId))
+    ?? getCharacterObjectDefinition(previewData, objectId)?.object
+    ?? null;
   if (!object) return null;
   const numericFrameIndex = Number(frameIndex);
   const directRender = (object.frame_renders ?? []).find(
@@ -2862,6 +3230,40 @@ function getCharacterAnimationDefinition(previewData, characterId, animationId) 
   return (character?.animations ?? []).find(
     animation => Number(animation.id) === Number(animationId)
   ) ?? null;
+}
+
+function getCharacterObjectDefinition(previewData, objectId) {
+  for (const character of (previewData?.characters ?? [])) {
+    const object = (character?.objects ?? []).find(item => Number(item.id) === Number(objectId));
+    if (object) {
+      return {character, object};
+    }
+  }
+  return null;
+}
+
+function findCharacterIdForObjectId(previewData, objectId) {
+  return Number(getCharacterObjectDefinition(previewData, objectId)?.character?.id ?? 0) || null;
+}
+
+function getCharacterObjectAnimationDefinition(previewData, characterId, objectId, animationId) {
+  const character = getCharacterDefinition(previewData, characterId);
+  const object = (character?.objects ?? []).find(item => Number(item.id) === Number(objectId));
+  return (object?.animations ?? []).find(
+    animation => Number(animation.id) === Number(animationId)
+  ) ?? null;
+}
+
+function resolveRandomIdleCharacterAnimationTarget(previewData, characterId, animationId) {
+  const characterAnimation = getCharacterAnimationDefinition(previewData, characterId, animationId);
+  if (characterAnimation) return {type: 'character'};
+  const character = getCharacterDefinition(previewData, characterId);
+  for (const object of (character?.objects ?? [])) {
+    if ((object?.animations ?? []).some(animation => Number(animation.id) === Number(animationId))) {
+      return {type: 'object', objectId: Number(object.id)};
+    }
+  }
+  return null;
 }
 
 function createCharacterObjectRuntimeState(character) {
@@ -2927,7 +3329,10 @@ function numericOrNull(value) {
 }
 
 function compareVariable(leftValue, operator, rightValue) {
+  if (operator === 'contains') return String(leftValue ?? '').includes(String(rightValue ?? ''));
   if (operator === 'not_equals') return leftValue !== rightValue;
+  if (operator === 'gt') return Number(leftValue) > Number(rightValue);
+  if (operator === 'lt') return Number(leftValue) < Number(rightValue);
   if (operator === 'greater_than') return Number(leftValue) > Number(rightValue);
   if (operator === 'less_than') return Number(leftValue) < Number(rightValue);
   if (operator === 'greater_or_equal') return Number(leftValue) >= Number(rightValue);
@@ -3349,6 +3754,32 @@ function renderCustomCursor(display) {
   `;
 }
 
+function renderConversationCard(conversation) {
+  const choices = conversation?.choices ?? [];
+  const waiting = Boolean(conversation?.waiting);
+  return `
+    <div class="scene-runtime-conversation-card__inner">
+      <p class="eyebrow">Conversation</p>
+      <h2>${escapeHtml(conversation?.conversationName || 'Conversation')}</h2>
+      ${conversation?.nodeName ? `<p class="scene-runtime-conversation-card__node">${escapeHtml(conversation.nodeName)}</p>` : ''}
+      ${conversation?.nodeLine ? `<p class="scene-runtime-conversation-card__line">${escapeHtml(conversation.nodeLine)}</p>` : ''}
+      ${waiting ? '<p class="muted">Playing line…</p>' : ''}
+      ${!waiting && choices.length ? `
+        <div class="scene-runtime-conversation-choice-list">
+          ${choices.map(choice => `
+            <button
+              class="button secondary scene-runtime-conversation-choice"
+              type="button"
+              data-action="select-conversation-choice"
+              data-choice-id="${Number(choice.id)}"
+            >${escapeHtml(choice.label)}</button>
+          `).join('')}
+        </div>
+      ` : ''}
+    </div>
+  `;
+}
+
 function escapeHtml(value) {
   return String(value ?? '')
     .replaceAll('&', '&amp;')
@@ -3726,6 +4157,16 @@ function computeVerbMenuLayout(stageWidth, stageHeight, anchorPoint, count) {
 
 function clampNumber(value, min, max) {
   return Math.max(min, Math.min(max, value));
+}
+
+function pickRandomIdleAnimationId(animationIds, lastAnimationId, avoidImmediateRepeat = true) {
+  const candidates = (animationIds ?? []).map(Number).filter(Boolean);
+  if (!candidates.length) return null;
+  const filtered = avoidImmediateRepeat && candidates.length > 1
+    ? candidates.filter(animationId => Number(animationId) !== Number(lastAnimationId))
+    : candidates;
+  const pool = filtered.length ? filtered : candidates;
+  return pool[Math.floor(Math.random() * pool.length)] ?? null;
 }
 
 function readPreviewLocalAudioSettings() {

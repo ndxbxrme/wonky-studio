@@ -190,17 +190,28 @@ const MaskEditorCtrl = app => async params => {
         if (event.detail.applyAll) {
           const edits = await this.editor.exportEditedBlobsForAll();
           for (const edit of edits) {
-            await uploadMaskBlob(edit.mask.id, edit.blob);
+            let maskId = Number(edit.mask?.id ?? 0);
+            if (!maskId) {
+              const createdMask = await createSceneObjectMask(
+                this.sceneId,
+                this.objectId,
+                Number(edit.uploadedFileId)
+              );
+              maskId = Number(createdMask.id);
+              if (Number(edit.uploadedFileId) === Number(event.detail.uploadedFileId)) {
+                this.maskId = maskId;
+              }
+            }
+            await uploadMaskBlob(maskId, edit.blob);
           }
         } else {
           let maskId = Number(event.detail.maskId ?? 0);
           if (!maskId) {
-            const createdMask = await apiFetch(`/api/scenes/${this.sceneId}/objects/${this.objectId}/masks`, {
-              method: 'POST',
-              body: JSON.stringify({
-                uploaded_file_id: Number(event.detail.uploadedFileId)
-              })
-            });
+            const createdMask = await createSceneObjectMask(
+              this.sceneId,
+              this.objectId,
+              Number(event.detail.uploadedFileId)
+            );
             maskId = Number(createdMask.id);
           }
           this.maskId = maskId;
@@ -315,6 +326,15 @@ async function uploadMaskBlob(maskId, blob) {
     method: 'PUT',
     body: blob,
     headers: {'Content-Type': 'image/png'}
+  });
+}
+
+async function createSceneObjectMask(sceneId, objectId, uploadedFileId) {
+  return apiFetch(`/api/scenes/${sceneId}/objects/${objectId}/masks`, {
+    method: 'POST',
+    body: JSON.stringify({
+      uploaded_file_id: Number(uploadedFileId)
+    })
   });
 }
 

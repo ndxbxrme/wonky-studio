@@ -374,7 +374,7 @@ class WonkyMaskEditor extends HTMLElement {
             Browse all scene frames
           </label>
           <label class="checkbox">
-            <input name="applyAll" type="checkbox" ${this.applyAll ? 'checked' : ''} ${this.currentMask ? '' : 'disabled'} />
+            <input name="applyAll" type="checkbox" ${this.applyAll ? 'checked' : ''} ${maxFrameNumber > 0 ? '' : 'disabled'} />
             Apply to all frames
           </label>
         </div>
@@ -844,7 +844,7 @@ class WonkyMaskEditor extends HTMLElement {
     this.dispatchEvent(new CustomEvent('save-mask', {
       bubbles: true,
       detail: {
-        applyAll: this.currentMask ? this.applyAll : false,
+        applyAll: this.applyAll,
         maskId: this.currentMask?.id ?? null,
         uploadedFileId: this.currentSceneImage()?.uploaded_file_id ?? this.currentMask?.uploaded_file_id ?? null
       }
@@ -941,17 +941,41 @@ class WonkyMaskEditor extends HTMLElement {
   async exportEditedBlobsForAll() {
     const operations = this.undoStack.map(entry => entry.operation);
     const results = [];
-    for (const mask of this.masks) {
-      if (mask.id === this.currentMask.id) {
-        results.push({mask, blob: await this.exportCurrentBlob()});
+    const sceneImages = Array.isArray(this.scene?.images) && this.scene.images.length
+      ? this.scene.images
+      : this.masks.map(mask => ({
+          uploaded_file_id: mask.uploaded_file_id,
+          width: this.maskCanvas.width,
+          height: this.maskCanvas.height
+        }));
+    const masksByUploadedFileId = new Map(
+      this.masks.map(mask => [Number(mask.uploaded_file_id), mask])
+    );
+    const currentUploadedFileId = Number(
+      this.currentSceneImage()?.uploaded_file_id ?? this.currentMask?.uploaded_file_id ?? 0
+    );
+    for (const sceneImage of sceneImages) {
+      const uploadedFileId = Number(sceneImage?.uploaded_file_id ?? 0);
+      const mask = masksByUploadedFileId.get(uploadedFileId) ?? null;
+      if (uploadedFileId && uploadedFileId === currentUploadedFileId) {
+        results.push({
+          mask,
+          uploadedFileId,
+          blob: await this.exportCurrentBlob()
+        });
         continue;
       }
-      const maskImage = await loadImage(mask.rawUrl);
       const canvas = document.createElement('canvas');
-      canvas.width = this.maskCanvas.width;
-      canvas.height = this.maskCanvas.height;
+      canvas.width = Math.max(1, Number(sceneImage?.width) || this.maskCanvas.width);
+      canvas.height = Math.max(1, Number(sceneImage?.height) || this.maskCanvas.height);
       const context = canvas.getContext('2d');
-      context.drawImage(maskImage, 0, 0, canvas.width, canvas.height);
+      if (mask?.rawUrl) {
+        const maskImage = await loadImage(mask.rawUrl);
+        context.drawImage(maskImage, 0, 0, canvas.width, canvas.height);
+      } else {
+        context.fillStyle = '#000000';
+        context.fillRect(0, 0, canvas.width, canvas.height);
+      }
       const scaleX = canvas.width / this.maskCanvas.width;
       const scaleY = canvas.height / this.maskCanvas.height;
       for (const operation of operations) {
@@ -966,7 +990,11 @@ class WonkyMaskEditor extends HTMLElement {
           );
         }
       }
-      results.push({mask, blob: await canvasToPngBlob(canvas)});
+      results.push({
+        mask,
+        uploadedFileId,
+        blob: await canvasToPngBlob(canvas)
+      });
     }
     return results;
   }

@@ -4,6 +4,7 @@
     <div class="app-topbar__links">
       <a class="app-topbar__link" href="/"><span class="ui-icon" data-icon="clapperboard"></span><span>Scenes</span></a>
       <a class="app-topbar__link" href="/characters"><span class="ui-icon" data-icon="workflow"></span><span>Characters</span></a>
+      <a class="app-topbar__link" href="/conversations"><span class="ui-icon" data-icon="workflow"></span><span>Conversations</span></a>
       <a class="app-topbar__link" href="/images"><span class="ui-icon" data-icon="images"></span><span>Images</span></a>
       <a class="app-topbar__link" href="/variables"><span class="ui-icon" data-icon="sliders-horizontal"></span><span>Variables</span></a>
       <a class="app-topbar__link" href="/script-review"><span class="ui-icon" data-icon="captions"></span><span>Transcript library</span></a>
@@ -198,13 +199,22 @@
                       <p>{{object.description}}</p>
                     {{/if}}
                   </div>
-                  <button
-                    class="button danger compact"
-                    type="button"
-                    data-action="delete-object"
-                    data-object-id="{{object.id}}"
-                    data-object-name="{{object.name}}"
-                  ><span class="ui-icon" data-icon="trash-2"></span><span>Remove</span></button>
+                  <div class="scene-header__button-group">
+                    <button
+                      class="button secondary compact"
+                      type="button"
+                      data-action="clear-object-masks"
+                      data-object-id="{{object.id}}"
+                      data-object-name="{{object.name}}"
+                    ><span class="ui-icon" data-icon="eraser"></span><span>Clear masks</span></button>
+                    <button
+                      class="button danger compact"
+                      type="button"
+                      data-action="delete-object"
+                      data-object-id="{{object.id}}"
+                      data-object-name="{{object.name}}"
+                    ><span class="ui-icon" data-icon="trash-2"></span><span>Remove</span></button>
+                  </div>
                 </div>
                 <form
                   class="object-prompt-form"

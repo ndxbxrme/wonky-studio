@@ -1,0 +1,985 @@
+<main class="variables-page" data-conversation-editor-page>
+  <nav class="app-topbar" aria-label="Primary">
+    <a class="app-topbar__brand" href="/">Wonky Studio</a>
+    <div class="app-topbar__links">
+      <a class="app-topbar__link" href="/"><span class="ui-icon" data-icon="clapperboard"></span><span>Scenes</span></a>
+      <a class="app-topbar__link" href="/characters"><span class="ui-icon" data-icon="workflow"></span><span>Characters</span></a>
+      <a class="app-topbar__link" href="/conversations"><span class="ui-icon" data-icon="workflow"></span><span>Conversations</span></a>
+      <a class="app-topbar__link" href="/images"><span class="ui-icon" data-icon="images"></span><span>Images</span></a>
+      <a class="app-topbar__link" href="/variables"><span class="ui-icon" data-icon="sliders-horizontal"></span><span>Variables</span></a>
+      <a class="app-topbar__link" href="/script-review"><span class="ui-icon" data-icon="captions"></span><span>Transcript library</span></a>
+      <a class="app-topbar__link" href="/audio-library"><span class="ui-icon" data-icon="audio-lines"></span><span>Audio library</span></a>
+      <a class="app-topbar__link" href="/global-settings"><span class="ui-icon" data-icon="settings-2"></span><span>Global settings</span></a>
+      <button class="app-topbar__link app-topbar__link--primary" type="button" data-action="open-game-preview"><span class="ui-icon" data-icon="play"></span><span>Preview game</span></button>
+    </div>
+  </nav>
+
+  {{#if conversationFound}}
+    <header class="scene-header actions-header">
+      <div>
+        <a class="back-link" href="/conversations">Conversations</a>
+        <p class="eyebrow">Conversation {{conversation.id}}</p>
+        <h1>{{conversation.name}}</h1>
+        <p>{{conversation.description}}</p>
+      </div>
+      <div class="scene-header__actions">
+        <p class="form-status" data-conversation-editor-status aria-live="polite">{{status}}</p>
+      </div>
+    </header>
+
+    <section class="variables-grid">
+      <aside class="actions-sidebar">
+        <section class="actions-panel">
+          <div>
+            <p class="eyebrow">Conversation</p>
+            <h2>Settings</h2>
+          </div>
+          <form class="stack-form" data-conversation-settings-form>
+            <label>
+              Name
+              <input name="name" type="text" value="{{conversation.name}}" required />
+            </label>
+            <label>
+              Description
+              <input name="description" type="text" value="{{conversation.description}}" />
+            </label>
+            <label>
+              Start node
+              <select name="start_node_id">
+                <option value="">Choose start node</option>
+                {{#each conversation.nodes as node}}
+                  <option value="{{node.id}}" {{#if node.isStartNode}}selected{{/if}}>{{node.name}}</option>
+                {{/each}}
+              </select>
+            </label>
+            <button class="button secondary compact" type="submit">Save conversation</button>
+          </form>
+        </section>
+
+        <section class="actions-panel">
+          <div>
+            <p class="eyebrow">Nodes</p>
+            <h2>Outline</h2>
+          </div>
+          <div class="interaction-list">
+            {{#each conversation.nodes as node}}
+              <article class="interaction-list__item {{#if node.isSelected}}is-selected{{/if}}">
+                <div class="interaction-list__button-wrap">
+                  <button class="interaction-list__button" type="button" data-action="select-node" data-node-id="{{node.id}}">
+                    <span>{{node.name}}</span>
+                    <small>{{node.choiceCount}} choices{{#if node.isStartNode}} · start{{/if}}</small>
+                    {{#if node.linePreview}}
+                      <small>{{node.linePreview}}</small>
+                    {{/if}}
+                  </button>
+                  <div class="object-order-controls__buttons">
+                    <button class="button secondary compact icon-button" type="button" data-action="move-node" data-node-id="{{node.id}}" data-direction="up" aria-label="Move node up" title="Move up"><span class="ui-icon" data-icon="arrow-up"></span></button>
+                    <button class="button secondary compact icon-button" type="button" data-action="move-node" data-node-id="{{node.id}}" data-direction="down" aria-label="Move node down" title="Move down"><span class="ui-icon" data-icon="arrow-down"></span></button>
+                  </div>
+                </div>
+              </article>
+            {{/each}}
+          </div>
+          <form class="stack-form" data-node-form>
+            <input type="hidden" name="node_id" value="{{selectedNode.id}}" />
+            <label>
+              Node name
+              <input name="name" type="text" placeholder="Greeting" required />
+            </label>
+            <input type="hidden" name="script_line_id" value="{{selectedNode.script_line_id}}" />
+            <label>
+              NPC line
+              <div class="script-line-picker">
+                <div class="script-line-picker__selected">
+                  {{#if selectedNode.scriptLineLabel}}{{selectedNode.scriptLineLabel}}{{/if}}
+                  {{#if not selectedNode.scriptLineLabel}}No spoken line selected{{/if}}
+                </div>
+                <div class="form-actions">
+                  <button class="button secondary compact" type="button" data-action="clear-node-line">Clear line</button>
+                </div>
+              </div>
+            </label>
+            <div class="stack-form" data-node-line-search-form>
+              <label>
+                Find line
+                <input name="q" type="text" placeholder="Search script lines" />
+              </label>
+              <button class="button secondary compact" type="button" data-action="search-node-lines">Search lines</button>
+              {{#if nodeScriptSearchResults.length}}
+                <div class="interaction-list">
+                  {{#each nodeScriptSearchResults as line}}
+                    <article class="interaction-list__item">
+                      <button class="interaction-list__button" type="button" data-action="select-node-line" data-line-id="{{line.id}}">
+                        <span>{{line.label}}</span>
+                      </button>
+                    </article>
+                  {{/each}}
+                </div>
+              {{/if}}
+            </div>
+            <label>
+              Speaker character
+              <select name="speaker_character_id">
+                <option value="">No speaker</option>
+                {{#each characterOptions as character}}
+                  <option value="{{character.id}}">{{character.name}}</option>
+                {{/each}}
+              </select>
+            </label>
+            <div class="form-actions">
+              <button class="button secondary compact" type="submit">{{#if selectedNode}}Save node{{/if}}{{#if not selectedNode}}Add node{{/if}}</button>
+              {{#if selectedNode}}
+                <button class="button secondary compact" type="button" data-action="clear-node-selection">New node</button>
+                <button class="button danger compact" type="button" data-action="delete-node" data-node-id="{{selectedNode.id}}">Remove node</button>
+              {{/if}}
+            </div>
+          </form>
+        </section>
+      </aside>
+
+      <section class="actions-workbench">
+        {{#if selectedNode}}
+          <section class="actions-panel">
+            <div>
+              <p class="eyebrow">Selected node</p>
+              <h2>{{selectedNode.name}}</h2>
+              <p>{{#if selectedNode.scriptLineLabel}}Line: {{selectedNode.scriptLineLabel}}{{/if}}{{#if not selectedNode.scriptLineLabel}}No spoken line yet.{{/if}}</p>
+            </div>
+            <p class="muted">Node enter actions run before the node line and choices appear.</p>
+            <form class="action-step-form" data-conversation-action-form data-action-target="node">
+              <label data-form-field="branch" {{#if nodeSelectedStep}}hidden{{/if}}>
+                Add to
+                <select name="branch">
+                  {{#each nodeBranchOptions as branch}}
+                    <option value="{{branch.value}}">{{branch.label}}</option>
+                  {{/each}}
+                </select>
+              </label>
+              <label data-form-field="action-type">
+                Action
+                <select name="action_type">
+                  {{#each actionTypes as actionType}}
+                    <option value="{{actionType.value}}">{{actionType.label}}</option>
+                  {{/each}}
+                </select>
+              </label>
+              <label data-form-field="wait" data-visible-for="play_animation go_to_frame set_object_property show_subtitle play_audio set_variable increment_variable toggle_variable add_inventory_item remove_inventory_item clear_held_inventory_item fade_out fade_in crossfade_bgm play_sfx start_conversation show_character hide_character set_character_transform start_random_idle stop_random_idle tween_to play_character_animation">
+                Wait
+                <select name="wait">
+                  <option value="wait">Wait for completion</option>
+                  <option value="continue">Continue immediately</option>
+                </select>
+              </label>
+              <label data-form-field="target-scope" data-visible-for="go_to_frame">
+                Target
+                <select name="target_scope">
+                  <option value="object">Object</option>
+                  <option value="background">Background</option>
+                  <option value="pickup_background">Pickup frame</option>
+                </select>
+              </label>
+              <label data-form-field="target-object-mode" data-visible-for="play_animation set_object_property go_to_frame">
+                Target reference
+                <select name="target_object_mode">
+                  <option value="static">Specific object</option>
+                  <option value="trigger_object">Triggered object</option>
+                  <option value="trigger_inventory_object">Used inventory item</option>
+                </select>
+              </label>
+              <label data-form-field="target-object" data-visible-for="go_to_frame set_object_property">
+                Target object
+                <select name="target_object_id">
+                  <option value="">Choose object</option>
+                  {{#each targetObjectOptions as object}}
+                    <option value="{{object.id}}">{{object.name}}</option>
+                  {{/each}}
+                </select>
+              </label>
+              <label data-form-field="frame-index" data-visible-for="go_to_frame">
+                Frame index
+                <input name="frame_index" type="number" min="0" step="1" value="0" />
+              </label>
+              <label data-form-field="animation" data-visible-for="play_animation">
+                Animation
+                <select name="animation_ref">
+                  <option value="">Choose animation</option>
+                  {{#each animationOptions as animation}}
+                    <option value="{{animation.objectId}}:{{animation.animationId}}">{{animation.label}}</option>
+                  {{/each}}
+                </select>
+              </label>
+              <label data-form-field="animation-name" data-visible-for="play_animation">
+                Animation name
+                <select name="animation_name">
+                  <option value="">Choose animation name</option>
+                  {{#each animationNameOptions as animationName}}
+                    <option value="{{animationName.value}}">{{animationName.label}}</option>
+                  {{/each}}
+                </select>
+              </label>
+              <label data-form-field="property" data-visible-for="set_object_property">
+                Property
+                <select name="property">
+                  <option value="visible">Visible</option>
+                  <option value="enabled">Enabled</option>
+                  <option value="label">Label</option>
+                </select>
+              </label>
+              <label data-form-field="boolean-value" data-property-visible-for="visible enabled">
+                Boolean value
+                <select name="value_bool">
+                  <option value="true">True</option>
+                  <option value="false">False</option>
+                </select>
+              </label>
+              <label data-form-field="text-value" data-property-visible-for="label">
+                Text value
+                <input name="value_text" type="text" placeholder="Label text" />
+              </label>
+              <label data-form-field="duration" data-visible-for="show_subtitle delay fade_out fade_in crossfade_bgm tween_to">
+                Duration
+                <input name="duration_seconds" type="number" min="0.001" step="0.001" value="1" />
+              </label>
+              <label data-form-field="script-lines" data-visible-for="show_subtitle play_audio">
+                Script line IDs
+                <input name="script_line_ids" type="text" placeholder="12, 15, 22" />
+              </label>
+              <label data-form-field="variable" data-visible-for="set_variable increment_variable toggle_variable if_variable">
+                Variable
+                <select name="variable_id">
+                  <option value="">Choose variable</option>
+                  {{#each variables as variable}}
+                    <option value="{{variable.id}}">{{variable.name}}</option>
+                  {{/each}}
+                </select>
+              </label>
+              <label data-form-field="variable-value-type" data-visible-for="set_variable if_variable">
+                Variable value type
+                <select name="variable_value_type">
+                  <option value="bool">Bool</option>
+                  <option value="string">String</option>
+                  <option value="number">Number</option>
+                </select>
+              </label>
+              <label data-form-field="variable-value" data-visible-for="set_variable if_variable">
+                Variable value
+                <input name="variable_value" type="text" placeholder="true" />
+              </label>
+              <label data-form-field="variable-delta" data-visible-for="increment_variable">
+                Increment amount
+                <input name="variable_delta" type="number" step="0.001" value="1" />
+              </label>
+              <label data-form-field="scene-object-mode" data-visible-for="add_inventory_item remove_inventory_item">
+                Item source
+                <select name="scene_object_mode">
+                  <option value="static">Specific object</option>
+                  <option value="trigger_object">Triggered object</option>
+                  <option value="trigger_inventory_object">Used inventory item</option>
+                </select>
+              </label>
+              <label data-form-field="inventory-object" data-visible-for="add_inventory_item remove_inventory_item">
+                Inventory object
+                <select name="inventory_scene_object_id">
+                  <option value="">Choose object</option>
+                  {{#each inventoryObjectOptions as object}}
+                    <option value="{{object.id}}">#{{object.scene_id}} {{object.name}}</option>
+                  {{/each}}
+                </select>
+              </label>
+              <label data-form-field="operator" data-visible-for="if_variable">
+                Operator
+                <select name="operator">
+                  <option value="equals">Equals</option>
+                  <option value="not_equals">Not equals</option>
+                  <option value="greater_than">Greater than</option>
+                  <option value="less_than">Less than</option>
+                  <option value="greater_or_equal">Greater or equal</option>
+                  <option value="less_or_equal">Less or equal</option>
+                </select>
+              </label>
+              <label data-form-field="scene" data-visible-for="change_scene">
+                Scene
+                <select name="scene_id">
+                  <option value="">Choose scene</option>
+                  {{#each baseSceneOptions as sceneOption}}
+                    <option value="{{sceneOption.id}}">#{{sceneOption.id}} {{sceneOption.title}}</option>
+                  {{/each}}
+                </select>
+              </label>
+              <label data-form-field="conversation" data-visible-for="start_conversation">
+                Conversation
+                <select name="conversation_id">
+                  <option value="">Choose conversation</option>
+                  {{#each conversationOptions as conversation}}
+                    <option value="{{conversation.id}}">{{conversation.name}}</option>
+                  {{/each}}
+                </select>
+              </label>
+              <label data-form-field="overlay-scene" data-visible-for="open_overlay_scene change_overlay_scene">
+                Overlay scene
+                <select name="overlay_scene_id">
+                  <option value="">Choose overlay scene</option>
+                  {{#each overlaySceneOptions as sceneOption}}
+                    <option value="{{sceneOption.id}}">#{{sceneOption.id}} {{sceneOption.title}}</option>
+                  {{/each}}
+                </select>
+              </label>
+              <label data-form-field="bgm-audio" data-visible-for="crossfade_bgm">
+                Background music
+                <select name="bgm_audio_asset_id">
+                  <option value="">Choose BGM</option>
+                  {{#each bgmOptions as asset}}
+                    <option value="{{asset.id}}">{{asset.name}}</option>
+                  {{/each}}
+                </select>
+              </label>
+              <label data-form-field="sfx-audio" data-visible-for="play_sfx">
+                Sound effect
+                <select name="sfx_audio_asset_id">
+                  <option value="">Choose SFX</option>
+                  {{#each sfxOptions as asset}}
+                    <option value="{{asset.id}}">{{asset.name}}</option>
+                  {{/each}}
+                </select>
+              </label>
+              <label data-form-field="speaker-character" data-visible-for="play_audio">
+                Speaker character
+                <select name="speaker_character_id">
+                  <option value="">None</option>
+                  {{#each characterOptions as character}}
+                    <option value="{{character.id}}">{{character.name}}</option>
+                  {{/each}}
+                </select>
+              </label>
+              <label data-form-field="character" data-visible-for="show_character hide_character set_character_transform tween_to play_character_animation">
+                Character
+                <select name="character_id">
+                  <option value="">Choose character</option>
+                  {{#each characterOptions as character}}
+                    <option value="{{character.id}}">{{character.name}}</option>
+                  {{/each}}
+                </select>
+              </label>
+              <label data-form-field="character-x" data-visible-for="show_character set_character_transform">
+                Character X
+                <input name="character_x" type="number" step="1" value="960" />
+              </label>
+              <label data-form-field="character-y" data-visible-for="show_character set_character_transform">
+                Character Y
+                <input name="character_y" type="number" step="1" value="540" />
+              </label>
+              <label data-form-field="character-scale" data-visible-for="show_character set_character_transform">
+                Character scale
+                <input name="character_scale" type="number" min="0.01" step="0.01" value="1" />
+              </label>
+              <label data-form-field="character-opacity" data-visible-for="show_character">
+                Character opacity
+                <input name="character_opacity" type="number" min="0" max="1" step="0.01" value="1" />
+              </label>
+              <label data-form-field="character-pose" data-visible-for="show_character">
+                Starting pose
+                <input name="pose_variant_key" type="text" placeholder="idle__neutral" />
+              </label>
+              <label data-form-field="random-idle-scope" data-visible-for="start_random_idle stop_random_idle">
+                Idle scope
+                <select name="random_idle_scope">
+                  <option value="scene_object">Scene object</option>
+                  <option value="character">Character</option>
+                </select>
+              </label>
+              <label data-form-field="random-idle-scene-object" data-visible-for="start_random_idle stop_random_idle">
+                Scene object
+                <select name="random_idle_scene_object_id">
+                  <option value="">Choose object</option>
+                  {{#each inventoryObjectOptions as object}}
+                    <option value="{{object.id}}">#{{object.scene_id}} {{object.name}}</option>
+                  {{/each}}
+                </select>
+              </label>
+              <label data-form-field="random-idle-character" data-visible-for="start_random_idle stop_random_idle">
+                Character
+                <select name="random_idle_character_id">
+                  <option value="">Choose character</option>
+                  {{#each characterOptions as character}}
+                    <option value="{{character.id}}">{{character.name}}</option>
+                  {{/each}}
+                </select>
+              </label>
+              <label data-form-field="random-idle-object-animations" data-visible-for="start_random_idle">
+                Object animations
+                <select name="random_idle_object_animation_ids" multiple size="5">
+                  {{#each animationOptions as animation}}
+                    <option value="{{animation.animationId}}">{{animation.label}}</option>
+                  {{/each}}
+                </select>
+              </label>
+              <label data-form-field="random-idle-character-animations" data-visible-for="start_random_idle">
+                Character animations
+                <select name="random_idle_character_animation_ids" multiple size="5">
+                  {{#each randomIdleCharacterAnimationOptions as animation}}
+                    <option value="{{animation.animationId}}">{{animation.label}}</option>
+                  {{/each}}
+                </select>
+              </label>
+              <label data-form-field="random-idle-min-delay" data-visible-for="start_random_idle">
+                Min delay
+                <input name="random_idle_min_delay_seconds" type="number" min="0.05" step="0.05" value="2.5" />
+              </label>
+              <label data-form-field="random-idle-max-delay" data-visible-for="start_random_idle">
+                Max delay
+                <input name="random_idle_max_delay_seconds" type="number" min="0.05" step="0.05" value="6" />
+              </label>
+              <label class="checkbox-label" data-form-field="random-idle-avoid-repeat" data-visible-for="start_random_idle">
+                <input name="random_idle_avoid_immediate_repeat" type="checkbox" checked />
+                Avoid immediate repeat
+              </label>
+              <label data-form-field="tween-property" data-visible-for="tween_to">
+                Tween property
+                <select name="tween_property">
+                  <option value="x">X</option>
+                  <option value="y">Y</option>
+                  <option value="scale">Scale</option>
+                  <option value="opacity">Opacity</option>
+                </select>
+              </label>
+              <label data-form-field="tween-value" data-visible-for="tween_to">
+                Target value
+                <input name="tween_value" type="number" step="0.01" value="1" />
+              </label>
+              <label data-form-field="tween-curve" data-visible-for="tween_to">
+                Curve
+                <select name="tween_curve">
+                  <option value="ease_in_out">Ease in out</option>
+                  <option value="linear">Linear</option>
+                  <option value="ease_in">Ease in</option>
+                  <option value="ease_out">Ease out</option>
+                  <option value="back_out">Back out</option>
+                  <option value="back_in">Back in</option>
+                  <option value="back_in_out">Back in out</option>
+                  <option value="bounce_out">Bounce out</option>
+                  <option value="elastic_out">Elastic out</option>
+                </select>
+              </label>
+              <label data-form-field="character-animation" data-visible-for="show_character play_character_animation">
+                Character animation
+                <select name="character_animation_id">
+                  <option value="">Choose character animation</option>
+                  {{#each characterAnimationOptions as animation}}
+                    <option value="{{animation.animationId}}">{{animation.label}}</option>
+                  {{/each}}
+                </select>
+              </label>
+              <label data-form-field="fade-color" data-visible-for="fade_out fade_in">
+                Fade color
+                <input name="fade_color" type="text" value="#000000" />
+              </label>
+              <label class="checkbox-label" data-form-field="affect-audio" data-visible-for="fade_out fade_in">
+                <input name="affect_audio" type="checkbox" />
+                Fade audio too
+              </label>
+              <p class="muted" data-action-type-help>Uses the animation picker. Mode controls queued vs immediate playback.</p>
+              <label data-form-field="animation-mode" data-visible-for="play_animation">
+                Animation mode
+                <select name="animation_mode">
+                  <option value="queued">Queued</option>
+                  <option value="immediate">Immediate</option>
+                </select>
+              </label>
+              <div class="action-step-form__actions">
+                <button class="button secondary compact" type="submit">{{#if nodeSelectedStep}}Update step{{/if}}{{#if not nodeSelectedStep}}Add step{{/if}}</button>
+                {{#if nodeSelectedStep}}
+                  <button class="button secondary compact" type="button" data-action="cancel-conversation-step-edit" data-action-target="node">Cancel</button>
+                {{/if}}
+              </div>
+            </form>
+
+            <div class="action-step-list">
+              {{#each nodeActionRows as row}}
+                <article class="action-step-row {{#if row.isSelected}}is-selected{{/if}}" style="margin-left: {{row.indent}}">
+                  <div>
+                    <strong>{{row.index}}. {{row.label}}</strong>
+                    <p>{{row.branch}} {{row.meta}}</p>
+                  </div>
+                  <div class="action-step-row__actions">
+                    <button class="button secondary compact" type="button" data-action="select-conversation-step" data-action-target="node" data-step-id="{{row.id}}">Edit</button>
+                    <button class="button secondary compact icon-button" type="button" data-action="move-conversation-step" data-action-target="node" data-direction="up" data-step-id="{{row.id}}" title="Move up" aria-label="Move step up"><span class="ui-icon" data-icon="arrow-up"></span></button>
+                    <button class="button secondary compact icon-button" type="button" data-action="move-conversation-step" data-action-target="node" data-direction="down" data-step-id="{{row.id}}" title="Move down" aria-label="Move step down"><span class="ui-icon" data-icon="arrow-down"></span></button>
+                    <button class="button danger compact" type="button" data-action="remove-conversation-step" data-action-target="node" data-step-id="{{row.id}}"><span class="ui-icon" data-icon="trash-2"></span><span>Remove</span></button>
+                  </div>
+                </article>
+              {{/each}}
+            </div>
+          </section>
+
+          <section class="actions-panel">
+            <div>
+              <p class="eyebrow">Choices</p>
+              <h2>Player options</h2>
+            </div>
+            <div class="interaction-list">
+              {{#each selectedNode.choices as choice}}
+                <article class="interaction-list__item {{#if choice.isSelected}}is-selected{{/if}}">
+                  <div class="interaction-list__button-wrap">
+                    <button class="interaction-list__button" type="button" data-action="select-choice" data-choice-id="{{choice.id}}">
+                      <span>{{choice.linePreview}}</span>
+                      <small>{{choice.destinationLabel}}</small>
+                      <small>{{choice.conditions.length}} conditions · {{choice.actions.length}} actions</small>
+                    </button>
+                    <div class="object-order-controls__buttons">
+                      <button class="button secondary compact icon-button" type="button" data-action="move-choice" data-choice-id="{{choice.id}}" data-direction="up" aria-label="Move choice up" title="Move up"><span class="ui-icon" data-icon="arrow-up"></span></button>
+                      <button class="button secondary compact icon-button" type="button" data-action="move-choice" data-choice-id="{{choice.id}}" data-direction="down" aria-label="Move choice down" title="Move down"><span class="ui-icon" data-icon="arrow-down"></span></button>
+                    </div>
+                  </div>
+                </article>
+              {{/each}}
+            </div>
+            <form class="stack-form" data-choice-form>
+              <input type="hidden" name="choice_id" value="{{selectedChoice.id}}" />
+              <input type="hidden" name="script_line_id" value="{{selectedChoice.script_line_id}}" />
+              <label>
+                Choice line
+                <div class="script-line-picker">
+                  <div class="script-line-picker__selected">
+                    {{#if selectedChoice.linePreview}}{{selectedChoice.linePreview}}{{/if}}
+                    {{#if not selectedChoice.linePreview}}No player line selected{{/if}}
+                  </div>
+                  <div class="form-actions">
+                    <button class="button secondary compact" type="button" data-action="clear-choice-line">Clear line</button>
+                  </div>
+                </div>
+              </label>
+              <div class="stack-form" data-choice-line-search-form>
+                <label>
+                  Find line
+                  <input name="q" type="text" placeholder="Search script lines" />
+                </label>
+                <button class="button secondary compact" type="button" data-action="search-choice-lines">Search lines</button>
+                {{#if choiceScriptSearchResults.length}}
+                  <div class="interaction-list">
+                    {{#each choiceScriptSearchResults as line}}
+                      <article class="interaction-list__item">
+                        <button class="interaction-list__button" type="button" data-action="select-choice-line" data-line-id="{{line.id}}">
+                          <span>{{line.label}}</span>
+                        </button>
+                      </article>
+                    {{/each}}
+                  </div>
+                {{/if}}
+              </div>
+              <label>
+                Next node
+                <select name="next_node_id">
+                  <option value="">Choose next node</option>
+                  {{#each conversation.nodes as node}}
+                    <option value="{{node.id}}">{{node.name}}</option>
+                  {{/each}}
+                </select>
+              </label>
+              <label class="checkbox-label">
+                <input name="end_conversation" type="checkbox" {{#if selectedChoice.end_conversation}}checked{{/if}} />
+                End conversation after this choice
+              </label>
+              <div class="form-actions">
+                <button class="button secondary compact" type="submit">{{#if selectedChoice}}Save choice{{/if}}{{#if not selectedChoice}}Add choice{{/if}}</button>
+                {{#if selectedChoice}}
+                  <button class="button secondary compact" type="button" data-action="clear-choice-selection">New choice</button>
+                  <button class="button danger compact" type="button" data-action="delete-choice" data-choice-id="{{selectedChoice.id}}">Remove choice</button>
+                {{/if}}
+              </div>
+            </form>
+
+            {{#if selectedChoice}}
+              <div>
+                <p class="eyebrow">Choice result</p>
+                <h3>{{selectedChoice.linePreview}}</h3>
+                <p class="muted">These actions run after this choice is selected and before the next node opens.</p>
+              </div>
+              <form class="action-step-form" data-conversation-action-form data-action-target="choice">
+                <label data-form-field="branch" {{#if choiceSelectedStep}}hidden{{/if}}>
+                  Add to
+                  <select name="branch">
+                    {{#each choiceBranchOptions as branch}}
+                      <option value="{{branch.value}}">{{branch.label}}</option>
+                    {{/each}}
+                  </select>
+                </label>
+                <label data-form-field="action-type">
+                  Action
+                  <select name="action_type">
+                    {{#each actionTypes as actionType}}
+                      <option value="{{actionType.value}}">{{actionType.label}}</option>
+                    {{/each}}
+                  </select>
+                </label>
+                <label data-form-field="wait" data-visible-for="play_animation go_to_frame set_object_property show_subtitle play_audio set_variable increment_variable toggle_variable add_inventory_item remove_inventory_item clear_held_inventory_item fade_out fade_in crossfade_bgm play_sfx start_conversation show_character hide_character set_character_transform start_random_idle stop_random_idle tween_to play_character_animation">
+                  Wait
+                  <select name="wait">
+                    <option value="wait">Wait for completion</option>
+                    <option value="continue">Continue immediately</option>
+                  </select>
+                </label>
+                <label data-form-field="target-scope" data-visible-for="go_to_frame">
+                  Target
+                  <select name="target_scope">
+                    <option value="object">Object</option>
+                    <option value="background">Background</option>
+                    <option value="pickup_background">Pickup frame</option>
+                  </select>
+                </label>
+                <label data-form-field="target-object-mode" data-visible-for="play_animation set_object_property go_to_frame">
+                  Target reference
+                  <select name="target_object_mode">
+                    <option value="static">Specific object</option>
+                    <option value="trigger_object">Triggered object</option>
+                    <option value="trigger_inventory_object">Used inventory item</option>
+                  </select>
+                </label>
+                <label data-form-field="target-object" data-visible-for="go_to_frame set_object_property">
+                  Target object
+                  <select name="target_object_id">
+                    <option value="">Choose object</option>
+                    {{#each targetObjectOptions as object}}
+                      <option value="{{object.id}}">{{object.name}}</option>
+                    {{/each}}
+                  </select>
+                </label>
+                <label data-form-field="frame-index" data-visible-for="go_to_frame">
+                  Frame index
+                  <input name="frame_index" type="number" min="0" step="1" value="0" />
+                </label>
+                <label data-form-field="animation" data-visible-for="play_animation">
+                  Animation
+                  <select name="animation_ref">
+                    <option value="">Choose animation</option>
+                    {{#each animationOptions as animation}}
+                      <option value="{{animation.objectId}}:{{animation.animationId}}">{{animation.label}}</option>
+                    {{/each}}
+                  </select>
+                </label>
+                <label data-form-field="animation-name" data-visible-for="play_animation">
+                  Animation name
+                  <select name="animation_name">
+                    <option value="">Choose animation name</option>
+                    {{#each animationNameOptions as animationName}}
+                      <option value="{{animationName.value}}">{{animationName.label}}</option>
+                    {{/each}}
+                  </select>
+                </label>
+                <label data-form-field="property" data-visible-for="set_object_property">
+                  Property
+                  <select name="property">
+                    <option value="visible">Visible</option>
+                    <option value="enabled">Enabled</option>
+                    <option value="label">Label</option>
+                  </select>
+                </label>
+                <label data-form-field="boolean-value" data-property-visible-for="visible enabled">
+                  Boolean value
+                  <select name="value_bool">
+                    <option value="true">True</option>
+                    <option value="false">False</option>
+                  </select>
+                </label>
+                <label data-form-field="text-value" data-property-visible-for="label">
+                  Text value
+                  <input name="value_text" type="text" placeholder="Label text" />
+                </label>
+                <label data-form-field="duration" data-visible-for="show_subtitle delay fade_out fade_in crossfade_bgm tween_to">
+                  Duration
+                  <input name="duration_seconds" type="number" min="0.001" step="0.001" value="1" />
+                </label>
+                <label data-form-field="script-lines" data-visible-for="show_subtitle play_audio">
+                  Script line IDs
+                  <input name="script_line_ids" type="text" placeholder="12, 15, 22" />
+                </label>
+                <label data-form-field="variable" data-visible-for="set_variable increment_variable toggle_variable if_variable">
+                  Variable
+                  <select name="variable_id">
+                    <option value="">Choose variable</option>
+                    {{#each variables as variable}}
+                      <option value="{{variable.id}}">{{variable.name}}</option>
+                    {{/each}}
+                  </select>
+                </label>
+                <label data-form-field="variable-value-type" data-visible-for="set_variable if_variable">
+                  Variable value type
+                  <select name="variable_value_type">
+                    <option value="bool">Bool</option>
+                    <option value="string">String</option>
+                    <option value="number">Number</option>
+                  </select>
+                </label>
+                <label data-form-field="variable-value" data-visible-for="set_variable if_variable">
+                  Variable value
+                  <input name="variable_value" type="text" placeholder="true" />
+                </label>
+                <label data-form-field="variable-delta" data-visible-for="increment_variable">
+                  Increment amount
+                  <input name="variable_delta" type="number" step="0.001" value="1" />
+                </label>
+                <label data-form-field="scene-object-mode" data-visible-for="add_inventory_item remove_inventory_item">
+                  Item source
+                  <select name="scene_object_mode">
+                    <option value="static">Specific object</option>
+                    <option value="trigger_object">Triggered object</option>
+                    <option value="trigger_inventory_object">Used inventory item</option>
+                  </select>
+                </label>
+                <label data-form-field="inventory-object" data-visible-for="add_inventory_item remove_inventory_item">
+                  Inventory object
+                  <select name="inventory_scene_object_id">
+                    <option value="">Choose object</option>
+                    {{#each inventoryObjectOptions as object}}
+                      <option value="{{object.id}}">#{{object.scene_id}} {{object.name}}</option>
+                    {{/each}}
+                  </select>
+                </label>
+                <label data-form-field="operator" data-visible-for="if_variable">
+                  Operator
+                  <select name="operator">
+                    <option value="equals">Equals</option>
+                    <option value="not_equals">Not equals</option>
+                    <option value="greater_than">Greater than</option>
+                    <option value="less_than">Less than</option>
+                    <option value="greater_or_equal">Greater or equal</option>
+                    <option value="less_or_equal">Less or equal</option>
+                  </select>
+                </label>
+                <label data-form-field="scene" data-visible-for="change_scene">
+                  Scene
+                  <select name="scene_id">
+                    <option value="">Choose scene</option>
+                    {{#each baseSceneOptions as sceneOption}}
+                      <option value="{{sceneOption.id}}">#{{sceneOption.id}} {{sceneOption.title}}</option>
+                    {{/each}}
+                  </select>
+                </label>
+                <label data-form-field="conversation" data-visible-for="start_conversation">
+                  Conversation
+                  <select name="conversation_id">
+                    <option value="">Choose conversation</option>
+                    {{#each conversationOptions as conversation}}
+                      <option value="{{conversation.id}}">{{conversation.name}}</option>
+                    {{/each}}
+                  </select>
+                </label>
+                <label data-form-field="overlay-scene" data-visible-for="open_overlay_scene change_overlay_scene">
+                  Overlay scene
+                  <select name="overlay_scene_id">
+                    <option value="">Choose overlay scene</option>
+                    {{#each overlaySceneOptions as sceneOption}}
+                      <option value="{{sceneOption.id}}">#{{sceneOption.id}} {{sceneOption.title}}</option>
+                    {{/each}}
+                  </select>
+                </label>
+                <label data-form-field="bgm-audio" data-visible-for="crossfade_bgm">
+                  Background music
+                  <select name="bgm_audio_asset_id">
+                    <option value="">Choose BGM</option>
+                    {{#each bgmOptions as asset}}
+                      <option value="{{asset.id}}">{{asset.name}}</option>
+                    {{/each}}
+                  </select>
+                </label>
+                <label data-form-field="sfx-audio" data-visible-for="play_sfx">
+                  Sound effect
+                  <select name="sfx_audio_asset_id">
+                    <option value="">Choose SFX</option>
+                    {{#each sfxOptions as asset}}
+                      <option value="{{asset.id}}">{{asset.name}}</option>
+                    {{/each}}
+                  </select>
+                </label>
+                <label data-form-field="speaker-character" data-visible-for="play_audio">
+                  Speaker character
+                  <select name="speaker_character_id">
+                    <option value="">None</option>
+                    {{#each characterOptions as character}}
+                      <option value="{{character.id}}">{{character.name}}</option>
+                    {{/each}}
+                  </select>
+                </label>
+                <label data-form-field="character" data-visible-for="show_character hide_character set_character_transform tween_to play_character_animation">
+                  Character
+                  <select name="character_id">
+                    <option value="">Choose character</option>
+                    {{#each characterOptions as character}}
+                      <option value="{{character.id}}">{{character.name}}</option>
+                    {{/each}}
+                  </select>
+                </label>
+                <label data-form-field="character-x" data-visible-for="show_character set_character_transform">
+                  Character X
+                  <input name="character_x" type="number" step="1" value="960" />
+                </label>
+                <label data-form-field="character-y" data-visible-for="show_character set_character_transform">
+                  Character Y
+                  <input name="character_y" type="number" step="1" value="540" />
+                </label>
+                <label data-form-field="character-scale" data-visible-for="show_character set_character_transform">
+                  Character scale
+                  <input name="character_scale" type="number" min="0.01" step="0.01" value="1" />
+                </label>
+                <label data-form-field="character-opacity" data-visible-for="show_character">
+                  Character opacity
+                  <input name="character_opacity" type="number" min="0" max="1" step="0.01" value="1" />
+                </label>
+                <label data-form-field="character-pose" data-visible-for="show_character">
+                  Starting pose
+                  <input name="pose_variant_key" type="text" placeholder="idle__neutral" />
+                </label>
+                <label data-form-field="random-idle-scope" data-visible-for="start_random_idle stop_random_idle">
+                  Idle scope
+                  <select name="random_idle_scope">
+                    <option value="scene_object">Scene object</option>
+                    <option value="character">Character</option>
+                  </select>
+                </label>
+                <label data-form-field="random-idle-scene-object" data-visible-for="start_random_idle stop_random_idle">
+                  Scene object
+                  <select name="random_idle_scene_object_id">
+                    <option value="">Choose object</option>
+                    {{#each inventoryObjectOptions as object}}
+                      <option value="{{object.id}}">#{{object.scene_id}} {{object.name}}</option>
+                    {{/each}}
+                  </select>
+                </label>
+                <label data-form-field="random-idle-character" data-visible-for="start_random_idle stop_random_idle">
+                  Character
+                  <select name="random_idle_character_id">
+                    <option value="">Choose character</option>
+                    {{#each characterOptions as character}}
+                      <option value="{{character.id}}">{{character.name}}</option>
+                    {{/each}}
+                  </select>
+                </label>
+                <label data-form-field="random-idle-object-animations" data-visible-for="start_random_idle">
+                  Object animations
+                  <select name="random_idle_object_animation_ids" multiple size="5">
+                    {{#each animationOptions as animation}}
+                      <option value="{{animation.animationId}}">{{animation.label}}</option>
+                    {{/each}}
+                  </select>
+                </label>
+                <label data-form-field="random-idle-character-animations" data-visible-for="start_random_idle">
+                  Character animations
+                  <select name="random_idle_character_animation_ids" multiple size="5">
+                    {{#each randomIdleCharacterAnimationOptions as animation}}
+                      <option value="{{animation.animationId}}">{{animation.label}}</option>
+                    {{/each}}
+                  </select>
+                </label>
+                <label data-form-field="random-idle-min-delay" data-visible-for="start_random_idle">
+                  Min delay
+                  <input name="random_idle_min_delay_seconds" type="number" min="0.05" step="0.05" value="2.5" />
+                </label>
+                <label data-form-field="random-idle-max-delay" data-visible-for="start_random_idle">
+                  Max delay
+                  <input name="random_idle_max_delay_seconds" type="number" min="0.05" step="0.05" value="6" />
+                </label>
+                <label class="checkbox-label" data-form-field="random-idle-avoid-repeat" data-visible-for="start_random_idle">
+                  <input name="random_idle_avoid_immediate_repeat" type="checkbox" checked />
+                  Avoid immediate repeat
+                </label>
+                <label data-form-field="tween-property" data-visible-for="tween_to">
+                  Tween property
+                  <select name="tween_property">
+                    <option value="x">X</option>
+                    <option value="y">Y</option>
+                    <option value="scale">Scale</option>
+                    <option value="opacity">Opacity</option>
+                  </select>
+                </label>
+                <label data-form-field="tween-value" data-visible-for="tween_to">
+                  Target value
+                  <input name="tween_value" type="number" step="0.01" value="1" />
+                </label>
+                <label data-form-field="tween-curve" data-visible-for="tween_to">
+                  Curve
+                  <select name="tween_curve">
+                    <option value="ease_in_out">Ease in out</option>
+                    <option value="linear">Linear</option>
+                    <option value="ease_in">Ease in</option>
+                    <option value="ease_out">Ease out</option>
+                    <option value="back_out">Back out</option>
+                    <option value="back_in">Back in</option>
+                    <option value="back_in_out">Back in out</option>
+                    <option value="bounce_out">Bounce out</option>
+                    <option value="elastic_out">Elastic out</option>
+                  </select>
+                </label>
+                <label data-form-field="character-animation" data-visible-for="show_character play_character_animation">
+                  Character animation
+                  <select name="character_animation_id">
+                    <option value="">Choose character animation</option>
+                    {{#each characterAnimationOptions as animation}}
+                      <option value="{{animation.animationId}}">{{animation.label}}</option>
+                    {{/each}}
+                  </select>
+                </label>
+                <label data-form-field="fade-color" data-visible-for="fade_out fade_in">
+                  Fade color
+                  <input name="fade_color" type="text" value="#000000" />
+                </label>
+                <label class="checkbox-label" data-form-field="affect-audio" data-visible-for="fade_out fade_in">
+                  <input name="affect_audio" type="checkbox" />
+                  Fade audio too
+                </label>
+                <p class="muted" data-action-type-help>Uses the animation picker. Mode controls queued vs immediate playback.</p>
+                <label data-form-field="animation-mode" data-visible-for="play_animation">
+                  Animation mode
+                  <select name="animation_mode">
+                    <option value="queued">Queued</option>
+                    <option value="immediate">Immediate</option>
+                  </select>
+                </label>
+                <div class="action-step-form__actions">
+                  <button class="button secondary compact" type="submit">{{#if choiceSelectedStep}}Update step{{/if}}{{#if not choiceSelectedStep}}Add step{{/if}}</button>
+                  {{#if choiceSelectedStep}}
+                    <button class="button secondary compact" type="button" data-action="cancel-conversation-step-edit" data-action-target="choice">Cancel</button>
+                  {{/if}}
+                </div>
+              </form>
+
+              <div class="action-step-list">
+                {{#each choiceActionRows as row}}
+                  <article class="action-step-row {{#if row.isSelected}}is-selected{{/if}}" style="margin-left: {{row.indent}}">
+                    <div>
+                      <strong>{{row.index}}. {{row.label}}</strong>
+                      <p>{{row.branch}} {{row.meta}}</p>
+                    </div>
+                    <div class="action-step-row__actions">
+                      <button class="button secondary compact" type="button" data-action="select-conversation-step" data-action-target="choice" data-step-id="{{row.id}}">Edit</button>
+                      <button class="button secondary compact icon-button" type="button" data-action="move-conversation-step" data-action-target="choice" data-direction="up" data-step-id="{{row.id}}" title="Move up" aria-label="Move step up"><span class="ui-icon" data-icon="arrow-up"></span></button>
+                      <button class="button secondary compact icon-button" type="button" data-action="move-conversation-step" data-action-target="choice" data-direction="down" data-step-id="{{row.id}}" title="Move down" aria-label="Move step down"><span class="ui-icon" data-icon="arrow-down"></span></button>
+                      <button class="button danger compact" type="button" data-action="remove-conversation-step" data-action-target="choice" data-step-id="{{row.id}}"><span class="ui-icon" data-icon="trash-2"></span><span>Remove</span></button>
+                    </div>
+                  </article>
+                {{/each}}
+              </div>
+            {{/if}}
+          </section>
+        {{/if}}
+
+        {{#if not selectedNode}}
+          <section class="actions-panel">
+            <div>
+              <p class="eyebrow">Conversation</p>
+              <h2>Pick or add a node</h2>
+              <p>Select a node from the outline or add a new one to start shaping the dialog.</p>
+            </div>
+          </section>
+        {{/if}}
+      </section>
+    </section>
+  {{/if}}
+
+  {{#if not conversationFound}}
+    <section class="scene-empty-state">
+      <p class="eyebrow">Conversation not found</p>
+      <h1>This conversation could not be loaded.</h1>
+      <p>It may have been removed, or you may not have access to it.</p>
+      <a class="button secondary" href="/conversations">Back to conversations</a>
+    </section>
+  {{/if}}
+</main>

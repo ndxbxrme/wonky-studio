@@ -3,6 +3,8 @@
     <a class="app-topbar__brand" href="/">Wonky Studio</a>
     <div class="app-topbar__links">
       <a class="app-topbar__link" href="/"><span class="ui-icon" data-icon="clapperboard"></span><span>Scenes</span></a>
+      <a class="app-topbar__link" href="/characters"><span class="ui-icon" data-icon="workflow"></span><span>Characters</span></a>
+      <a class="app-topbar__link" href="/conversations"><span class="ui-icon" data-icon="workflow"></span><span>Conversations</span></a>
       <a class="app-topbar__link" href="/images"><span class="ui-icon" data-icon="images"></span><span>Images</span></a>
       <a class="app-topbar__link" href="/variables"><span class="ui-icon" data-icon="sliders-horizontal"></span><span>Variables</span></a>
       <a class="app-topbar__link" href="/script-review"><span class="ui-icon" data-icon="captions"></span><span>Transcript library</span></a>
@@ -318,7 +320,7 @@
                   {{/each}}
                 </select>
               </label>
-              <label data-form-field="wait" data-visible-for="play_animation go_to_frame set_object_property show_subtitle play_audio set_variable increment_variable toggle_variable add_inventory_item remove_inventory_item clear_held_inventory_item fade_out fade_in crossfade_bgm play_sfx show_character hide_character set_character_transform tween_to play_character_animation">
+              <label data-form-field="wait" data-visible-for="play_animation go_to_frame set_object_property show_subtitle play_audio set_variable increment_variable toggle_variable add_inventory_item remove_inventory_item clear_held_inventory_item fade_out fade_in crossfade_bgm play_sfx start_conversation show_character hide_character set_character_transform start_random_idle stop_random_idle tween_to play_character_animation">
                 Wait
                 <select name="wait">
                   <option value="wait">Wait for completion</option>
@@ -461,6 +463,15 @@
                   {{/each}}
                 </select>
               </label>
+              <label data-form-field="conversation" data-visible-for="start_conversation">
+                Conversation
+                <select name="conversation_id">
+                  <option value="">Choose conversation</option>
+                  {{#each conversationOptions as conversation}}
+                    <option value="{{conversation.id}}">{{conversation.name}}</option>
+                  {{/each}}
+                </select>
+              </label>
               <label data-form-field="overlay-scene" data-visible-for="open_overlay_scene change_overlay_scene">
                 Overlay scene
                 <select name="overlay_scene_id">
@@ -525,6 +536,59 @@
               <label data-form-field="character-pose" data-visible-for="show_character">
                 Starting pose
                 <input name="pose_variant_key" type="text" placeholder="idle__neutral" />
+              </label>
+              <label data-form-field="random-idle-scope" data-visible-for="start_random_idle stop_random_idle">
+                Idle scope
+                <select name="random_idle_scope">
+                  <option value="scene_object">Scene object</option>
+                  <option value="character">Character</option>
+                </select>
+              </label>
+              <label data-form-field="random-idle-scene-object" data-visible-for="start_random_idle stop_random_idle">
+                Scene object
+                <select name="random_idle_scene_object_id">
+                  <option value="">Choose object</option>
+                  {{#each objectOptions as object}}
+                    <option value="{{object.id}}">{{object.name}}</option>
+                  {{/each}}
+                </select>
+              </label>
+              <label data-form-field="random-idle-character" data-visible-for="start_random_idle stop_random_idle">
+                Character
+                <select name="random_idle_character_id">
+                  <option value="">Choose character</option>
+                  {{#each characterOptions as character}}
+                    <option value="{{character.id}}">{{character.name}}</option>
+                  {{/each}}
+                </select>
+              </label>
+              <label data-form-field="random-idle-object-animations" data-visible-for="start_random_idle">
+                Object animations
+                <select name="random_idle_object_animation_ids" multiple size="5">
+                  {{#each animationOptions as animation}}
+                    <option value="{{animation.animationId}}">{{animation.label}}</option>
+                  {{/each}}
+                </select>
+              </label>
+              <label data-form-field="random-idle-character-animations" data-visible-for="start_random_idle">
+                Character animations
+                <select name="random_idle_character_animation_ids" multiple size="5">
+                  {{#each randomIdleCharacterAnimationOptions as animation}}
+                    <option value="{{animation.animationId}}">{{animation.label}}</option>
+                  {{/each}}
+                </select>
+              </label>
+              <label data-form-field="random-idle-min-delay" data-visible-for="start_random_idle">
+                Min delay
+                <input name="random_idle_min_delay_seconds" type="number" min="0.05" step="0.05" value="2.5" />
+              </label>
+              <label data-form-field="random-idle-max-delay" data-visible-for="start_random_idle">
+                Max delay
+                <input name="random_idle_max_delay_seconds" type="number" min="0.05" step="0.05" value="6" />
+              </label>
+              <label class="checkbox-label" data-form-field="random-idle-avoid-repeat" data-visible-for="start_random_idle">
+                <input name="random_idle_avoid_immediate_repeat" type="checkbox" checked />
+                Avoid immediate repeat
               </label>
               <label data-form-field="tween-property" data-visible-for="tween_to">
                 Tween property
