@@ -28,6 +28,10 @@ const ScriptReviewCtrl = app => async () => {
     selectedLineId: null,
     selectedLine: null,
     status: '',
+    globalHistoryUndoStack: [],
+    globalHistoryRedoStack: [],
+    canUndoGlobalHistory: false,
+    canRedoGlobalHistory: false,
     hasLines: false,
     hasSelectedLine: false,
     hasPreviousPage: false,
@@ -42,6 +46,7 @@ const ScriptReviewCtrl = app => async () => {
       this.bind(this.root, 'click', event => this.onClick(event));
       this.bind(this.root, 'submit', event => this.onSubmit(event));
       this.bind(this.root, 'change', event => this.onChange(event));
+      this.bind(window, 'keydown', event => this.onKeyDown(event));
       this.bind(window, 'dragenter', event => this.onDrag(event));
       this.bind(window, 'dragover', event => this.onDrag(event));
       this.bind(window, 'dragleave', event => this.onDrag(event));
@@ -68,6 +73,16 @@ const ScriptReviewCtrl = app => async () => {
       const lineButton = event.target.closest('[data-action="select-script-line"]');
       if (lineButton) {
         await this.selectLine(Number(lineButton.dataset.lineId));
+        return;
+      }
+      const undoButton = event.target.closest('[data-action="undo-script-change"]');
+      if (undoButton) {
+        await this.undoGlobalHistoryChange();
+        return;
+      }
+      const redoButton = event.target.closest('[data-action="redo-script-change"]');
+      if (redoButton) {
+        await this.redoGlobalHistoryChange();
         return;
       }
 
@@ -198,6 +213,18 @@ const ScriptReviewCtrl = app => async () => {
         return;
       }
 
+      const translationForm = event.target.closest('[data-translation-form]');
+      if (translationForm) {
+        await this.autosaveTranslationForm(translationForm);
+        return;
+      }
+
+      const audioForm = event.target.closest('[data-audio-candidate-form]');
+      if (audioForm) {
+        await this.autosaveAudioCandidateForm(audioForm);
+        return;
+      }
+
       if (event.target.matches('[data-script-audio-upload-input]')) {
         await this.uploadAudioFiles(event.target.files);
         event.target.value = '';
@@ -221,6 +248,30 @@ const ScriptReviewCtrl = app => async () => {
       event.preventDefault();
       dropZone.classList.remove('is-dragging');
       await this.uploadAudioFiles(event.dataTransfer?.files);
+    },
+
+    async onKeyDown(event) {
+      if (!(event.ctrlKey || event.metaKey)) return;
+      if (event.altKey) return;
+      const target = event.target;
+      if (
+        target instanceof HTMLInputElement
+        || target instanceof HTMLTextAreaElement
+        || target instanceof HTMLSelectElement
+        || target?.isContentEditable
+      ) {
+        return;
+      }
+      const key = String(event.key || '').toLowerCase();
+      if (key === 'z' && !event.shiftKey) {
+        event.preventDefault();
+        await this.undoGlobalHistoryChange();
+        return;
+      }
+      if (key === 'y' || (key === 'z' && event.shiftKey)) {
+        event.preventDefault();
+        await this.redoGlobalHistoryChange();
+      }
     },
 
     readFilters(form) {
@@ -288,6 +339,8 @@ const ScriptReviewCtrl = app => async () => {
         const detail = await apiFetch(`/api/script-lines/${lineId}`);
         this.selectedLine = prepareLineDetail(detail, this.language);
         this.hasSelectedLine = true;
+        this.canUndoGlobalHistory = this.globalHistoryUndoStack.length > 0;
+        this.canRedoGlobalHistory = this.globalHistoryRedoStack.length > 0;
         this.refreshView();
       } catch {
         this.setStatus('Could not load the selected line.');
@@ -328,44 +381,24 @@ const ScriptReviewCtrl = app => async () => {
       if (!this.selectedLine) return;
       const formData = new FormData(form);
       const language = String(formData.get('language') ?? this.language);
-      this.setStatus('Saving translation...');
-      try {
-        await apiFetch(`/api/script-lines/${this.selectedLine.line_id}/translations/${language}`, {
-          method: 'PATCH',
-          body: JSON.stringify({
-            text: String(formData.get('text') ?? ''),
-            review_status: String(formData.get('review_status') ?? 'needs_review'),
-            notes: String(formData.get('notes') ?? '')
-          })
-        });
-        await this.selectLine(this.selectedLine.line_id);
-        await this.loadLines();
-        this.setStatus('Translation saved.');
-      } catch {
-        this.setStatus('Could not save translation.');
-      }
+      const payload = {
+        text: String(formData.get('text') ?? ''),
+        review_status: String(formData.get('review_status') ?? 'needs_review'),
+        notes: String(formData.get('notes') ?? '')
+      };
+      return await this.saveTranslationPayload(this.selectedLine.line_id, language, payload);
     },
 
     async saveAudioCandidate(form) {
       const formData = new FormData(form);
       const candidateId = Number(formData.get('candidate_id'));
       if (!candidateId) return;
-      this.setStatus('Saving audio review...');
-      try {
-        await apiFetch(`/api/script-audio-candidates/${candidateId}`, {
-          method: 'PATCH',
-          body: JSON.stringify({
-            review_status: String(formData.get('review_status') ?? 'needs_review'),
-            notes: String(formData.get('notes') ?? ''),
-            selected: formData.get('selected') === 'on'
-          })
-        });
-        await this.selectLine(this.selectedLineId);
-        await this.loadLines();
-        this.setStatus('Audio review saved.');
-      } catch {
-        this.setStatus('Could not save audio review.');
-      }
+      const payload = {
+        review_status: String(formData.get('review_status') ?? 'needs_review'),
+        notes: String(formData.get('notes') ?? ''),
+        selected: formData.get('selected') === 'on'
+      };
+      return await this.saveAudioCandidatePayload(candidateId, payload);
     },
 
     async createScriptLine(form) {
@@ -645,6 +678,145 @@ const ScriptReviewCtrl = app => async () => {
       this.status = message;
       const status = this.root?.querySelector('[data-script-status]');
       applyStatus(status, message);
+    },
+
+    async saveTranslationPayload(lineId, language, payload, statusMessages = {}) {
+      const {
+        saving = 'Saving translation...',
+        success = 'Translation saved.',
+        failure = 'Could not save translation.'
+      } = statusMessages;
+      this.setStatus(saving);
+      try {
+        await apiFetch(`/api/script-lines/${lineId}/translations/${language}`, {
+          method: 'PATCH',
+          body: JSON.stringify(payload)
+        });
+        await this.selectLine(lineId);
+        await this.loadLines();
+        this.setStatus(success);
+        return true;
+      } catch {
+        this.setStatus(failure);
+        return false;
+      }
+    },
+
+    async saveAudioCandidatePayload(candidateId, payload, statusMessages = {}) {
+      const {
+        saving = 'Saving audio review...',
+        success = 'Audio review saved.',
+        failure = 'Could not save audio review.'
+      } = statusMessages;
+      this.setStatus(saving);
+      try {
+        await apiFetch(`/api/script-audio-candidates/${candidateId}`, {
+          method: 'PATCH',
+          body: JSON.stringify(payload)
+        });
+        await this.selectLine(this.selectedLineId);
+        await this.loadLines();
+        this.setStatus(success);
+        return true;
+      } catch {
+        this.setStatus(failure);
+        return false;
+      }
+    },
+
+    currentTranslationPayload() {
+      return this.selectedLine?.activeTranslation ? {
+        text: String(this.selectedLine.activeTranslation.text ?? ''),
+        review_status: String(this.selectedLine.activeTranslation.review_status ?? 'needs_review'),
+        notes: String(this.selectedLine.activeTranslation.notes ?? '')
+      } : null;
+    },
+
+    async autosaveTranslationForm(form) {
+      if (!this.selectedLine) return;
+      const previousPayload = this.currentTranslationPayload();
+      const formData = new FormData(form);
+      const language = String(formData.get('language') ?? this.language);
+      const nextPayload = {
+        text: String(formData.get('text') ?? ''),
+        review_status: String(formData.get('review_status') ?? 'needs_review'),
+        notes: String(formData.get('notes') ?? '')
+      };
+      if (!previousPayload || JSON.stringify(previousPayload) === JSON.stringify(nextPayload)) return;
+      const lineId = this.selectedLine.line_id;
+      const saved = await this.saveTranslationPayload(lineId, language, nextPayload);
+      if (!saved) return;
+      this.recordGlobalHistoryEntry({
+        label: 'Edit translation',
+        undo: () => this.saveTranslationPayload(lineId, language, previousPayload, {
+          saving: 'Restoring translation...',
+          success: 'Translation restored.',
+          failure: 'Could not restore translation.'
+        }),
+        redo: () => this.saveTranslationPayload(lineId, language, nextPayload)
+      });
+    },
+
+    currentAudioCandidatePayload(candidateId) {
+      const candidate = this.selectedLine?.audio_candidates?.find(item => Number(item.id) === Number(candidateId));
+      return candidate ? {
+        review_status: String(candidate.review_status ?? 'needs_review'),
+        notes: String(candidate.notes ?? ''),
+        selected: Boolean(candidate.selected)
+      } : null;
+    },
+
+    async autosaveAudioCandidateForm(form) {
+      const candidateId = Number(new FormData(form).get('candidate_id'));
+      if (!candidateId) return;
+      const previousPayload = this.currentAudioCandidatePayload(candidateId);
+      const formData = new FormData(form);
+      const nextPayload = {
+        review_status: String(formData.get('review_status') ?? 'needs_review'),
+        notes: String(formData.get('notes') ?? ''),
+        selected: formData.get('selected') === 'on'
+      };
+      if (!previousPayload || JSON.stringify(previousPayload) === JSON.stringify(nextPayload)) return;
+      const saved = await this.saveAudioCandidatePayload(candidateId, nextPayload);
+      if (!saved) return;
+      this.recordGlobalHistoryEntry({
+        label: 'Edit audio review',
+        undo: () => this.saveAudioCandidatePayload(candidateId, previousPayload, {
+          saving: 'Restoring audio review...',
+          success: 'Audio review restored.',
+          failure: 'Could not restore audio review.'
+        }),
+        redo: () => this.saveAudioCandidatePayload(candidateId, nextPayload)
+      });
+    },
+
+    recordGlobalHistoryEntry(entry) {
+      this.globalHistoryUndoStack.push(entry);
+      if (this.globalHistoryUndoStack.length > 200) this.globalHistoryUndoStack.shift();
+      this.globalHistoryRedoStack = [];
+      this.canUndoGlobalHistory = this.globalHistoryUndoStack.length > 0;
+      this.canRedoGlobalHistory = this.globalHistoryRedoStack.length > 0;
+      this.refreshView();
+    },
+
+    async undoGlobalHistoryChange() {
+      const entry = this.globalHistoryUndoStack.pop();
+      if (!entry) return;
+      await entry.undo();
+      this.globalHistoryRedoStack.push(entry);
+      this.canUndoGlobalHistory = this.globalHistoryUndoStack.length > 0;
+      this.canRedoGlobalHistory = this.globalHistoryRedoStack.length > 0;
+      this.refreshView();
+    },
+
+    async redoGlobalHistoryChange() {
+      const entry = this.globalHistoryRedoStack.pop();
+      if (!entry) return;
+      await entry.redo();
+      this.globalHistoryUndoStack.push(entry);
+      this.canUndoGlobalHistory = this.globalHistoryUndoStack.length > 0;
+      this.canRedoGlobalHistory = this.globalHistoryRedoStack.length > 0;
+      this.refreshView();
     },
 
     setControlValues() {

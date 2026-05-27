@@ -23,6 +23,8 @@
       <h1>Dialog, audio, and translations</h1>
     </div>
     <div class="script-review-header__actions">
+      <button class="button secondary compact" type="button" data-action="undo-script-change" {{#if not canUndoGlobalHistory}}disabled{{/if}}>Undo</button>
+      <button class="button secondary compact" type="button" data-action="redo-script-change" {{#if not canRedoGlobalHistory}}disabled{{/if}}>Redo</button>
       {{#if isAdmin}}
         <button class="button secondary" type="button" data-action="import-script-audio">Import manifests</button>
       {{/if}}
@@ -237,7 +239,6 @@
             <textarea name="notes" rows="2">{{selectedLine.activeTranslation.notes}}</textarea>
           </label>
           <div class="form-actions">
-            <button class="button primary" type="submit">Save translation</button>
             <button class="button secondary compact form-actions__cancel" type="button" data-action="generate-translation">Generate translation</button>
           </div>
         </form>
@@ -296,7 +297,6 @@
                     </label>
                     <span>{{candidate.visemeEventCount}} viseme events</span>
                     <button class="button secondary compact" type="button" data-action="extract-visemes" data-candidate-id="{{candidate.id}}">Extract visemes</button>
-                    <button class="button secondary compact" type="submit">Save audio</button>
                   </div>
                 </form>
               {{/each}}

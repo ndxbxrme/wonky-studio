@@ -72,6 +72,11 @@ const GlobalSettingsCtrl = app => async () => {
     cursorStates: [],
     selectedInventorySlotIndex: 0,
     draggingInventorySlotIndex: null,
+    globalHistoryUndoStack: [],
+    globalHistoryRedoStack: [],
+    canUndoGlobalHistory: false,
+    canRedoGlobalHistory: false,
+    suppressVerbAutoSelectOnce: false,
     unloadHandlers: [],
 
     async postLoad() {
@@ -80,6 +85,7 @@ const GlobalSettingsCtrl = app => async () => {
       this.bind(this.root, 'submit', event => this.onSubmit(event));
       this.bind(this.root, 'change', event => this.onChange(event));
       this.bind(this.root, 'input', event => this.onInput(event));
+      this.bind(window, 'keydown', event => this.onKeyDown(event));
       this.bind(this.root, 'pointerdown', event => this.onPointerDown(event));
       this.bind(window, 'pointermove', event => this.onPointerMove(event));
       this.bind(window, 'pointerup', () => this.onPointerUp());
@@ -121,7 +127,12 @@ const GlobalSettingsCtrl = app => async () => {
       this.hasVerbs = this.verbs.length > 0;
       this.hasOverlayBindings = this.overlayBindings.length > 0;
       if (!this.verbs.some(verb => Number(verb.id) === Number(this.selectedVerbId))) {
-        this.selectedVerbId = null;
+        if (this.suppressVerbAutoSelectOnce) {
+          this.suppressVerbAutoSelectOnce = false;
+          this.selectedVerbId = null;
+        } else {
+          this.selectedVerbId = this.verbs[0]?.id ?? null;
+        }
       }
       this.isEditingVerb = Boolean(this.selectedVerbId);
       this.verbSubmitLabel = this.isEditingVerb ? 'Update verb' : 'Add verb';
@@ -147,6 +158,8 @@ const GlobalSettingsCtrl = app => async () => {
             : ''
         };
       });
+      this.canUndoGlobalHistory = this.globalHistoryUndoStack.length > 0;
+      this.canRedoGlobalHistory = this.globalHistoryRedoStack.length > 0;
     },
 
     setControlValues() {
@@ -232,15 +245,28 @@ const GlobalSettingsCtrl = app => async () => {
       }
       const cancelVerbEditButton = event.target.closest('[data-action="cancel-verb-edit"]');
       if (cancelVerbEditButton) {
+        this.suppressVerbAutoSelectOnce = true;
         this.selectedVerbId = null;
         await this.refreshData();
         this.refreshView();
         return;
       }
-      const saveCursorSettingsButton = event.target.closest('[data-action="save-cursor-settings"]');
-      if (saveCursorSettingsButton) {
-        const cursorForm = this.root?.querySelector('[data-cursor-settings-form]');
-        if (cursorForm) await this.saveCursorSettings(cursorForm);
+      const newVerbButton = event.target.closest('[data-action="new-verb"]');
+      if (newVerbButton) {
+        this.suppressVerbAutoSelectOnce = true;
+        this.selectedVerbId = null;
+        await this.refreshData();
+        this.refreshView();
+        return;
+      }
+      const undoButton = event.target.closest('[data-action="undo-global-setting-change"]');
+      if (undoButton) {
+        await this.undoGlobalHistoryChange();
+        return;
+      }
+      const redoButton = event.target.closest('[data-action="redo-global-setting-change"]');
+      if (redoButton) {
+        await this.redoGlobalHistoryChange();
         return;
       }
       const deleteButton = event.target.closest('[data-action="delete-overlay-binding"]');
@@ -258,7 +284,7 @@ const GlobalSettingsCtrl = app => async () => {
       const settingsForm = event.target.closest('[data-global-overlay-settings-form]');
       if (settingsForm) {
         event.preventDefault();
-        await this.saveGlobalSettings(settingsForm);
+        await this.autosaveGlobalSettingsForm(settingsForm);
         return;
       }
       const inventoryForm = event.target.closest('[data-inventory-layout-form]');
@@ -276,7 +302,7 @@ const GlobalSettingsCtrl = app => async () => {
       const verbForm = event.target.closest('[data-verb-form]');
       if (verbForm) {
         event.preventDefault();
-        await this.saveVerb(verbForm);
+        await this.autosaveVerbForm(verbForm);
         return;
       }
       const assetForm = event.target.closest('[data-global-asset-form]');
@@ -286,12 +312,28 @@ const GlobalSettingsCtrl = app => async () => {
       }
     },
 
-    onChange(event) {
+    async onChange(event) {
       if (event.target.matches('[name="key_code"]')) {
         const note = this.root?.querySelector('[data-escape-note]');
         if (note) {
           note.hidden = String(event.target.value) !== 'Escape';
         }
+      }
+      const settingsForm = event.target.closest('[data-global-overlay-settings-form]');
+      if (settingsForm) {
+        await this.autosaveGlobalSettingsForm(settingsForm);
+        return;
+      }
+      const verbForm = event.target.closest('[data-verb-form]');
+      if (verbForm) {
+        const verbId = Number(verbForm.elements.verb_id?.value || 0);
+        if (verbId) await this.autosaveVerbForm(verbForm);
+        return;
+      }
+      const cursorForm = event.target.closest('[data-cursor-settings-form]');
+      if (cursorForm) {
+        await this.autosaveCursorSettingsForm(cursorForm);
+        return;
       }
       if (event.target.closest('[data-inventory-layout-form]')) {
         const row = event.target.closest('[data-inventory-slot-row]');
@@ -301,6 +343,11 @@ const GlobalSettingsCtrl = app => async () => {
     },
 
     onInput(event) {
+      if (event.target.closest('[data-cursor-settings-form]')) {
+        const cursorForm = event.target.closest('[data-cursor-settings-form]');
+        void this.autosaveCursorSettingsForm(cursorForm);
+        return;
+      }
       if (!event.target.closest('[data-inventory-layout-form]')) return;
       const row = event.target.closest('[data-inventory-slot-row]');
       if (row) this.selectInventorySlot(Number(row.dataset.slotIndex), {syncPreview: false});
@@ -334,6 +381,30 @@ const GlobalSettingsCtrl = app => async () => {
       this.draggingInventorySlotIndex = null;
     },
 
+    async onKeyDown(event) {
+      if (!(event.ctrlKey || event.metaKey)) return;
+      if (event.altKey) return;
+      const target = event.target;
+      if (
+        target instanceof HTMLInputElement
+        || target instanceof HTMLTextAreaElement
+        || target instanceof HTMLSelectElement
+        || target?.isContentEditable
+      ) {
+        return;
+      }
+      const key = String(event.key || '').toLowerCase();
+      if (key === 'z' && !event.shiftKey) {
+        event.preventDefault();
+        await this.undoGlobalHistoryChange();
+        return;
+      }
+      if (key === 'y' || (key === 'z' && event.shiftKey)) {
+        event.preventDefault();
+        await this.redoGlobalHistoryChange();
+      }
+    },
+
     async saveGlobalSettings(form) {
       const formData = new FormData(form);
       this.setStatus('Saving global settings...');
@@ -356,6 +427,63 @@ const GlobalSettingsCtrl = app => async () => {
         this.setStatus('Global settings saved.');
       } catch {
         this.setStatus('Could not save global settings.');
+      }
+    },
+
+    currentGlobalSettingsPayload() {
+      return {
+        overlay_open_duration_seconds: Number(this.globalSettings?.overlay_open_duration_seconds ?? 0.22),
+        overlay_close_duration_seconds: Number(this.globalSettings?.overlay_close_duration_seconds ?? 0.18),
+        overlay_affect_audio: Boolean(this.globalSettings?.overlay_affect_audio),
+        start_scene_id: this.globalSettings?.start_scene_id ? Number(this.globalSettings.start_scene_id) : null,
+        inventory_key_code: String(this.globalSettings?.inventory_key_code ?? 'KeyI'),
+        verb_menu_timeout_seconds: Number(this.globalSettings?.verb_menu_timeout_seconds ?? 4),
+        verb_menu_show_disabled: Boolean(this.globalSettings?.verb_menu_show_disabled),
+        verb_text_color: String(this.globalSettings?.verb_text_color ?? '#34261b')
+      };
+    },
+
+    readGlobalSettingsPayload(form) {
+      const formData = new FormData(form);
+      return {
+        overlay_open_duration_seconds: Number(formData.get('overlay_open_duration_seconds') || 0.22),
+        overlay_close_duration_seconds: Number(formData.get('overlay_close_duration_seconds') || 0.18),
+        overlay_affect_audio: formData.get('overlay_affect_audio') === 'on',
+        start_scene_id: formData.get('start_scene_id') ? Number(formData.get('start_scene_id')) : null,
+        inventory_key_code: String(formData.get('inventory_key_code') ?? 'KeyI'),
+        verb_menu_timeout_seconds: Number(formData.get('verb_menu_timeout_seconds') || 4),
+        verb_menu_show_disabled: String(formData.get('verb_menu_show_disabled') ?? 'show_disabled') !== 'hide_disabled',
+        verb_text_color: String(formData.get('verb_text_color') ?? '#34261b')
+      };
+    },
+
+    async autosaveGlobalSettingsForm(form) {
+      const previousPayload = this.currentGlobalSettingsPayload();
+      const nextPayload = this.readGlobalSettingsPayload(form);
+      if (JSON.stringify(previousPayload) === JSON.stringify(nextPayload)) return;
+      this.globalSettings = await this.saveGlobalSettingsPayload(nextPayload);
+      if (!this.globalSettings) return;
+      this.recordGlobalHistoryEntry({
+        label: 'Edit global settings',
+        undo: () => this.saveGlobalSettingsPayload(previousPayload),
+        redo: () => this.saveGlobalSettingsPayload(nextPayload)
+      });
+    },
+
+    async saveGlobalSettingsPayload(payload) {
+      this.setStatus('Saving global settings...');
+      try {
+        this.globalSettings = await apiFetch('/api/global-settings', {
+          method: 'PATCH',
+          body: JSON.stringify(payload)
+        });
+        await this.refreshData();
+        this.refreshView();
+        this.setStatus('Global settings saved.');
+        return this.globalSettings;
+      } catch {
+        this.setStatus('Could not save global settings.');
+        return null;
       }
     },
 
@@ -397,6 +525,60 @@ const GlobalSettingsCtrl = app => async () => {
       }
     },
 
+    currentCursorSettingsPayload() {
+      return {
+        cursor_states: Object.fromEntries(this.cursorStates.map(state => [
+          state.key,
+          {
+            hotspot_x: Number(state.hotspotX ?? 0),
+            hotspot_y: Number(state.hotspotY ?? 0)
+          }
+        ]))
+      };
+    },
+
+    readCursorSettingsPayload(form) {
+      return {
+        cursor_states: Object.fromEntries(this.cursorStates.map(state => [
+          state.key,
+          {
+            hotspot_x: Number(form.querySelector(`[name="${state.key}_hotspot_x"]`)?.value || 0),
+            hotspot_y: Number(form.querySelector(`[name="${state.key}_hotspot_y"]`)?.value || 0)
+          }
+        ]))
+      };
+    },
+
+    async autosaveCursorSettingsForm(form) {
+      const previousPayload = this.currentCursorSettingsPayload();
+      const nextPayload = this.readCursorSettingsPayload(form);
+      if (JSON.stringify(previousPayload) === JSON.stringify(nextPayload)) return;
+      const saved = await this.saveCursorSettingsPayload(nextPayload);
+      if (!saved) return;
+      this.recordGlobalHistoryEntry({
+        label: 'Edit cursor hotspots',
+        undo: () => this.saveCursorSettingsPayload(previousPayload),
+        redo: () => this.saveCursorSettingsPayload(nextPayload)
+      });
+    },
+
+    async saveCursorSettingsPayload(payload) {
+      this.setStatus('Saving cursor settings...');
+      try {
+        this.globalSettings = await apiFetch('/api/global-settings', {
+          method: 'PATCH',
+          body: JSON.stringify(payload)
+        });
+        await this.refreshData();
+        this.refreshView();
+        this.setStatus('Cursor settings saved.');
+        return true;
+      } catch {
+        this.setStatus('Could not save cursor settings.');
+        return false;
+      }
+    },
+
     async saveVerb(form) {
       const formData = new FormData(form);
       const verbId = Number(formData.get('verb_id'));
@@ -419,6 +601,55 @@ const GlobalSettingsCtrl = app => async () => {
         this.setStatus(verbId ? 'Verb saved.' : 'Verb created.');
       } catch {
         this.setStatus(verbId ? 'Could not save verb.' : 'Could not create verb.');
+      }
+    },
+
+    currentSelectedVerbPayload() {
+      const selectedVerb = this.verbs.find(verb => Number(verb.id) === Number(this.selectedVerbId));
+      return selectedVerb ? {
+        key: String(selectedVerb.key ?? ''),
+        labels: selectedVerb.labels ?? {},
+        enabled: Boolean(selectedVerb.enabled),
+        sort_order: Number(selectedVerb.sort_order ?? 0)
+      } : null;
+    },
+
+    async autosaveVerbForm(form) {
+      const verbId = Number(new FormData(form).get('verb_id'));
+      if (!verbId) return;
+      const previousPayload = this.currentSelectedVerbPayload();
+      const formData = new FormData(form);
+      const nextPayload = {
+        key: String(formData.get('key') ?? '').trim(),
+        labels: this.readVerbLabels(form),
+        enabled: formData.get('enabled') === 'on',
+        sort_order: Number(formData.get('sort_order') || 0)
+      };
+      if (!previousPayload || JSON.stringify(previousPayload) === JSON.stringify(nextPayload)) return;
+      const saved = await this.saveVerbPayload(verbId, nextPayload);
+      if (!saved) return;
+      this.recordGlobalHistoryEntry({
+        label: 'Edit verb',
+        undo: () => this.saveVerbPayload(verbId, previousPayload),
+        redo: () => this.saveVerbPayload(verbId, nextPayload)
+      });
+    },
+
+    async saveVerbPayload(verbId, payload) {
+      this.setStatus('Saving verb...');
+      try {
+        await apiFetch(`/api/verbs/${verbId}`, {
+          method: 'PATCH',
+          body: JSON.stringify(payload)
+        });
+        this.selectedVerbId = verbId;
+        await this.refreshData();
+        this.refreshView();
+        this.setStatus('Verb saved.');
+        return true;
+      } catch {
+        this.setStatus('Could not save verb.');
+        return false;
       }
     },
 
@@ -497,6 +728,35 @@ const GlobalSettingsCtrl = app => async () => {
     refreshView() {
       app.refresh();
       requestAnimationFrame(() => this.setControlValues());
+    },
+
+    recordGlobalHistoryEntry(entry) {
+      this.globalHistoryUndoStack.push(entry);
+      if (this.globalHistoryUndoStack.length > 200) this.globalHistoryUndoStack.shift();
+      this.globalHistoryRedoStack = [];
+      this.canUndoGlobalHistory = this.globalHistoryUndoStack.length > 0;
+      this.canRedoGlobalHistory = this.globalHistoryRedoStack.length > 0;
+      this.refreshView();
+    },
+
+    async undoGlobalHistoryChange() {
+      const entry = this.globalHistoryUndoStack.pop();
+      if (!entry) return;
+      await entry.undo();
+      this.globalHistoryRedoStack.push(entry);
+      this.canUndoGlobalHistory = this.globalHistoryUndoStack.length > 0;
+      this.canRedoGlobalHistory = this.globalHistoryRedoStack.length > 0;
+      this.refreshView();
+    },
+
+    async redoGlobalHistoryChange() {
+      const entry = this.globalHistoryRedoStack.pop();
+      if (!entry) return;
+      await entry.redo();
+      this.globalHistoryUndoStack.push(entry);
+      this.canUndoGlobalHistory = this.globalHistoryUndoStack.length > 0;
+      this.canRedoGlobalHistory = this.globalHistoryRedoStack.length > 0;
+      this.refreshView();
     },
 
     inventorySlotsBody() {

@@ -23,7 +23,13 @@
       <h1>Global settings</h1>
       <p>Configure overlays, verbs, and inventory presentation.</p>
     </div>
-    <p class="form-status" data-global-settings-status aria-live="polite">{{status}}</p>
+    <div class="scene-header__actions">
+      <div class="scene-header__button-group">
+        <button class="button secondary compact" type="button" data-action="undo-global-setting-change" {{#if not canUndoGlobalHistory}}disabled{{/if}}>Undo</button>
+        <button class="button secondary compact" type="button" data-action="redo-global-setting-change" {{#if not canRedoGlobalHistory}}disabled{{/if}}>Redo</button>
+      </div>
+      <p class="form-status" data-global-settings-status aria-live="polite">{{status}}</p>
+    </div>
   </header>
 
   <section class="actions-grid">
@@ -78,7 +84,6 @@
             <input name="overlay_affect_audio" type="checkbox" />
             Duck audio while overlay is open
           </label>
-          <button class="button primary compact" type="submit">Save global settings</button>
         </form>
       </section>
 
@@ -135,6 +140,11 @@
         </div>
         <form class="stack-form" data-verb-form>
           <input name="verb_id" type="hidden" value="{{selectedVerbId}}" />
+          {{#if isEditingVerb}}
+            <div class="form-actions">
+              <button class="button secondary compact" type="button" data-action="new-verb">New verb</button>
+            </div>
+          {{/if}}
           <label>
             Key
             <input name="key" type="text" placeholder="look" required />
@@ -175,7 +185,9 @@
             Enabled
           </label>
           <div class="form-actions">
-            <button class="button secondary compact" type="submit">{{verbSubmitLabel}}</button>
+            {{#if not isEditingVerb}}
+              <button class="button secondary compact" type="submit">{{verbSubmitLabel}}</button>
+            {{/if}}
             {{#if isEditingVerb}}
               <button class="button danger compact" type="button" data-action="delete-verb" data-verb-id="{{selectedVerbId}}" data-verb-key="{{selectedVerbKey}}">Remove verb</button>
               <button class="button secondary compact form-actions__cancel" type="button" data-action="cancel-verb-edit">X</button>
@@ -284,7 +296,6 @@
               </article>
             {{/each}}
           </div>
-          <button class="button secondary compact" type="button" data-action="save-cursor-settings">Save cursor hotspots</button>
         </section>
       </section>
 
