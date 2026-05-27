@@ -40,6 +40,7 @@ from .database import (
     create_mask_candidate,
     create_or_update_overlay_scene_binding,
     create_object_animation,
+    create_project,
     create_script_line,
     create_processing_job,
     create_object_mask,
@@ -92,6 +93,7 @@ from .database import (
     get_active_processing_job_for_script_line,
     get_audio_asset_by_id,
     get_processing_job,
+    get_project_by_id,
     get_session_by_token,
     get_scene_with_images,
     get_scene_mask_prompt,
@@ -113,6 +115,7 @@ from .database import (
     list_conversations,
     list_game_variables,
     list_overlay_scene_bindings,
+    list_projects,
     list_object_animations_for_object,
     list_object_masks_for_object,
     list_scene_objects_for_organization,
@@ -166,6 +169,7 @@ from .database import (
     update_scene_object,
     update_scene_description,
     update_processing_job_progress,
+    update_project,
     update_verb,
     upsert_character_image,
     upsert_script_translation,
@@ -174,7 +178,9 @@ from .database import (
     replace_script_audio_candidate_viseme_events,
     create_verb,
     get_verb_by_id,
-)
+    get_default_project_for_organization,
+    set_session_active_project,
+    )
 from .characters import (
     CharacterImageProvider,
     CharacterImageProviderUnavailable,
@@ -262,7 +268,33 @@ class User(BaseModel):
 class SessionResponse(BaseModel):
     user: User | None
     organization_id: str
+    active_project_id: int | None = None
+    active_project_name: str | None = None
     auth_providers: list[str]
+
+
+class ProjectBase(BaseModel):
+    name: str = Field(min_length=1, max_length=200)
+
+
+class Project(ProjectBase):
+    id: int
+    organization_id: str
+    sort_order: int
+    created_at: str
+    updated_at: str
+
+
+class ProjectCreate(ProjectBase):
+    pass
+
+
+class ProjectUpdate(BaseModel):
+    name: str | None = Field(default=None, min_length=1, max_length=200)
+
+
+class ActiveProjectUpdate(BaseModel):
+    project_id: int = Field(ge=1)
 
 
 class InviteCreate(BaseModel):
@@ -1351,8 +1383,9 @@ def _load_conversation_detail(
     database_path: Path,
     organization_id: str,
     conversation_id: int,
+    project_id: int | None = None,
 ) -> dict[str, Any] | None:
-    conversation = get_conversation_by_id(database_path, organization_id, conversation_id)
+    conversation = get_conversation_by_id(database_path, organization_id, conversation_id, project_id)
     if conversation is None:
         return None
     nodes = list_conversation_nodes(database_path, organization_id, conversation_id)
@@ -1378,11 +1411,11 @@ def _load_conversation_detail(
                 choice_line_ids.add(int(choice["script_line_id"]))
     script_line_ids = sorted(node_line_ids | choice_line_ids)
     script_line_map = {
-        line_id: get_script_line_detail(database_path, organization_id, line_id)
+        line_id: get_script_line_detail(database_path, organization_id, line_id, project_id)
         for line_id in script_line_ids
     }
     character_map = {
-        character_id: get_character_by_id(database_path, organization_id, character_id)
+        character_id: get_character_by_id(database_path, organization_id, character_id, project_id)
         for character_id in sorted(speaker_character_ids)
     }
     enriched_nodes: list[dict[str, Any]] = []
@@ -1574,6 +1607,74 @@ def create_app(
         return {
             "user": _public_user(user) if user else None,
             "organization_id": app_settings.organization_id,
+            "active_project_id": int(user["active_project_id"]) if user and user.get("active_project_id") is not None else None,
+            "active_project_name": str(user["active_project_name"]) if user and user.get("active_project_name") else None,
+            "auth_providers": ["google"],
+        }
+
+    @app.get("/api/projects", response_model=list[Project])
+    def get_projects(user: dict[str, Any] = Depends(current_user)) -> list[dict[str, Any]]:
+        return list_projects(database_path, user["organization_id"])
+
+    @app.post("/api/projects", response_model=Project, status_code=201)
+    def post_project(
+        payload: ProjectCreate,
+        user: dict[str, Any] = Depends(current_admin),
+    ) -> dict[str, Any]:
+        try:
+            return create_project(
+                database_path,
+                organization_id=user["organization_id"],
+                name=payload.name,
+            )
+        except sqlite3.IntegrityError as exc:
+            raise HTTPException(status_code=409, detail="A project with that name already exists.") from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    @app.patch("/api/projects/{project_id}", response_model=Project)
+    def patch_project(
+        project_id: int,
+        payload: ProjectUpdate,
+        user: dict[str, Any] = Depends(current_admin),
+    ) -> dict[str, Any]:
+        try:
+            project = update_project(
+                database_path,
+                organization_id=user["organization_id"],
+                project_id=project_id,
+                name=payload.name,
+            )
+        except sqlite3.IntegrityError as exc:
+            raise HTTPException(status_code=409, detail="A project with that name already exists.") from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        if project is None:
+            raise HTTPException(status_code=404, detail="Project not found")
+        return project
+
+    @app.post("/api/session/active-project", response_model=SessionResponse)
+    def post_active_project(
+        payload: ActiveProjectUpdate,
+        session_token: str | None = Cookie(
+            default=None,
+            alias=app_settings.session_cookie_name,
+        ),
+        user: dict[str, Any] = Depends(current_user),
+    ) -> dict[str, Any]:
+        if not session_token:
+            raise HTTPException(status_code=401, detail="Not authenticated")
+        project = get_project_by_id(database_path, user["organization_id"], payload.project_id)
+        if project is None:
+            raise HTTPException(status_code=404, detail="Project not found")
+        session = set_session_active_project(database_path, session_token, payload.project_id)
+        if session is None:
+            raise HTTPException(status_code=401, detail="Not authenticated")
+        return {
+            "user": _public_user(session),
+            "organization_id": app_settings.organization_id,
+            "active_project_id": int(session["active_project_id"]) if session.get("active_project_id") is not None else None,
+            "active_project_name": str(session["active_project_name"]) if session.get("active_project_name") else None,
             "auth_providers": ["google"],
         }
 
@@ -1930,6 +2031,7 @@ def create_app(
         return list_script_lines(
             database_path,
             organization_id=user["organization_id"],
+            project_id=int(user["active_project_id"]),
             language=language,
             query=q.strip(),
             path=path.strip(),
@@ -1945,14 +2047,14 @@ def create_app(
 
     @app.get("/api/script-lines/paths", response_model=list[str])
     def get_script_line_paths(user: dict[str, Any] = Depends(current_user)) -> list[str]:
-        return list_script_path_options(database_path, user["organization_id"])
+        return list_script_path_options(database_path, user["organization_id"], int(user["active_project_id"]))
 
     @app.get("/api/script-lines/{line_id}", response_model=ScriptLineDetail)
     def get_script_line(
         line_id: int,
         user: dict[str, Any] = Depends(current_user),
     ) -> dict[str, Any]:
-        line = get_script_line_detail(database_path, user["organization_id"], line_id)
+        line = get_script_line_detail(database_path, user["organization_id"], line_id, int(user["active_project_id"]))
         if line is None:
             raise HTTPException(status_code=404, detail="Script line not found")
         return line
@@ -1965,6 +2067,7 @@ def create_app(
         line = create_script_line(
             database_path,
             organization_id=user["organization_id"],
+            project_id=int(user["active_project_id"]),
             source_text=payload.source_text.strip(),
             path_parts=_normalize_script_path_parts(payload.path_text),
         )
@@ -1975,12 +2078,13 @@ def create_app(
                 database_path,
                 organization_id=user["organization_id"],
                 line_id=line["line_id"],
+                project_id=int(user["active_project_id"]),
                 language=translation.language.strip().lower(),
                 text=translation.text,
                 review_status=translation.review_status,
                 notes=translation.notes,
             )
-        created = get_script_line_detail(database_path, user["organization_id"], line["line_id"])
+        created = get_script_line_detail(database_path, user["organization_id"], line["line_id"], int(user["active_project_id"]))
         if created is None:
             raise RuntimeError("Created script line could not be loaded")
         if line_localization_provider is not None:
@@ -2010,7 +2114,7 @@ def create_app(
                 status_code=409,
                 detail=f"Script line #{line_id} is still referenced by scene interactions",
             )
-        line = get_script_line_detail(database_path, user["organization_id"], line_id)
+        line = get_script_line_detail(database_path, user["organization_id"], line_id, int(user["active_project_id"]))
         if line is None:
             raise HTTPException(status_code=404, detail="Script line not found")
         for candidate in line.get("audio_candidates", []):
@@ -2020,7 +2124,7 @@ def create_app(
             file_path = _safe_child_path(app_settings.script_audio_root, relative_path)
             if file_path.exists() and file_path.is_file():
                 file_path.unlink()
-        delete_script_line(database_path, user["organization_id"], line_id)
+        delete_script_line(database_path, user["organization_id"], line_id, int(user["active_project_id"]))
         return Response(status_code=204)
 
     @app.patch(
@@ -2037,6 +2141,7 @@ def create_app(
             database_path,
             organization_id=user["organization_id"],
             line_id=line_id,
+            project_id=int(user["active_project_id"]),
             language=language,
             text=update.text,
             review_status=update.review_status,
@@ -2060,7 +2165,7 @@ def create_app(
             raise HTTPException(status_code=503, detail=line_localization_provider_error)
         if line_localization_provider is None:
             raise HTTPException(status_code=503, detail="Script localization provider is not configured")
-        line = get_script_line_detail(database_path, user["organization_id"], line_id)
+        line = get_script_line_detail(database_path, user["organization_id"], line_id, int(user["active_project_id"]))
         if line is None:
             raise HTTPException(status_code=404, detail="Script line not found")
         language = str(payload.language or "").strip().lower()
@@ -2100,7 +2205,7 @@ def create_app(
         language: str = Form(default="en"),
         user: dict[str, Any] = Depends(current_user),
     ) -> dict[str, Any]:
-        line = get_script_line_detail(database_path, user["organization_id"], line_id)
+        line = get_script_line_detail(database_path, user["organization_id"], line_id, int(user["active_project_id"]))
         if line is None:
             raise HTTPException(status_code=404, detail="Script line not found")
         if not file.filename:
@@ -2129,7 +2234,7 @@ def create_app(
             raise HTTPException(status_code=503, detail=line_localization_provider_error)
         if line_localization_provider is None:
             raise HTTPException(status_code=503, detail="Script localization provider is not configured")
-        line = get_script_line_detail(database_path, user["organization_id"], line_id)
+        line = get_script_line_detail(database_path, user["organization_id"], line_id, int(user["active_project_id"]))
         if line is None:
             raise HTTPException(status_code=404, detail="Script line not found")
         language = str(payload.language or "").strip().lower()
@@ -2198,7 +2303,7 @@ def create_app(
         succeeded = 0
         errors: list[str] = []
         for line_id in payload.line_ids:
-            line = get_script_line_detail(database_path, user["organization_id"], int(line_id))
+            line = get_script_line_detail(database_path, user["organization_id"], int(line_id), int(user["active_project_id"]))
             if line is None:
                 errors.append(f"Line #{line_id} was not found.")
                 continue
@@ -2217,6 +2322,7 @@ def create_app(
                 database_path,
                 organization_id=user["organization_id"],
                 line_id=int(line_id),
+                project_id=int(user["active_project_id"]),
                 language=language,
                 review_status="approved",
                 notes="",
@@ -2225,6 +2331,7 @@ def create_app(
                 created_translation = upsert_script_translation(
                     database_path,
                     organization_id=user["organization_id"],
+                    project_id=int(user["active_project_id"]),
                     line_id=int(line_id),
                     language=language,
                     text=text,
@@ -2237,6 +2344,7 @@ def create_app(
                         database_path,
                         organization_id=user["organization_id"],
                         line_id=int(line_id),
+                        project_id=int(user["active_project_id"]),
                         language=language,
                         review_status="approved",
                         notes="",
@@ -2273,6 +2381,7 @@ def create_app(
             target_line_ids = list_script_line_ids(
                 database_path,
                 organization_id=user["organization_id"],
+                project_id=int(user["active_project_id"]),
                 language=language,
                 query=payload.q.strip(),
                 path=payload.path.strip(),
@@ -2287,7 +2396,7 @@ def create_app(
         succeeded = 0
         errors: list[str] = []
         for line_id in target_line_ids:
-            line = get_script_line_detail(database_path, user["organization_id"], line_id)
+            line = get_script_line_detail(database_path, user["organization_id"], line_id, int(user["active_project_id"]))
             if line is None:
                 errors.append(f"Line #{line_id} was not found.")
                 continue
@@ -2367,6 +2476,7 @@ def create_app(
             review_status=update.review_status,
             notes=update.notes,
             selected=update.selected,
+            project_id=int(user["active_project_id"]),
         )
         if candidate is None:
             raise HTTPException(status_code=404, detail="Audio candidate not found")
@@ -2381,6 +2491,7 @@ def create_app(
             database_path,
             user["organization_id"],
             candidate_id,
+            int(user["active_project_id"]),
         )
         if candidate is None or not candidate["relative_path"]:
             raise HTTPException(status_code=404, detail="Audio candidate not found")
@@ -2396,7 +2507,7 @@ def create_app(
     @app.get("/api/variables", response_model=list[GameVariable])
     def get_variables(user: dict[str, Any] = Depends(current_user)) -> list[dict[str, Any]]:
         ensure_system_game_variables(database_path, user["organization_id"])
-        return list_game_variables(database_path, user["organization_id"])
+        return list_game_variables(database_path, user["organization_id"], int(user["active_project_id"]))
 
     @app.post("/api/variables", response_model=GameVariable, status_code=201)
     def post_variable(
@@ -2408,6 +2519,7 @@ def create_app(
             return create_game_variable(
                 database_path,
                 organization_id=user["organization_id"],
+                project_id=int(user["active_project_id"]),
                 name=variable.name,
                 value_type=variable.value_type,
                 default_value=default_value,
@@ -2432,6 +2544,7 @@ def create_app(
                 value_type=variable.value_type,
                 default_value=default_value,
                 description=variable.description,
+                project_id=int(user["active_project_id"]),
             )
         except sqlite3.IntegrityError as exc:
             raise HTTPException(status_code=409, detail="Variable name already exists") from exc
@@ -2444,16 +2557,16 @@ def create_app(
         variable_id: int,
         user: dict[str, Any] = Depends(current_user),
     ) -> Response:
-        delete_game_variable(database_path, user["organization_id"], variable_id)
+        delete_game_variable(database_path, user["organization_id"], variable_id, int(user["active_project_id"]))
         return Response(status_code=204)
 
     @app.get("/api/overlay-bindings", response_model=list[OverlaySceneBinding])
     def get_overlay_bindings(user: dict[str, Any] = Depends(current_user)) -> list[dict[str, Any]]:
-        return list_overlay_scene_bindings(database_path, user["organization_id"])
+        return list_overlay_scene_bindings(database_path, user["organization_id"], int(user["active_project_id"]))
 
     @app.get("/api/verbs", response_model=list[Verb])
     def get_verbs(user: dict[str, Any] = Depends(current_user)) -> list[dict[str, Any]]:
-        return list_verbs(database_path, user["organization_id"])
+        return list_verbs(database_path, user["organization_id"], int(user["active_project_id"]))
 
     @app.post("/api/verbs", response_model=Verb, status_code=201)
     def post_verb(
@@ -2464,6 +2577,7 @@ def create_app(
             return create_verb(
                 database_path,
                 organization_id=user["organization_id"],
+                project_id=int(user["active_project_id"]),
                 key=_normalize_verb_key(verb.key),
                 labels=_normalize_verb_labels(verb.labels),
                 enabled=verb.enabled,
@@ -2482,6 +2596,7 @@ def create_app(
             updated = update_verb(
                 database_path,
                 organization_id=user["organization_id"],
+                project_id=int(user["active_project_id"]),
                 verb_id=verb_id,
                 key=_normalize_verb_key(verb.key),
                 labels=_normalize_verb_labels(verb.labels),
@@ -2499,14 +2614,14 @@ def create_app(
         verb_id: int,
         user: dict[str, Any] = Depends(current_user),
     ) -> Response:
-        delete_verb(database_path, user["organization_id"], verb_id)
+        delete_verb(database_path, user["organization_id"], verb_id, int(user["active_project_id"]))
         return Response(status_code=204)
 
     @app.get("/api/conversations", response_model=list[Conversation])
     def get_conversations(user: dict[str, Any] = Depends(current_user)) -> list[dict[str, Any]]:
         items = []
-        for conversation in list_conversations(database_path, user["organization_id"]):
-            detail = _load_conversation_detail(database_path, user["organization_id"], int(conversation["id"]))
+        for conversation in list_conversations(database_path, user["organization_id"], int(user["active_project_id"])):
+            detail = _load_conversation_detail(database_path, user["organization_id"], int(conversation["id"]), int(user["active_project_id"]))
             if detail is not None:
                 items.append(detail)
         return items
@@ -2520,20 +2635,21 @@ def create_app(
             conversation = create_conversation(
                 database_path,
                 organization_id=user["organization_id"],
+                project_id=int(user["active_project_id"]),
                 name=payload.name,
                 description=payload.description,
                 sort_order=payload.sort_order,
             )
         except sqlite3.IntegrityError as exc:
             raise HTTPException(status_code=409, detail="Conversation name already exists") from exc
-        return _load_conversation_detail(database_path, user["organization_id"], int(conversation["id"]))
+        return _load_conversation_detail(database_path, user["organization_id"], int(conversation["id"]), int(user["active_project_id"]))
 
     @app.get("/api/conversations/{conversation_id}", response_model=Conversation)
     def get_conversation(
         conversation_id: int,
         user: dict[str, Any] = Depends(current_user),
     ) -> dict[str, Any]:
-        conversation = _load_conversation_detail(database_path, user["organization_id"], conversation_id)
+        conversation = _load_conversation_detail(database_path, user["organization_id"], conversation_id, int(user["active_project_id"]))
         if conversation is None:
             raise HTTPException(status_code=404, detail="Conversation not found")
         return conversation
@@ -2544,7 +2660,7 @@ def create_app(
         payload: ConversationUpdate,
         user: dict[str, Any] = Depends(current_user),
     ) -> dict[str, Any]:
-        existing = get_conversation_by_id(database_path, user["organization_id"], conversation_id)
+        existing = get_conversation_by_id(database_path, user["organization_id"], conversation_id, int(user["active_project_id"]))
         if existing is None:
             raise HTTPException(status_code=404, detail="Conversation not found")
         update_start_node_id = payload.clear_start_node_id or payload.start_node_id is not None
@@ -2568,7 +2684,7 @@ def create_app(
             raise HTTPException(status_code=409, detail="Conversation name already exists") from exc
         if updated is None:
             raise HTTPException(status_code=404, detail="Conversation not found")
-        return _load_conversation_detail(database_path, user["organization_id"], conversation_id)
+        return _load_conversation_detail(database_path, user["organization_id"], conversation_id, int(user["active_project_id"]))
 
     @app.delete("/api/conversations/{conversation_id}", status_code=204)
     def delete_conversation_endpoint(
@@ -2585,9 +2701,9 @@ def create_app(
         payload: ConversationNodeCreate,
         user: dict[str, Any] = Depends(current_user),
     ) -> dict[str, Any]:
-        if get_conversation_by_id(database_path, user["organization_id"], conversation_id) is None:
+        if get_conversation_by_id(database_path, user["organization_id"], conversation_id, int(user["active_project_id"])) is None:
             raise HTTPException(status_code=404, detail="Conversation not found")
-        if payload.script_line_id is not None and get_script_line_detail(database_path, user["organization_id"], payload.script_line_id) is None:
+        if payload.script_line_id is not None and get_script_line_detail(database_path, user["organization_id"], payload.script_line_id, int(user["active_project_id"])) is None:
             raise HTTPException(status_code=400, detail="Script line does not exist")
         if payload.speaker_character_id is not None:
             _require_character(database_path, user["organization_id"], payload.speaker_character_id)
@@ -2613,7 +2729,7 @@ def create_app(
         if existing is None:
             raise HTTPException(status_code=404, detail="Conversation node not found")
         update_script_line_id = payload.clear_script_line_id or payload.script_line_id is not None
-        if payload.script_line_id is not None and get_script_line_detail(database_path, user["organization_id"], payload.script_line_id) is None:
+        if payload.script_line_id is not None and get_script_line_detail(database_path, user["organization_id"], payload.script_line_id, int(user["active_project_id"])) is None:
             raise HTTPException(status_code=400, detail="Script line does not exist")
         update_speaker_character_id = payload.clear_speaker_character_id or payload.speaker_character_id is not None
         if payload.speaker_character_id is not None:
@@ -2653,7 +2769,7 @@ def create_app(
         node = get_conversation_node_by_id(database_path, user["organization_id"], node_id)
         if node is None:
             raise HTTPException(status_code=404, detail="Conversation node not found")
-        if payload.script_line_id is not None and get_script_line_detail(database_path, user["organization_id"], payload.script_line_id) is None:
+        if payload.script_line_id is not None and get_script_line_detail(database_path, user["organization_id"], payload.script_line_id, int(user["active_project_id"])) is None:
             raise HTTPException(status_code=400, detail="Script line does not exist")
         if payload.next_node_id is not None:
             next_node = get_conversation_node_by_id(database_path, user["organization_id"], payload.next_node_id)
@@ -2681,7 +2797,7 @@ def create_app(
         if existing is None:
             raise HTTPException(status_code=404, detail="Conversation choice not found")
         update_script_line_id = payload.clear_script_line_id or payload.script_line_id is not None
-        if payload.script_line_id is not None and get_script_line_detail(database_path, user["organization_id"], payload.script_line_id) is None:
+        if payload.script_line_id is not None and get_script_line_detail(database_path, user["organization_id"], payload.script_line_id, int(user["active_project_id"])) is None:
             raise HTTPException(status_code=400, detail="Script line does not exist")
         update_next_node_id = payload.clear_next_node_id or payload.next_node_id is not None
         if payload.next_node_id is not None:
@@ -2720,12 +2836,13 @@ def create_app(
     @app.get("/api/characters", response_model=list[Character])
     def get_characters(user: dict[str, Any] = Depends(current_user)) -> list[dict[str, Any]]:
         characters = []
-        for row in list_characters(database_path, user["organization_id"]):
+        for row in list_characters(database_path, user["organization_id"], int(user["active_project_id"])):
             if row.get("scene_id") is None:
                 backing_scene = create_empty_scene(
                     database_path,
                     organization_id=user["organization_id"],
                     created_by_user_id=user["id"],
+                    project_id=int(user["active_project_id"]),
                     title=str(row["name"]).strip(),
                     description=f"Backing scene for character {str(row['name']).strip()}",
                     presentation_mode="character",
@@ -2737,7 +2854,7 @@ def create_app(
                     scene_id=int(backing_scene["id"]),
                     update_scene_id=True,
                 ) or row
-            detail = _load_character_detail(database_path, user["organization_id"], int(row["id"]))
+            detail = _load_character_detail(database_path, user["organization_id"], int(row["id"]), int(user["active_project_id"]))
             if detail is not None:
                 characters.append(detail)
         return characters
@@ -2752,6 +2869,7 @@ def create_app(
                 database_path,
                 organization_id=user["organization_id"],
                 created_by_user_id=user["id"],
+                project_id=int(user["active_project_id"]),
                 title=payload.name.strip(),
                 description=f"Backing scene for character {payload.name.strip()}",
                 presentation_mode="character",
@@ -2759,6 +2877,7 @@ def create_app(
             character = create_character(
                 database_path,
                 organization_id=user["organization_id"],
+                project_id=int(user["active_project_id"]),
                 name=payload.name,
                 description=payload.description,
                 scene_id=int(backing_scene["id"]),
@@ -2769,14 +2888,14 @@ def create_app(
             )
         except sqlite3.IntegrityError as exc:
             raise HTTPException(status_code=409, detail="Character name already exists") from exc
-        return _load_character_detail(database_path, user["organization_id"], int(character["id"]))
+        return _load_character_detail(database_path, user["organization_id"], int(character["id"]), int(user["active_project_id"]))
 
     @app.get("/api/characters/{character_id}", response_model=Character)
     def get_character(
         character_id: int,
         user: dict[str, Any] = Depends(current_user),
     ) -> dict[str, Any]:
-        character_record = get_character_by_id(database_path, user["organization_id"], character_id)
+        character_record = get_character_by_id(database_path, user["organization_id"], character_id, int(user["active_project_id"]))
         if character_record is None:
             raise HTTPException(status_code=404, detail="Character not found")
         if character_record.get("scene_id") is None:
@@ -2784,6 +2903,7 @@ def create_app(
                 database_path,
                 organization_id=user["organization_id"],
                 created_by_user_id=user["id"],
+                project_id=int(user["active_project_id"]),
                 title=str(character_record["name"]).strip(),
                 description=f"Backing scene for character {str(character_record['name']).strip()}",
                 presentation_mode="character",
@@ -2795,7 +2915,7 @@ def create_app(
                 scene_id=int(backing_scene["id"]),
                 update_scene_id=True,
             )
-        character = _load_character_detail(database_path, user["organization_id"], character_id)
+        character = _load_character_detail(database_path, user["organization_id"], character_id, int(user["active_project_id"]))
         if not character:
             raise HTTPException(status_code=404, detail="Character not found")
         return character
@@ -2813,7 +2933,7 @@ def create_app(
         payload: CharacterUpdate,
         user: dict[str, Any] = Depends(current_user),
     ) -> dict[str, Any]:
-        existing = get_character_by_id(database_path, user["organization_id"], character_id)
+        existing = get_character_by_id(database_path, user["organization_id"], character_id, int(user["active_project_id"]))
         if existing is None:
             raise HTTPException(status_code=404, detail="Character not found")
         mouth_scene_object_id = payload.mouth_scene_object_id
@@ -2852,14 +2972,14 @@ def create_app(
                 title=payload.name.strip() if isinstance(payload.name, str) else None,
                 description=payload.description if payload.description is not None else None,
             )
-        return _load_character_detail(database_path, user["organization_id"], character_id)
+        return _load_character_detail(database_path, user["organization_id"], character_id, int(user["active_project_id"]))
 
     @app.delete("/api/characters/{character_id}", status_code=204)
     def delete_character_endpoint(
         character_id: int,
         user: dict[str, Any] = Depends(current_user),
     ) -> Response:
-        character = get_character_by_id(database_path, user["organization_id"], character_id)
+        character = get_character_by_id(database_path, user["organization_id"], character_id, int(user["active_project_id"]))
         if character is None:
             raise HTTPException(status_code=404, detail="Character not found")
         scene_id = int(character["scene_id"]) if character.get("scene_id") is not None else None
@@ -2899,7 +3019,7 @@ def create_app(
         sort_order: int = Form(0),
         user: dict[str, Any] = Depends(current_user),
     ) -> dict[str, Any]:
-        character = get_character_by_id(database_path, user["organization_id"], character_id)
+        character = get_character_by_id(database_path, user["organization_id"], character_id, int(user["active_project_id"]))
         if character is None:
             raise HTTPException(status_code=404, detail="Character not found")
         suffix = Path(file.filename or "").suffix.lower()
@@ -3147,7 +3267,7 @@ def create_app(
             user["organization_id"],
             int(character["scene_id"]),
         )
-        return _load_character_detail(database_path, user["organization_id"], character_id)
+        return _load_character_detail(database_path, user["organization_id"], character_id, int(user["active_project_id"]))
 
     @app.post("/api/characters/{character_id}/generate-poses", response_model=Character)
     async def post_generate_character_poses(
@@ -3234,7 +3354,7 @@ def create_app(
         candidate_id: int,
         user: dict[str, Any] = Depends(current_user),
     ) -> dict[str, Any]:
-        candidate = get_script_audio_candidate_by_id(database_path, user["organization_id"], candidate_id)
+        candidate = get_script_audio_candidate_by_id(database_path, user["organization_id"], candidate_id, int(user["active_project_id"]))
         if candidate is None:
             raise HTTPException(status_code=404, detail="Audio candidate not found")
         if not candidate.get("relative_path"):
@@ -3247,6 +3367,7 @@ def create_app(
             database_path,
             user["organization_id"],
             int(candidate["script_line_id"]),
+            int(user["active_project_id"]),
         )
         if script_line is None:
             raise HTTPException(status_code=404, detail="Script line not found")
@@ -3278,7 +3399,7 @@ def create_app(
             candidate_id=candidate_id,
             events=events,
         )
-        updated = get_script_audio_candidate_by_id(database_path, user["organization_id"], candidate_id)
+        updated = get_script_audio_candidate_by_id(database_path, user["organization_id"], candidate_id, int(user["active_project_id"]))
         if updated is None:
             raise HTTPException(status_code=404, detail="Audio candidate not found")
         updated["viseme_events"] = list_script_audio_candidate_viseme_events(database_path, user["organization_id"], candidate_id)
@@ -3286,7 +3407,7 @@ def create_app(
 
     @app.get("/api/global-settings", response_model=GlobalSettings)
     def get_global_settings_endpoint(user: dict[str, Any] = Depends(current_user)) -> dict[str, Any]:
-        return get_global_settings(database_path, user["organization_id"])
+        return get_global_settings(database_path, user["organization_id"], int(user["active_project_id"]))
 
     @app.patch("/api/global-settings", response_model=GlobalSettings)
     def patch_global_settings_endpoint(
@@ -3303,6 +3424,7 @@ def create_app(
         return update_global_settings(
             database_path,
             organization_id=user["organization_id"],
+            project_id=int(user["active_project_id"]),
             overlay_open_duration_seconds=settings_update.overlay_open_duration_seconds,
             overlay_close_duration_seconds=settings_update.overlay_close_duration_seconds,
             overlay_fade_color=settings_update.overlay_fade_color,
@@ -3351,7 +3473,7 @@ def create_app(
         output_path.parent.mkdir(parents=True, exist_ok=True)
         await _write_upload(file, output_path)
         if asset_kind in cursor_asset_kind_map:
-            current_settings = get_global_settings(database_path, user["organization_id"])
+            current_settings = get_global_settings(database_path, user["organization_id"], int(user["active_project_id"]))
             cursor_states = {
                 key: dict(value)
                 for key, value in (current_settings.get("cursor_states") or {}).items()
@@ -3364,11 +3486,13 @@ def create_app(
             return update_global_settings(
                 database_path,
                 organization_id=user["organization_id"],
+                project_id=int(user["active_project_id"]),
                 cursor_states=cursor_states,
             )
         return update_global_settings(
             database_path,
             organization_id=user["organization_id"],
+            project_id=int(user["active_project_id"]),
             inventory_background_relative_path=relative_path if asset_kind == "inventory_background" else None,
             verb_tag_background_relative_path=relative_path if asset_kind == "verb_tag_background" else None,
             update_inventory_background_relative_path=asset_kind == "inventory_background",
@@ -3388,7 +3512,7 @@ def create_app(
         }
         if asset_kind not in {"inventory_background", "verb_tag_background", *cursor_asset_kind_map.keys()}:
             raise HTTPException(status_code=404, detail="Global settings asset not found")
-        settings_row = get_global_settings(database_path, user["organization_id"])
+        settings_row = get_global_settings(database_path, user["organization_id"], int(user["active_project_id"]))
         if asset_kind == "inventory_background":
             relative_path = settings_row.get("inventory_background_relative_path")
         elif asset_kind == "verb_tag_background":
@@ -3496,7 +3620,7 @@ def create_app(
         _require_scene(database_path, scene_id, user["organization_id"])
         return {
             "scene_id": scene_id,
-            "variables": list_game_variables(database_path, user["organization_id"]),
+            "variables": list_game_variables(database_path, user["organization_id"], int(user["active_project_id"])),
             "interactions": list_scene_interactions(
                 database_path,
                 scene_id,
@@ -3561,7 +3685,7 @@ def create_app(
 
     @app.get("/api/uploads/batches", response_model=list[UploadBatchSummary])
     def get_upload_batches(user: dict[str, Any] = Depends(current_user)) -> list[dict]:
-        return list_upload_batches(database_path, user["organization_id"])
+        return list_upload_batches(database_path, user["organization_id"], int(user["active_project_id"]))
 
     @app.post("/api/uploads/batches", response_model=UploadBatch, status_code=201)
     async def post_upload_batch(
@@ -3574,6 +3698,7 @@ def create_app(
         batch = create_upload_batch(
             database_path,
             organization_id=user["organization_id"],
+            project_id=int(user["active_project_id"]),
             created_by_user_id=user["id"],
         )
         batch_root = _batch_storage_root(
@@ -3592,6 +3717,7 @@ def create_app(
                 database_path,
                 batch_id=batch["id"],
                 organization_id=user["organization_id"],
+                project_id=int(user["active_project_id"]),
                 uploaded_by_user_id=user["id"],
                 original_filename=original_filename,
                 stored_filename=stored_filename,
@@ -3632,7 +3758,7 @@ def create_app(
     def get_images(
         user: dict[str, Any] = Depends(current_user),
     ) -> list[dict[str, Any]]:
-        return list_uploaded_image_files(database_path, user["organization_id"])
+        return list_uploaded_image_files(database_path, user["organization_id"], int(user["active_project_id"]))
 
     @app.post("/api/images/move", response_model=list[UploadedImageSummary])
     def post_move_images(
@@ -3643,10 +3769,15 @@ def create_app(
             database_path,
             scene_id=request.target_scene_id,
             organization_id=user["organization_id"],
+            project_id=int(user["active_project_id"]),
         )
         current_images_by_uploaded_file_id = {
             int(item["uploaded_file_id"]): item
-            for item in list_uploaded_image_files(database_path, user["organization_id"])
+            for item in list_uploaded_image_files(
+                database_path,
+                user["organization_id"],
+                int(user["active_project_id"]),
+            )
         }
         affected_scene_ids: set[int] = {int(request.target_scene_id)}
         seen_uploaded_file_ids: set[int] = set()
@@ -3662,6 +3793,7 @@ def create_app(
                 database_path,
                 uploaded_file_id=normalized_uploaded_file_id,
                 organization_id=user["organization_id"],
+                project_id=int(user["active_project_id"]),
             )
             if uploaded_file is None:
                 raise HTTPException(status_code=404, detail=f"Uploaded file {normalized_uploaded_file_id} not found")
@@ -3683,11 +3815,11 @@ def create_app(
                 user["organization_id"],
                 affected_scene_id,
             )
-        return list_uploaded_image_files(database_path, user["organization_id"])
+        return list_uploaded_image_files(database_path, user["organization_id"], int(user["active_project_id"]))
 
     @app.get("/api/scenes", response_model=list[SceneSummary])
     def get_scenes(user: dict[str, Any] = Depends(current_user)) -> list[dict[str, Any]]:
-        return list_scenes(database_path, user["organization_id"])
+        return list_scenes(database_path, user["organization_id"], int(user["active_project_id"]))
 
     @app.get("/api/workspace-summary", response_model=WorkspaceSummary)
     def get_workspace_summary_endpoint(
@@ -3703,6 +3835,7 @@ def create_app(
         return get_workspace_summary(
             database_path,
             user["organization_id"],
+            int(user["active_project_id"]),
             languages=target_languages,
         )
 
@@ -3714,6 +3847,7 @@ def create_app(
         scene = create_empty_scene(
             database_path,
             organization_id=user["organization_id"],
+            project_id=int(user["active_project_id"]),
             created_by_user_id=user["id"],
             title=payload.title.strip(),
             description=payload.description.strip(),
@@ -3734,12 +3868,14 @@ def create_app(
             database_path,
             scene_id=scene_id,
             organization_id=user["organization_id"],
+            project_id=int(user["active_project_id"]),
         ):
             raise HTTPException(status_code=404, detail="Scene not found")
         try:
             return move_scene_sort_order(
                 database_path,
                 organization_id=user["organization_id"],
+                project_id=int(user["active_project_id"]),
                 scene_id=scene_id,
                 direction=payload.direction,
             )
@@ -3752,7 +3888,11 @@ def create_app(
         user: dict[str, Any] = Depends(current_user),
     ) -> dict[str, Any]:
         scene = get_scene_with_images(database_path, scene_id)
-        if scene is None or scene["organization_id"] != user["organization_id"]:
+        if (
+            scene is None
+            or scene["organization_id"] != user["organization_id"]
+            or int(scene.get("project_id") or 0) != int(user["active_project_id"])
+        ):
             raise HTTPException(status_code=404, detail="Scene not found")
         return _annotate_scene_inventory_image_statuses(app_settings.storage_root, scene)
 
@@ -3763,7 +3903,11 @@ def create_app(
         user: dict[str, Any] = Depends(current_user),
     ) -> dict[str, Any]:
         scene = get_scene_with_images(database_path, scene_id)
-        if scene is None or scene["organization_id"] != user["organization_id"]:
+        if (
+            scene is None
+            or scene["organization_id"] != user["organization_id"]
+            or int(scene.get("project_id") or 0) != int(user["active_project_id"])
+        ):
             raise HTTPException(status_code=404, detail="Scene not found")
         image_count = len(scene.get("images", []))
         if update.background_frame_index is not None:
@@ -3790,6 +3934,13 @@ def create_app(
         scene_id: int,
         user: dict[str, Any] = Depends(current_user),
     ) -> SceneDeleteResult:
+        scene = get_scene_with_images(database_path, scene_id)
+        if (
+            scene is None
+            or scene["organization_id"] != user["organization_id"]
+            or int(scene.get("project_id") or 0) != int(user["active_project_id"])
+        ):
+            raise HTTPException(status_code=404, detail="Scene not found")
         deleted = delete_scene_and_unhook_references(
             database_path,
             scene_id=scene_id,
@@ -5183,7 +5334,7 @@ def create_app(
 
     @app.get("/api/audio-assets", response_model=list[AudioAsset])
     def get_audio_assets(user: dict[str, Any] = Depends(current_user)) -> list[dict]:
-        return list_audio_assets(database_path, user["organization_id"])
+        return list_audio_assets(database_path, user["organization_id"], int(user["active_project_id"]))
 
     @app.post("/api/audio-assets", response_model=AudioAsset, status_code=201)
     async def post_audio_asset(
@@ -5210,6 +5361,7 @@ def create_app(
         return create_audio_asset(
             database_path,
             organization_id=user["organization_id"],
+            project_id=int(user["active_project_id"]),
             name=audio_name,
             kind=normalized_kind,
             relative_path=str(
@@ -5232,6 +5384,7 @@ def create_app(
             audio_asset_id=audio_asset_id,
             name=asset.name,
             kind=asset.kind,
+            project_id=int(user["active_project_id"]),
         )
         if updated is None:
             raise HTTPException(status_code=404, detail="Audio asset not found")
@@ -5246,6 +5399,7 @@ def create_app(
             database_path,
             organization_id=user["organization_id"],
             audio_asset_id=audio_asset_id,
+            project_id=int(user["active_project_id"]),
         )
         if deleted is None:
             raise HTTPException(status_code=404, detail="Audio asset not found")
@@ -5263,6 +5417,7 @@ def create_app(
             database_path,
             organization_id=user["organization_id"],
             audio_asset_id=audio_asset_id,
+            project_id=int(user["active_project_id"]),
         )
         if asset is None:
             raise HTTPException(status_code=404, detail="Audio asset not found")
@@ -5885,11 +6040,12 @@ def _top_segmentation_candidate(candidates):
     return max(candidates, key=lambda candidate: candidate.score if candidate.score is not None else -1)
 
 
-def _require_scene(db_path: Path, scene_id: int, organization_id: str) -> None:
+def _require_scene(db_path: Path, scene_id: int, organization_id: str, project_id: int | None = None) -> None:
     if not scene_belongs_to_organization(
         db_path,
         scene_id=scene_id,
         organization_id=organization_id,
+        project_id=project_id,
     ):
         raise HTTPException(status_code=404, detail="Scene not found")
 
@@ -6858,16 +7014,17 @@ def _build_scene_preview_payload(
     organization_id: str,
     scene: dict[str, Any],
 ) -> dict[str, Any]:
+    project_id = int(scene.get("project_id") or 0) or None
     scene_manifest = _get_cached_scene_preview_manifest(
         database_path=database_path,
         storage_root=storage_root,
         organization_id=organization_id,
         scene=scene,
     )
-    preview_audio_assets = list_audio_assets(database_path, organization_id)
-    preview_variables = list_game_variables(database_path, organization_id)
-    preview_verbs = list_verbs(database_path, organization_id)
-    scene_summaries = list_scenes(database_path, organization_id)
+    preview_audio_assets = list_audio_assets(database_path, organization_id, project_id)
+    preview_variables = list_game_variables(database_path, organization_id, project_id)
+    preview_verbs = list_verbs(database_path, organization_id, project_id)
+    scene_summaries = list_scenes(database_path, organization_id, project_id)
     available_scenes = [
         {
             "id": item["id"],
@@ -6886,16 +7043,16 @@ def _build_scene_preview_payload(
         for item in scene_summaries
         if item.get("presentation_mode", "base") == "overlay"
     ]
-    overlay_bindings = list_overlay_scene_bindings(database_path, organization_id)
-    global_settings = get_global_settings(database_path, organization_id)
+    overlay_bindings = list_overlay_scene_bindings(database_path, organization_id, project_id)
+    global_settings = get_global_settings(database_path, organization_id, project_id)
     preview_characters = [
-        _character_preview_payload(database_path, storage_root, organization_id, int(character["id"]))
-        for character in list_characters(database_path, organization_id)
+        _character_preview_payload(database_path, storage_root, organization_id, int(character["id"]), project_id)
+        for character in list_characters(database_path, organization_id, project_id)
     ]
     preview_conversations = [
         detail
-        for conversation in list_conversations(database_path, organization_id)
-        if (detail := _load_conversation_detail(database_path, organization_id, int(conversation["id"]))) is not None
+        for conversation in list_conversations(database_path, organization_id, project_id)
+        if (detail := _load_conversation_detail(database_path, organization_id, int(conversation["id"]), project_id)) is not None
     ]
     preview_interactions = scene_manifest["interactions"]
     preview_script_line_ids = _collect_script_line_ids(preview_interactions)
@@ -6904,7 +7061,7 @@ def _build_scene_preview_payload(
     preview_script_lines = [
         line
         for line_id in sorted(preview_script_line_ids)
-        if (line := get_script_line_detail(database_path, organization_id, line_id)) is not None
+        if (line := get_script_line_detail(database_path, organization_id, line_id, project_id)) is not None
     ]
     return {
         **scene_manifest,
@@ -8101,8 +8258,9 @@ def _character_preview_payload(
     storage_root: Path,
     organization_id: str,
     character_id: int,
+    project_id: int | None = None,
 ) -> dict[str, Any]:
-    character = _load_character_detail(db_path, organization_id, character_id)
+    character = _load_character_detail(db_path, organization_id, character_id, project_id)
     if character is None:
         raise HTTPException(status_code=404, detail="Character not found")
     scene = character.get("scene") or None
@@ -8193,8 +8351,9 @@ def _load_character_detail(
     db_path: Path,
     organization_id: str,
     character_id: int,
+    project_id: int | None = None,
 ) -> dict[str, Any] | None:
-    character = get_character_by_id(db_path, organization_id, character_id)
+    character = get_character_by_id(db_path, organization_id, character_id, project_id)
     if character is None:
         return None
     images = list_character_images(db_path, organization_id, character_id)

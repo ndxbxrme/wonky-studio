@@ -87,6 +87,495 @@ def connect(db_path: Path) -> sqlite3.Connection:
     return connection
 
 
+def _get_or_create_default_project_id(connection: sqlite3.Connection, organization_id: str) -> int:
+    existing = connection.execute(
+        """
+        SELECT id
+        FROM projects
+        WHERE organization_id = ?
+        ORDER BY sort_order ASC, id ASC
+        LIMIT 1
+        """,
+        (organization_id,),
+    ).fetchone()
+    if existing is not None:
+        return int(existing["id"])
+    cursor = connection.execute(
+        """
+        INSERT INTO projects (organization_id, name, sort_order)
+        VALUES (?, ?, 0)
+        """,
+        (organization_id, "Main project"),
+    )
+    return int(cursor.lastrowid)
+
+
+def _table_column_names(connection: sqlite3.Connection, table_name: str) -> list[str]:
+    rows = connection.execute(f"PRAGMA table_info({table_name})").fetchall()
+    return [str(row["name"]) for row in rows]
+
+
+def _has_unique_constraint(connection: sqlite3.Connection, table_name: str, columns: tuple[str, ...]) -> bool:
+    table_info_rows = connection.execute(f"PRAGMA table_info({table_name})").fetchall()
+    primary_key_columns = [
+        str(row["name"])
+        for row in sorted(
+            (row for row in table_info_rows if int(row["pk"] or 0) > 0),
+            key=lambda row: int(row["pk"]),
+        )
+    ]
+    if primary_key_columns == list(columns):
+        return True
+
+    index_rows = connection.execute(f"PRAGMA index_list({table_name})").fetchall()
+    for index_row in index_rows:
+        if not int(index_row["unique"] or 0):
+            continue
+        index_name = str(index_row["name"])
+        index_columns = [
+            str(column_row["name"])
+            for column_row in connection.execute(f"PRAGMA index_info({index_name})").fetchall()
+        ]
+        if index_columns == list(columns):
+            return True
+    return False
+
+
+def _rebuild_table(
+    connection: sqlite3.Connection,
+    *,
+    table_name: str,
+    create_sql: str,
+    insert_sql: str,
+) -> None:
+    temp_table_name = f"{table_name}__project_migration_old"
+    existing_tables = {
+        str(row["name"])
+        for row in connection.execute(
+            "SELECT name FROM sqlite_master WHERE type = 'table'"
+        ).fetchall()
+    }
+    if temp_table_name in existing_tables:
+        connection.execute(f"DROP TABLE {temp_table_name}")
+
+    connection.execute("PRAGMA foreign_keys = OFF")
+    try:
+        connection.execute(f"ALTER TABLE {table_name} RENAME TO {temp_table_name}")
+        connection.execute(create_sql)
+        connection.execute(insert_sql.format(old_table=temp_table_name))
+        connection.execute(f"DROP TABLE {temp_table_name}")
+    finally:
+        connection.execute("PRAGMA foreign_keys = ON")
+
+
+def _ensure_project_scoped_uniqueness(connection: sqlite3.Connection) -> None:
+    if not _has_unique_constraint(connection, "global_settings", ("organization_id", "project_id")):
+        _rebuild_table(
+            connection,
+            table_name="global_settings",
+            create_sql="""
+            CREATE TABLE global_settings (
+                organization_id TEXT NOT NULL,
+                project_id INTEGER NOT NULL,
+                overlay_open_duration_seconds REAL NOT NULL DEFAULT 0.22,
+                overlay_close_duration_seconds REAL NOT NULL DEFAULT 0.18,
+                overlay_fade_color TEXT NOT NULL DEFAULT '#000000',
+                overlay_affect_audio INTEGER NOT NULL DEFAULT 0,
+                start_scene_id INTEGER,
+                inventory_key_code TEXT NOT NULL DEFAULT 'KeyI',
+                verb_menu_timeout_seconds REAL NOT NULL DEFAULT 4.0,
+                verb_menu_show_disabled INTEGER NOT NULL DEFAULT 1,
+                verb_text_color TEXT NOT NULL DEFAULT '#34261b',
+                inventory_slots_json TEXT NOT NULL DEFAULT '[]',
+                inventory_background_relative_path TEXT,
+                verb_tag_background_relative_path TEXT,
+                cursor_default_relative_path TEXT,
+                cursor_default_hotspot_x INTEGER NOT NULL DEFAULT 0,
+                cursor_default_hotspot_y INTEGER NOT NULL DEFAULT 0,
+                cursor_hover_interactive_relative_path TEXT,
+                cursor_hover_interactive_hotspot_x INTEGER NOT NULL DEFAULT 0,
+                cursor_hover_interactive_hotspot_y INTEGER NOT NULL DEFAULT 0,
+                cursor_busy_relative_path TEXT,
+                cursor_busy_hotspot_x INTEGER NOT NULL DEFAULT 0,
+                cursor_busy_hotspot_y INTEGER NOT NULL DEFAULT 0,
+                cursor_blocked_relative_path TEXT,
+                cursor_blocked_hotspot_x INTEGER NOT NULL DEFAULT 0,
+                cursor_blocked_hotspot_y INTEGER NOT NULL DEFAULT 0,
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                PRIMARY KEY (organization_id, project_id),
+                FOREIGN KEY (organization_id) REFERENCES organizations(id),
+                FOREIGN KEY (project_id) REFERENCES projects(id),
+                FOREIGN KEY (start_scene_id) REFERENCES scenes(id)
+            )
+            """,
+            insert_sql="""
+            INSERT INTO global_settings (
+                organization_id,
+                project_id,
+                overlay_open_duration_seconds,
+                overlay_close_duration_seconds,
+                overlay_fade_color,
+                overlay_affect_audio,
+                start_scene_id,
+                inventory_key_code,
+                verb_menu_timeout_seconds,
+                verb_menu_show_disabled,
+                verb_text_color,
+                inventory_slots_json,
+                inventory_background_relative_path,
+                verb_tag_background_relative_path,
+                cursor_default_relative_path,
+                cursor_default_hotspot_x,
+                cursor_default_hotspot_y,
+                cursor_hover_interactive_relative_path,
+                cursor_hover_interactive_hotspot_x,
+                cursor_hover_interactive_hotspot_y,
+                cursor_busy_relative_path,
+                cursor_busy_hotspot_x,
+                cursor_busy_hotspot_y,
+                cursor_blocked_relative_path,
+                cursor_blocked_hotspot_x,
+                cursor_blocked_hotspot_y,
+                created_at,
+                updated_at
+            )
+            SELECT organization_id,
+                   project_id,
+                   overlay_open_duration_seconds,
+                   overlay_close_duration_seconds,
+                   overlay_fade_color,
+                   overlay_affect_audio,
+                   start_scene_id,
+                   inventory_key_code,
+                   verb_menu_timeout_seconds,
+                   verb_menu_show_disabled,
+                   verb_text_color,
+                   inventory_slots_json,
+                   inventory_background_relative_path,
+                   verb_tag_background_relative_path,
+                   cursor_default_relative_path,
+                   cursor_default_hotspot_x,
+                   cursor_default_hotspot_y,
+                   cursor_hover_interactive_relative_path,
+                   cursor_hover_interactive_hotspot_x,
+                   cursor_hover_interactive_hotspot_y,
+                   cursor_busy_relative_path,
+                   cursor_busy_hotspot_x,
+                   cursor_busy_hotspot_y,
+                   cursor_blocked_relative_path,
+                   cursor_blocked_hotspot_x,
+                   cursor_blocked_hotspot_y,
+                   created_at,
+                   updated_at
+            FROM {old_table}
+            """,
+        )
+
+    table_rebuild_specs = (
+        (
+            "script_lines",
+            ("organization_id", "project_id", "line_id"),
+            """
+            CREATE TABLE script_lines (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                organization_id TEXT NOT NULL,
+                project_id INTEGER NOT NULL,
+                line_id INTEGER NOT NULL,
+                script_index INTEGER NOT NULL,
+                source_text TEXT NOT NULL,
+                path_json TEXT NOT NULL DEFAULT '[]',
+                path_text TEXT NOT NULL DEFAULT '',
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE (organization_id, project_id, line_id),
+                FOREIGN KEY (organization_id) REFERENCES organizations(id),
+                FOREIGN KEY (project_id) REFERENCES projects(id)
+            )
+            """,
+            """
+            INSERT INTO script_lines (
+                id,
+                organization_id,
+                project_id,
+                line_id,
+                script_index,
+                source_text,
+                path_json,
+                path_text,
+                created_at,
+                updated_at
+            )
+            SELECT id,
+                   organization_id,
+                   project_id,
+                   line_id,
+                   script_index,
+                   source_text,
+                   path_json,
+                   path_text,
+                   created_at,
+                   updated_at
+            FROM {old_table}
+            """,
+        ),
+        (
+            "characters",
+            ("organization_id", "project_id", "name"),
+            """
+            CREATE TABLE characters (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                organization_id TEXT NOT NULL,
+                project_id INTEGER NOT NULL,
+                name TEXT NOT NULL,
+                description TEXT NOT NULL DEFAULT '',
+                scene_id INTEGER,
+                mouth_scene_object_id INTEGER,
+                sort_order INTEGER NOT NULL DEFAULT 0,
+                default_x REAL NOT NULL DEFAULT 960,
+                default_y REAL NOT NULL DEFAULT 540,
+                default_scale REAL NOT NULL DEFAULT 1.0,
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE (organization_id, project_id, name),
+                FOREIGN KEY (organization_id) REFERENCES organizations(id),
+                FOREIGN KEY (project_id) REFERENCES projects(id),
+                FOREIGN KEY (scene_id) REFERENCES scenes(id),
+                FOREIGN KEY (mouth_scene_object_id) REFERENCES scene_objects(id)
+            )
+            """,
+            """
+            INSERT INTO characters (
+                id,
+                organization_id,
+                project_id,
+                name,
+                description,
+                scene_id,
+                mouth_scene_object_id,
+                sort_order,
+                default_x,
+                default_y,
+                default_scale,
+                created_at,
+                updated_at
+            )
+            SELECT id,
+                   organization_id,
+                   project_id,
+                   name,
+                   description,
+                   scene_id,
+                   mouth_scene_object_id,
+                   sort_order,
+                   default_x,
+                   default_y,
+                   default_scale,
+                   created_at,
+                   updated_at
+            FROM {old_table}
+            """,
+        ),
+        (
+            "conversations",
+            ("organization_id", "project_id", "name"),
+            """
+            CREATE TABLE conversations (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                organization_id TEXT NOT NULL,
+                project_id INTEGER NOT NULL,
+                name TEXT NOT NULL,
+                description TEXT NOT NULL DEFAULT '',
+                start_node_id INTEGER,
+                sort_order INTEGER NOT NULL DEFAULT 0,
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE (organization_id, project_id, name),
+                FOREIGN KEY (organization_id) REFERENCES organizations(id),
+                FOREIGN KEY (project_id) REFERENCES projects(id),
+                FOREIGN KEY (start_node_id) REFERENCES conversation_nodes(id)
+            )
+            """,
+            """
+            INSERT INTO conversations (
+                id,
+                organization_id,
+                project_id,
+                name,
+                description,
+                start_node_id,
+                sort_order,
+                created_at,
+                updated_at
+            )
+            SELECT id,
+                   organization_id,
+                   project_id,
+                   name,
+                   description,
+                   start_node_id,
+                   sort_order,
+                   created_at,
+                   updated_at
+            FROM {old_table}
+            """,
+        ),
+        (
+            "game_variables",
+            ("organization_id", "project_id", "name"),
+            """
+            CREATE TABLE game_variables (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                organization_id TEXT NOT NULL,
+                project_id INTEGER NOT NULL,
+                name TEXT NOT NULL,
+                value_type TEXT NOT NULL CHECK (value_type IN ('bool', 'string', 'number')),
+                default_value_json TEXT NOT NULL DEFAULT 'null',
+                description TEXT NOT NULL DEFAULT '',
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE (organization_id, project_id, name),
+                FOREIGN KEY (organization_id) REFERENCES organizations(id),
+                FOREIGN KEY (project_id) REFERENCES projects(id)
+            )
+            """,
+            """
+            INSERT INTO game_variables (
+                id,
+                organization_id,
+                project_id,
+                name,
+                value_type,
+                default_value_json,
+                description,
+                created_at,
+                updated_at
+            )
+            SELECT id,
+                   organization_id,
+                   project_id,
+                   name,
+                   value_type,
+                   default_value_json,
+                   description,
+                   created_at,
+                   updated_at
+            FROM {old_table}
+            """,
+        ),
+        (
+            "overlay_scene_bindings",
+            ("organization_id", "project_id", "key_code"),
+            """
+            CREATE TABLE overlay_scene_bindings (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                organization_id TEXT NOT NULL,
+                project_id INTEGER NOT NULL,
+                key_code TEXT NOT NULL,
+                overlay_scene_id INTEGER NOT NULL,
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE (organization_id, project_id, key_code),
+                FOREIGN KEY (organization_id) REFERENCES organizations(id),
+                FOREIGN KEY (project_id) REFERENCES projects(id),
+                FOREIGN KEY (overlay_scene_id) REFERENCES scenes(id)
+            )
+            """,
+            """
+            INSERT INTO overlay_scene_bindings (
+                id,
+                organization_id,
+                project_id,
+                key_code,
+                overlay_scene_id,
+                created_at,
+                updated_at
+            )
+            SELECT id,
+                   organization_id,
+                   project_id,
+                   key_code,
+                   overlay_scene_id,
+                   created_at,
+                   updated_at
+            FROM {old_table}
+            """,
+        ),
+        (
+            "verbs",
+            ("organization_id", "project_id", "key"),
+            """
+            CREATE TABLE verbs (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                organization_id TEXT NOT NULL,
+                project_id INTEGER NOT NULL,
+                key TEXT NOT NULL,
+                labels_json TEXT NOT NULL DEFAULT '{}',
+                enabled INTEGER NOT NULL DEFAULT 1,
+                sort_order INTEGER NOT NULL DEFAULT 0,
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE (organization_id, project_id, key),
+                FOREIGN KEY (organization_id) REFERENCES organizations(id),
+                FOREIGN KEY (project_id) REFERENCES projects(id)
+            )
+            """,
+            """
+            INSERT INTO verbs (
+                id,
+                organization_id,
+                project_id,
+                key,
+                labels_json,
+                enabled,
+                sort_order,
+                created_at,
+                updated_at
+            )
+            SELECT id,
+                   organization_id,
+                   project_id,
+                   key,
+                   labels_json,
+                   enabled,
+                   sort_order,
+                   created_at,
+                   updated_at
+            FROM {old_table}
+            """,
+        ),
+    )
+    for table_name, unique_columns, create_sql, insert_sql in table_rebuild_specs:
+        if not _has_unique_constraint(connection, table_name, unique_columns):
+            _rebuild_table(
+                connection,
+                table_name=table_name,
+                create_sql=create_sql,
+                insert_sql=insert_sql,
+            )
+
+    connection.execute("DROP INDEX IF EXISTS idx_script_lines_path")
+    connection.execute(
+        "CREATE INDEX IF NOT EXISTS idx_script_lines_path ON script_lines (organization_id, project_id, path_text)"
+    )
+    connection.execute("DROP INDEX IF EXISTS idx_characters_org_sort")
+    connection.execute(
+        "CREATE INDEX IF NOT EXISTS idx_characters_org_sort ON characters (organization_id, project_id, sort_order, id)"
+    )
+    connection.execute("DROP INDEX IF EXISTS idx_conversations_org_sort")
+    connection.execute(
+        "CREATE INDEX IF NOT EXISTS idx_conversations_org_sort ON conversations (organization_id, project_id, sort_order, id)"
+    )
+    connection.execute("DROP INDEX IF EXISTS idx_overlay_scene_bindings_org")
+    connection.execute(
+        "CREATE INDEX IF NOT EXISTS idx_overlay_scene_bindings_org ON overlay_scene_bindings (organization_id, project_id, overlay_scene_id)"
+    )
+    connection.execute("DROP INDEX IF EXISTS idx_verbs_org")
+    connection.execute(
+        "CREATE INDEX IF NOT EXISTS idx_verbs_org ON verbs (organization_id, project_id, sort_order, id)"
+    )
+
+
 def init_database(
     db_path: Path,
     organization_id: str = "wonky-studio",
@@ -109,6 +598,23 @@ def init_database(
             ON CONFLICT(id) DO UPDATE SET name = excluded.name
             """,
             (organization_id, organization_name),
+        )
+        connection.execute(
+            """
+            CREATE TABLE IF NOT EXISTS projects (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                organization_id TEXT NOT NULL,
+                name TEXT NOT NULL,
+                sort_order INTEGER NOT NULL DEFAULT 0,
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE (organization_id, name),
+                FOREIGN KEY (organization_id) REFERENCES organizations(id)
+            )
+            """
+        )
+        connection.execute(
+            "CREATE INDEX IF NOT EXISTS idx_projects_org_sort ON projects (organization_id, sort_order, id)"
         )
         connection.execute(
             """
@@ -146,12 +652,15 @@ def init_database(
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 user_id INTEGER NOT NULL,
                 token_hash TEXT NOT NULL UNIQUE,
+                active_project_id INTEGER,
                 created_at TEXT NOT NULL,
                 expires_at TEXT NOT NULL,
-                FOREIGN KEY (user_id) REFERENCES users(id)
+                FOREIGN KEY (user_id) REFERENCES users(id),
+                FOREIGN KEY (active_project_id) REFERENCES projects(id)
             )
             """
         )
+        _ensure_column(connection, "sessions", "active_project_id", "INTEGER")
         connection.execute(
             """
             CREATE TABLE IF NOT EXISTS invites (
@@ -904,32 +1413,111 @@ def init_database(
         connection.execute(
             "CREATE INDEX IF NOT EXISTS idx_verbs_org ON verbs (organization_id, sort_order, id)"
         )
+        project_scoped_tables = (
+            "assets",
+            "audio_assets",
+            "upload_batches",
+            "uploaded_files",
+            "scenes",
+            "processing_jobs",
+            "script_lines",
+            "global_settings",
+            "characters",
+            "conversations",
+            "game_variables",
+            "overlay_scene_bindings",
+            "verbs",
+        )
+        for table_name in project_scoped_tables:
+            _ensure_column(connection, table_name, "project_id", "INTEGER")
+
+        organization_rows = connection.execute(
+            """
+            SELECT id
+            FROM organizations
+            ORDER BY id ASC
+            """
+        ).fetchall()
+        default_project_ids: dict[str, int] = {}
+        for organization_row in organization_rows:
+            org_id = str(organization_row["id"])
+            default_project_ids[org_id] = _get_or_create_default_project_id(connection, org_id)
+
+        for table_name in project_scoped_tables:
+            rows = connection.execute(
+                f"""
+                SELECT rowid AS row_id, organization_id
+                FROM {table_name}
+                WHERE project_id IS NULL
+                """
+            ).fetchall()
+            for row in rows:
+                org_id = str(row["organization_id"])
+                project_id = default_project_ids.get(org_id)
+                if project_id is None:
+                    project_id = _get_or_create_default_project_id(connection, org_id)
+                    default_project_ids[org_id] = project_id
+                connection.execute(
+                    f"UPDATE {table_name} SET project_id = ? WHERE rowid = ?",
+                    (project_id, int(row["row_id"])),
+                )
+
+        connection.execute(
+            """
+            UPDATE sessions
+            SET active_project_id = (
+                SELECT projects.id
+                FROM users
+                JOIN projects ON projects.organization_id = users.organization_id
+                WHERE users.id = sessions.user_id
+                ORDER BY projects.sort_order ASC, projects.id ASC
+                LIMIT 1
+            )
+            WHERE active_project_id IS NULL
+            """
+        )
+        _ensure_project_scoped_uniqueness(connection)
     ensure_system_game_variables(db_path, organization_id)
 
 
 def ensure_system_game_variables(db_path: Path, organization_id: str) -> None:
     with connect(db_path) as connection:
-        for variable in SYSTEM_GAME_VARIABLES:
-            connection.execute(
-                """
-                INSERT INTO game_variables (
-                    organization_id,
-                    name,
-                    value_type,
-                    default_value_json,
-                    description
+        project_rows = connection.execute(
+            """
+            SELECT id
+            FROM projects
+            WHERE organization_id = ?
+            ORDER BY sort_order ASC, id ASC
+            """,
+            (organization_id,),
+        ).fetchall()
+        if not project_rows:
+            project_rows = [{"id": _get_or_create_default_project_id(connection, organization_id)}]
+        for project_row in project_rows:
+            project_id = int(project_row["id"])
+            for variable in SYSTEM_GAME_VARIABLES:
+                connection.execute(
+                    """
+                    INSERT INTO game_variables (
+                        organization_id,
+                        project_id,
+                        name,
+                        value_type,
+                        default_value_json,
+                        description
+                    )
+                    VALUES (?, ?, ?, ?, ?, ?)
+                    ON CONFLICT (organization_id, project_id, name) DO NOTHING
+                    """,
+                    (
+                        organization_id,
+                        project_id,
+                        variable["name"],
+                        variable["value_type"],
+                        json.dumps(variable["default_value"], separators=(",", ":")),
+                        variable["description"],
+                    ),
                 )
-                VALUES (?, ?, ?, ?, ?)
-                ON CONFLICT (organization_id, name) DO NOTHING
-                """,
-                (
-                    organization_id,
-                    variable["name"],
-                    variable["value_type"],
-                    json.dumps(variable["default_value"], separators=(",", ":")),
-                    variable["description"],
-                ),
-            )
 
 
 def list_assets(db_path: Path, organization_id: str) -> list[dict[str, Any]]:
@@ -1006,10 +1594,35 @@ def create_processing_job(
     message: str = "",
 ) -> dict[str, Any]:
     with connect(db_path) as connection:
+        project_id: int | None = None
+        if scene_id is not None:
+            row = connection.execute(
+                "SELECT project_id FROM scenes WHERE id = ? AND organization_id = ?",
+                (scene_id, organization_id),
+            ).fetchone()
+            if row is not None and row["project_id"] is not None:
+                project_id = int(row["project_id"])
+        if project_id is None and script_line_id is not None:
+            row = connection.execute(
+                "SELECT project_id FROM script_lines WHERE id = ? AND organization_id = ?",
+                (script_line_id, organization_id),
+            ).fetchone()
+            if row is not None and row["project_id"] is not None:
+                project_id = int(row["project_id"])
+        if project_id is None and character_id is not None:
+            row = connection.execute(
+                "SELECT project_id FROM characters WHERE id = ? AND organization_id = ?",
+                (character_id, organization_id),
+            ).fetchone()
+            if row is not None and row["project_id"] is not None:
+                project_id = int(row["project_id"])
+        if project_id is None:
+            project_id = _get_or_create_default_project_id(connection, organization_id)
         cursor = connection.execute(
             """
             INSERT INTO processing_jobs (
                 organization_id,
+                project_id,
                 job_type,
                 scene_id,
                 script_line_id,
@@ -1018,10 +1631,11 @@ def create_processing_job(
                 progress_total,
                 message
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 organization_id,
+                project_id,
                 job_type,
                 scene_id,
                 script_line_id,
@@ -1035,6 +1649,7 @@ def create_processing_job(
             """
             SELECT id,
                    organization_id,
+                   project_id,
                    job_type,
                    status,
                    scene_id,
@@ -1355,12 +1970,15 @@ def create_asset(
     return dict(row)
 
 
-def list_audio_assets(db_path: Path, organization_id: str) -> list[dict[str, Any]]:
+def list_audio_assets(db_path: Path, organization_id: str, project_id: int | None = None) -> list[dict[str, Any]]:
     with connect(db_path) as connection:
+        if project_id is None:
+            project_id = _get_or_create_default_project_id(connection, organization_id)
         rows = connection.execute(
             """
             SELECT id,
                    organization_id,
+                   project_id,
                    name,
                    kind,
                    relative_path,
@@ -1371,9 +1989,10 @@ def list_audio_assets(db_path: Path, organization_id: str) -> list[dict[str, Any
                    updated_at
             FROM audio_assets
             WHERE organization_id = ?
+              AND project_id = ?
             ORDER BY kind ASC, id ASC
             """,
-            (organization_id,),
+            (organization_id, project_id),
         ).fetchall()
     return [dict(row) for row in rows]
 
@@ -1381,6 +2000,7 @@ def list_audio_assets(db_path: Path, organization_id: str) -> list[dict[str, Any
 def create_audio_asset(
     db_path: Path,
     organization_id: str,
+    project_id: int | None,
     name: str,
     kind: str,
     relative_path: str,
@@ -1389,10 +2009,13 @@ def create_audio_asset(
     file_size: int,
 ) -> dict[str, Any]:
     with connect(db_path) as connection:
+        if project_id is None:
+            project_id = _get_or_create_default_project_id(connection, organization_id)
         cursor = connection.execute(
             """
             INSERT INTO audio_assets (
                 organization_id,
+                project_id,
                 name,
                 kind,
                 relative_path,
@@ -1400,10 +2023,11 @@ def create_audio_asset(
                 content_type,
                 file_size
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 organization_id,
+                project_id,
                 name,
                 kind,
                 relative_path,
@@ -1416,6 +2040,7 @@ def create_audio_asset(
             """
             SELECT id,
                    organization_id,
+                   project_id,
                    name,
                    kind,
                    relative_path,
@@ -1438,26 +2063,50 @@ def get_audio_asset_by_id(
     db_path: Path,
     organization_id: str,
     audio_asset_id: int,
+    project_id: int | None = None,
 ) -> dict[str, Any] | None:
     with connect(db_path) as connection:
-        row = connection.execute(
-            """
-            SELECT id,
-                   organization_id,
-                   name,
-                   kind,
-                   relative_path,
-                   original_filename,
-                   content_type,
-                   file_size,
-                   created_at,
-                   updated_at
-            FROM audio_assets
-            WHERE id = ?
-              AND organization_id = ?
-            """,
-            (audio_asset_id, organization_id),
-        ).fetchone()
+        if project_id is None:
+            row = connection.execute(
+                """
+                SELECT id,
+                       organization_id,
+                       project_id,
+                       name,
+                       kind,
+                       relative_path,
+                       original_filename,
+                       content_type,
+                       file_size,
+                       created_at,
+                       updated_at
+                FROM audio_assets
+                WHERE id = ?
+                  AND organization_id = ?
+                """,
+                (audio_asset_id, organization_id),
+            ).fetchone()
+        else:
+            row = connection.execute(
+                """
+                SELECT id,
+                       organization_id,
+                       project_id,
+                       name,
+                       kind,
+                       relative_path,
+                       original_filename,
+                       content_type,
+                       file_size,
+                       created_at,
+                       updated_at
+                FROM audio_assets
+                WHERE id = ?
+                  AND organization_id = ?
+                  AND project_id = ?
+                """,
+                (audio_asset_id, organization_id, project_id),
+            ).fetchone()
     return dict(row) if row else None
 
 
@@ -1467,8 +2116,11 @@ def update_audio_asset(
     audio_asset_id: int,
     name: str,
     kind: str,
+    project_id: int | None = None,
 ) -> dict[str, Any] | None:
     with connect(db_path) as connection:
+        if project_id is None:
+            project_id = _get_or_create_default_project_id(connection, organization_id)
         connection.execute(
             """
             UPDATE audio_assets
@@ -1477,13 +2129,15 @@ def update_audio_asset(
                 updated_at = CURRENT_TIMESTAMP
             WHERE id = ?
               AND organization_id = ?
+              AND project_id = ?
             """,
-            (name, kind, audio_asset_id, organization_id),
+            (name, kind, audio_asset_id, organization_id, project_id),
         )
         row = connection.execute(
             """
             SELECT id,
                    organization_id,
+                   project_id,
                    name,
                    kind,
                    relative_path,
@@ -1495,8 +2149,9 @@ def update_audio_asset(
             FROM audio_assets
             WHERE id = ?
               AND organization_id = ?
+              AND project_id = ?
             """,
-            (audio_asset_id, organization_id),
+            (audio_asset_id, organization_id, project_id),
         ).fetchone()
     return dict(row) if row else None
 
@@ -1505,12 +2160,16 @@ def delete_audio_asset(
     db_path: Path,
     organization_id: str,
     audio_asset_id: int,
+    project_id: int | None = None,
 ) -> dict[str, Any] | None:
     with connect(db_path) as connection:
+        if project_id is None:
+            project_id = _get_or_create_default_project_id(connection, organization_id)
         row = connection.execute(
             """
             SELECT id,
                    organization_id,
+                   project_id,
                    name,
                    kind,
                    relative_path,
@@ -1522,8 +2181,9 @@ def delete_audio_asset(
             FROM audio_assets
             WHERE id = ?
               AND organization_id = ?
+              AND project_id = ?
             """,
-            (audio_asset_id, organization_id),
+            (audio_asset_id, organization_id, project_id),
         ).fetchone()
         if row is None:
             return None
@@ -1532,18 +2192,22 @@ def delete_audio_asset(
             DELETE FROM audio_assets
             WHERE id = ?
               AND organization_id = ?
+              AND project_id = ?
             """,
-            (audio_asset_id, organization_id),
+            (audio_asset_id, organization_id, project_id),
         )
     return dict(row)
 
 
-def list_overlay_scene_bindings(db_path: Path, organization_id: str) -> list[dict[str, Any]]:
+def list_overlay_scene_bindings(db_path: Path, organization_id: str, project_id: int | None = None) -> list[dict[str, Any]]:
     with connect(db_path) as connection:
+        if project_id is None:
+            project_id = _get_or_create_default_project_id(connection, organization_id)
         rows = connection.execute(
             """
             SELECT overlay_scene_bindings.id,
                    overlay_scene_bindings.organization_id,
+                   overlay_scene_bindings.project_id,
                    overlay_scene_bindings.key_code,
                    overlay_scene_bindings.overlay_scene_id,
                    overlay_scene_bindings.created_at,
@@ -1553,19 +2217,23 @@ def list_overlay_scene_bindings(db_path: Path, organization_id: str) -> list[dic
             FROM overlay_scene_bindings
             JOIN scenes ON scenes.id = overlay_scene_bindings.overlay_scene_id
             WHERE overlay_scene_bindings.organization_id = ?
+              AND overlay_scene_bindings.project_id = ?
             ORDER BY lower(overlay_scene_bindings.key_code) ASC, overlay_scene_bindings.id ASC
             """,
-            (organization_id,),
+            (organization_id, project_id),
         ).fetchall()
     return [dict(row) for row in rows]
 
 
-def list_verbs(db_path: Path, organization_id: str) -> list[dict[str, Any]]:
+def list_verbs(db_path: Path, organization_id: str, project_id: int | None = None) -> list[dict[str, Any]]:
     with connect(db_path) as connection:
+        if project_id is None:
+            project_id = _get_or_create_default_project_id(connection, organization_id)
         rows = connection.execute(
             """
             SELECT id,
                    organization_id,
+                   project_id,
                    key,
                    labels_json,
                    enabled,
@@ -1574,9 +2242,10 @@ def list_verbs(db_path: Path, organization_id: str) -> list[dict[str, Any]]:
                    updated_at
             FROM verbs
             WHERE organization_id = ?
+              AND project_id = ?
             ORDER BY sort_order ASC, id ASC
             """,
-            (organization_id,),
+            (organization_id, project_id),
         ).fetchall()
     return [_verb_from_row(row) for row in rows]
 
@@ -1585,56 +2254,83 @@ def get_verb_by_id(
     db_path: Path,
     organization_id: str,
     verb_id: int,
+    project_id: int | None = None,
 ) -> dict[str, Any] | None:
     with connect(db_path) as connection:
-        row = connection.execute(
-            """
-            SELECT id,
-                   organization_id,
-                   key,
-                   labels_json,
-                   enabled,
-                   sort_order,
-                   created_at,
-                   updated_at
-            FROM verbs
-            WHERE id = ?
-              AND organization_id = ?
-            """,
-            (verb_id, organization_id),
-        ).fetchone()
+        if project_id is None:
+            row = connection.execute(
+                """
+                SELECT id,
+                       organization_id,
+                       project_id,
+                       key,
+                       labels_json,
+                       enabled,
+                       sort_order,
+                       created_at,
+                       updated_at
+                FROM verbs
+                WHERE id = ?
+                  AND organization_id = ?
+                """,
+                (verb_id, organization_id),
+            ).fetchone()
+        else:
+            row = connection.execute(
+                """
+                SELECT id,
+                       organization_id,
+                       project_id,
+                       key,
+                       labels_json,
+                       enabled,
+                       sort_order,
+                       created_at,
+                       updated_at
+                FROM verbs
+                WHERE id = ?
+                  AND organization_id = ?
+                  AND project_id = ?
+                """,
+                (verb_id, organization_id, project_id),
+            ).fetchone()
     return _verb_from_row(row) if row else None
 
 
 def create_verb(
     db_path: Path,
     organization_id: str,
+    project_id: int | None,
     key: str,
     labels: dict[str, str],
     enabled: bool,
     sort_order: int,
 ) -> dict[str, Any]:
     with connect(db_path) as connection:
+        if project_id is None:
+            project_id = _get_or_create_default_project_id(connection, organization_id)
         cursor = connection.execute(
             """
             INSERT INTO verbs (
                 organization_id,
+                project_id,
                 key,
                 labels_json,
                 enabled,
                 sort_order
             )
-            VALUES (?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?)
             """,
             (
                 organization_id,
+                project_id,
                 key.strip(),
                 json_dumps(labels),
                 int(bool(enabled)),
                 int(sort_order),
             ),
         )
-    created = get_verb_by_id(db_path, organization_id, int(cursor.lastrowid))
+    created = get_verb_by_id(db_path, organization_id, int(cursor.lastrowid), project_id)
     if created is None:
         raise RuntimeError("Created verb could not be loaded")
     return created
@@ -1648,8 +2344,11 @@ def update_verb(
     labels: dict[str, str],
     enabled: bool,
     sort_order: int,
+    project_id: int | None = None,
 ) -> dict[str, Any] | None:
     with connect(db_path) as connection:
+        if project_id is None:
+            project_id = _get_or_create_default_project_id(connection, organization_id)
         cursor = connection.execute(
             """
             UPDATE verbs
@@ -1660,6 +2359,7 @@ def update_verb(
                 updated_at = CURRENT_TIMESTAMP
             WHERE id = ?
               AND organization_id = ?
+              AND project_id = ?
             """,
             (
                 key.strip(),
@@ -1668,35 +2368,43 @@ def update_verb(
                 int(sort_order),
                 verb_id,
                 organization_id,
+                project_id,
             ),
         )
     if cursor.rowcount == 0:
         return None
-    return get_verb_by_id(db_path, organization_id, verb_id)
+    return get_verb_by_id(db_path, organization_id, verb_id, project_id)
 
 
 def delete_verb(
     db_path: Path,
     organization_id: str,
     verb_id: int,
+    project_id: int | None = None,
 ) -> None:
     with connect(db_path) as connection:
+        if project_id is None:
+            project_id = _get_or_create_default_project_id(connection, organization_id)
         connection.execute(
             """
             DELETE FROM verbs
             WHERE id = ?
               AND organization_id = ?
+              AND project_id = ?
             """,
-            (verb_id, organization_id),
+            (verb_id, organization_id, project_id),
         )
 
 
-def list_characters(db_path: Path, organization_id: str) -> list[dict[str, Any]]:
+def list_characters(db_path: Path, organization_id: str, project_id: int | None = None) -> list[dict[str, Any]]:
     with connect(db_path) as connection:
+        if project_id is None:
+            project_id = _get_or_create_default_project_id(connection, organization_id)
         rows = connection.execute(
             """
             SELECT id,
                    organization_id,
+                   project_id,
                    name,
                    description,
                    scene_id,
@@ -1709,9 +2417,10 @@ def list_characters(db_path: Path, organization_id: str) -> list[dict[str, Any]]
                    updated_at
             FROM characters
             WHERE organization_id = ?
+              AND project_id = ?
             ORDER BY sort_order ASC, id ASC
             """,
-            (organization_id,),
+            (organization_id, project_id),
         ).fetchall()
     return [_character_from_row(row) for row in rows]
 
@@ -1720,34 +2429,61 @@ def get_character_by_id(
     db_path: Path,
     organization_id: str,
     character_id: int,
+    project_id: int | None = None,
 ) -> dict[str, Any] | None:
     with connect(db_path) as connection:
-        row = connection.execute(
-            """
-            SELECT id,
-                   organization_id,
-                   name,
-                   description,
-                   scene_id,
-                   mouth_scene_object_id,
-                   sort_order,
-                   default_x,
-                   default_y,
-                   default_scale,
-                   created_at,
-                   updated_at
-            FROM characters
-            WHERE id = ?
-              AND organization_id = ?
-            """,
-            (character_id, organization_id),
-        ).fetchone()
+        if project_id is None:
+            row = connection.execute(
+                """
+                SELECT id,
+                       organization_id,
+                       project_id,
+                       name,
+                       description,
+                       scene_id,
+                       mouth_scene_object_id,
+                       sort_order,
+                       default_x,
+                       default_y,
+                       default_scale,
+                       created_at,
+                       updated_at
+                FROM characters
+                WHERE id = ?
+                  AND organization_id = ?
+                """,
+                (character_id, organization_id),
+            ).fetchone()
+        else:
+            row = connection.execute(
+                """
+                SELECT id,
+                       organization_id,
+                       project_id,
+                       name,
+                       description,
+                       scene_id,
+                       mouth_scene_object_id,
+                       sort_order,
+                       default_x,
+                       default_y,
+                       default_scale,
+                       created_at,
+                       updated_at
+                FROM characters
+                WHERE id = ?
+                  AND organization_id = ?
+                  AND project_id = ?
+                """,
+                (character_id, organization_id, project_id),
+            ).fetchone()
     return _character_from_row(row) if row else None
 
 
 def create_character(
     db_path: Path,
     organization_id: str,
+    project_id: int | None,
     name: str,
     description: str,
     scene_id: int | None,
@@ -1757,10 +2493,13 @@ def create_character(
     default_scale: float,
 ) -> dict[str, Any]:
     with connect(db_path) as connection:
+        if project_id is None:
+            project_id = _get_or_create_default_project_id(connection, organization_id)
         cursor = connection.execute(
             """
             INSERT INTO characters (
                 organization_id,
+                project_id,
                 name,
                 description,
                 scene_id,
@@ -1769,10 +2508,11 @@ def create_character(
                 default_y,
                 default_scale
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 organization_id,
+                project_id,
                 name.strip(),
                 description,
                 scene_id if scene_id is None else int(scene_id),
@@ -1782,7 +2522,7 @@ def create_character(
                 float(default_scale),
             ),
         )
-    created = get_character_by_id(db_path, organization_id, int(cursor.lastrowid))
+    created = get_character_by_id(db_path, organization_id, int(cursor.lastrowid), project_id)
     if created is None:
         raise RuntimeError("Created character could not be loaded")
     return created
@@ -1885,12 +2625,15 @@ def delete_character(db_path: Path, organization_id: str, character_id: int) -> 
     return True
 
 
-def list_conversations(db_path: Path, organization_id: str) -> list[dict[str, Any]]:
+def list_conversations(db_path: Path, organization_id: str, project_id: int | None = None) -> list[dict[str, Any]]:
     with connect(db_path) as connection:
+        if project_id is None:
+            project_id = _get_or_create_default_project_id(connection, organization_id)
         rows = connection.execute(
             """
             SELECT id,
                    organization_id,
+                   project_id,
                    name,
                    description,
                    start_node_id,
@@ -1899,9 +2642,10 @@ def list_conversations(db_path: Path, organization_id: str) -> list[dict[str, An
                    updated_at
             FROM conversations
             WHERE organization_id = ?
+              AND project_id = ?
             ORDER BY sort_order ASC, id ASC
             """,
-            (organization_id,),
+            (organization_id, project_id),
         ).fetchall()
     return [_conversation_from_row(row) for row in rows]
 
@@ -1910,53 +2654,80 @@ def get_conversation_by_id(
     db_path: Path,
     organization_id: str,
     conversation_id: int,
+    project_id: int | None = None,
 ) -> dict[str, Any] | None:
     with connect(db_path) as connection:
-        row = connection.execute(
-            """
-            SELECT id,
-                   organization_id,
-                   name,
-                   description,
-                   start_node_id,
-                   sort_order,
-                   created_at,
-                   updated_at
-            FROM conversations
-            WHERE id = ?
-              AND organization_id = ?
-            """,
-            (conversation_id, organization_id),
-        ).fetchone()
+        if project_id is None:
+            row = connection.execute(
+                """
+                SELECT id,
+                       organization_id,
+                       project_id,
+                       name,
+                       description,
+                       start_node_id,
+                       sort_order,
+                       created_at,
+                       updated_at
+                FROM conversations
+                WHERE id = ?
+                  AND organization_id = ?
+                """,
+                (conversation_id, organization_id),
+            ).fetchone()
+        else:
+            row = connection.execute(
+                """
+                SELECT id,
+                       organization_id,
+                       project_id,
+                       name,
+                       description,
+                       start_node_id,
+                       sort_order,
+                       created_at,
+                       updated_at
+                FROM conversations
+                WHERE id = ?
+                  AND organization_id = ?
+                  AND project_id = ?
+                """,
+                (conversation_id, organization_id, project_id),
+            ).fetchone()
     return _conversation_from_row(row) if row else None
 
 
 def create_conversation(
     db_path: Path,
     organization_id: str,
+    project_id: int | None,
     name: str,
     description: str,
     sort_order: int = 0,
 ) -> dict[str, Any]:
     with connect(db_path) as connection:
+        if project_id is None:
+            project_id = _get_or_create_default_project_id(connection, organization_id)
         cursor = connection.execute(
             """
             INSERT INTO conversations (
                 organization_id,
+                project_id,
                 name,
                 description,
                 sort_order
             )
-            VALUES (?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?)
             """,
             (
                 organization_id,
+                project_id,
                 name.strip(),
                 description,
                 int(sort_order),
             ),
         )
-    created = get_conversation_by_id(db_path, organization_id, int(cursor.lastrowid))
+    created = get_conversation_by_id(db_path, organization_id, int(cursor.lastrowid), project_id)
     if created is None:
         raise RuntimeError("Created conversation could not be loaded")
     return created
@@ -2966,11 +3737,14 @@ def _replace_character_animation_frames(
         )
 
 
-def get_global_settings(db_path: Path, organization_id: str) -> dict[str, Any]:
+def get_global_settings(db_path: Path, organization_id: str, project_id: int | None = None) -> dict[str, Any]:
     with connect(db_path) as connection:
+        if project_id is None:
+            project_id = _get_or_create_default_project_id(connection, organization_id)
         row = connection.execute(
             """
             SELECT organization_id,
+                   project_id,
                    overlay_open_duration_seconds,
                    overlay_close_duration_seconds,
                    overlay_fade_color,
@@ -2999,20 +3773,22 @@ def get_global_settings(db_path: Path, organization_id: str) -> dict[str, Any]:
                    updated_at
             FROM global_settings
             WHERE organization_id = ?
+              AND project_id = ?
             """,
-            (organization_id,),
+            (organization_id, project_id),
         ).fetchone()
         if row is None:
             connection.execute(
                 """
-                INSERT INTO global_settings (organization_id)
-                VALUES (?)
+                INSERT INTO global_settings (organization_id, project_id)
+                VALUES (?, ?)
                 """,
-                (organization_id,),
+                (organization_id, project_id),
             )
             row = connection.execute(
                 """
                 SELECT organization_id,
+                       project_id,
                        overlay_open_duration_seconds,
                        overlay_close_duration_seconds,
                        overlay_fade_color,
@@ -3041,8 +3817,9 @@ def get_global_settings(db_path: Path, organization_id: str) -> dict[str, Any]:
                        updated_at
                 FROM global_settings
                 WHERE organization_id = ?
+                  AND project_id = ?
                 """,
-                (organization_id,),
+                (organization_id, project_id),
             ).fetchone()
     result = dict(row)
     result["overlay_affect_audio"] = bool(result["overlay_affect_audio"])
@@ -3055,6 +3832,7 @@ def get_global_settings(db_path: Path, organization_id: str) -> dict[str, Any]:
 def update_global_settings(
     db_path: Path,
     organization_id: str,
+    project_id: int | None = None,
     overlay_open_duration_seconds: float | None = None,
     overlay_close_duration_seconds: float | None = None,
     overlay_fade_color: str | None = None,
@@ -3072,7 +3850,7 @@ def update_global_settings(
     update_inventory_background_relative_path: bool = False,
     update_verb_tag_background_relative_path: bool = False,
 ) -> dict[str, Any]:
-    current_settings = get_global_settings(db_path, organization_id)
+    current_settings = get_global_settings(db_path, organization_id, project_id)
     assignments = ["updated_at = CURRENT_TIMESTAMP"]
     values: list[Any] = []
     if overlay_open_duration_seconds is not None:
@@ -3122,15 +3900,18 @@ def update_global_settings(
             assignments.append(f"cursor_{state_key}_hotspot_y = ?")
             values.append(int(state.get("hotspot_y") or 0))
     with connect(db_path) as connection:
+        if project_id is None:
+            project_id = _get_or_create_default_project_id(connection, organization_id)
         connection.execute(
             f"""
             UPDATE global_settings
             SET {", ".join(assignments)}
             WHERE organization_id = ?
+              AND project_id = ?
             """,
-            (*values, organization_id),
+            (*values, organization_id, project_id),
         )
-    return get_global_settings(db_path, organization_id)
+    return get_global_settings(db_path, organization_id, project_id)
 
 
 def _extract_cursor_states(result: dict[str, Any]) -> dict[str, dict[str, Any]]:
@@ -3177,25 +3958,29 @@ def _merge_cursor_states(
 def create_or_update_overlay_scene_binding(
     db_path: Path,
     organization_id: str,
+    project_id: int | None,
     key_code: str,
     overlay_scene_id: int,
 ) -> dict[str, Any]:
     with connect(db_path) as connection:
+        if project_id is None:
+            project_id = _get_or_create_default_project_id(connection, organization_id)
         connection.execute(
             """
             INSERT INTO overlay_scene_bindings (
                 organization_id,
+                project_id,
                 key_code,
                 overlay_scene_id
             )
-            VALUES (?, ?, ?)
-            ON CONFLICT (organization_id, key_code) DO UPDATE SET
+            VALUES (?, ?, ?, ?)
+            ON CONFLICT (organization_id, project_id, key_code) DO UPDATE SET
                 overlay_scene_id = excluded.overlay_scene_id,
                 updated_at = CURRENT_TIMESTAMP
             """,
-            (organization_id, key_code, overlay_scene_id),
+            (organization_id, project_id, key_code, overlay_scene_id),
         )
-    row = get_overlay_scene_binding_by_key(db_path, organization_id, key_code)
+    row = get_overlay_scene_binding_by_key(db_path, organization_id, key_code, project_id)
     if row is None:
         raise RuntimeError("Overlay scene binding could not be loaded")
     return row
@@ -3205,12 +3990,16 @@ def get_overlay_scene_binding_by_key(
     db_path: Path,
     organization_id: str,
     key_code: str,
+    project_id: int | None = None,
 ) -> dict[str, Any] | None:
     with connect(db_path) as connection:
+        if project_id is None:
+            project_id = _get_or_create_default_project_id(connection, organization_id)
         row = connection.execute(
             """
             SELECT overlay_scene_bindings.id,
                    overlay_scene_bindings.organization_id,
+                   overlay_scene_bindings.project_id,
                    overlay_scene_bindings.key_code,
                    overlay_scene_bindings.overlay_scene_id,
                    overlay_scene_bindings.created_at,
@@ -3220,9 +4009,10 @@ def get_overlay_scene_binding_by_key(
             FROM overlay_scene_bindings
             JOIN scenes ON scenes.id = overlay_scene_bindings.overlay_scene_id
             WHERE overlay_scene_bindings.organization_id = ?
+              AND overlay_scene_bindings.project_id = ?
               AND overlay_scene_bindings.key_code = ?
             """,
-            (organization_id, key_code),
+            (organization_id, project_id, key_code),
         ).fetchone()
     return dict(row) if row else None
 
@@ -3231,21 +4021,26 @@ def delete_overlay_scene_binding(
     db_path: Path,
     organization_id: str,
     binding_id: int,
+    project_id: int | None = None,
 ) -> None:
     with connect(db_path) as connection:
+        if project_id is None:
+            project_id = _get_or_create_default_project_id(connection, organization_id)
         connection.execute(
             """
             DELETE FROM overlay_scene_bindings
             WHERE id = ?
               AND organization_id = ?
+              AND project_id = ?
             """,
-            (binding_id, organization_id),
+            (binding_id, organization_id, project_id),
         )
 
 
 def upsert_script_line(
     db_path: Path,
     organization_id: str,
+    project_id: int | None,
     line_id: int,
     script_index: int,
     source_text: str,
@@ -3254,30 +4049,34 @@ def upsert_script_line(
     path_json = json.dumps(path_parts, ensure_ascii=False)
     path_text = " / ".join(path_parts)
     with connect(db_path) as connection:
+        if project_id is None:
+            project_id = _get_or_create_default_project_id(connection, organization_id)
         connection.execute(
             """
             INSERT INTO script_lines (
                 organization_id,
+                project_id,
                 line_id,
                 script_index,
                 source_text,
                 path_json,
                 path_text
             )
-            VALUES (?, ?, ?, ?, ?, ?)
-            ON CONFLICT (organization_id, line_id) DO UPDATE SET
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT (organization_id, project_id, line_id) DO UPDATE SET
                 script_index = excluded.script_index,
                 source_text = excluded.source_text,
                 path_json = excluded.path_json,
                 path_text = excluded.path_text,
                 updated_at = CURRENT_TIMESTAMP
             """,
-            (organization_id, line_id, script_index, source_text, path_json, path_text),
+            (organization_id, project_id, line_id, script_index, source_text, path_json, path_text),
         )
         row = connection.execute(
             """
             SELECT id,
                    organization_id,
+                   project_id,
                    line_id,
                    script_index,
                    source_text,
@@ -3287,22 +4086,26 @@ def upsert_script_line(
                    updated_at
             FROM script_lines
             WHERE organization_id = ?
+              AND project_id = ?
               AND line_id = ?
             """,
-            (organization_id, line_id),
+            (organization_id, project_id, line_id),
         ).fetchone()
     return dict(row)
 
 
-def get_next_script_line_id(db_path: Path, organization_id: str) -> int:
+def get_next_script_line_id(db_path: Path, organization_id: str, project_id: int | None = None) -> int:
     with connect(db_path) as connection:
+        if project_id is None:
+            project_id = _get_or_create_default_project_id(connection, organization_id)
         row = connection.execute(
             """
             SELECT COALESCE(MAX(line_id), 0) + 1 AS next_line_id
             FROM script_lines
             WHERE organization_id = ?
+              AND project_id = ?
             """,
-            (organization_id,),
+            (organization_id, project_id),
         ).fetchone()
     return int(row["next_line_id"] if row else 1)
 
@@ -3310,13 +4113,15 @@ def get_next_script_line_id(db_path: Path, organization_id: str) -> int:
 def create_script_line(
     db_path: Path,
     organization_id: str,
+    project_id: int | None,
     source_text: str,
     path_parts: list[str],
 ) -> dict[str, Any]:
-    line_id = get_next_script_line_id(db_path, organization_id)
+    line_id = get_next_script_line_id(db_path, organization_id, project_id)
     return upsert_script_line(
         db_path,
         organization_id=organization_id,
+        project_id=project_id,
         line_id=line_id,
         script_index=line_id,
         source_text=source_text,
@@ -3493,6 +4298,7 @@ def upsert_script_audio_candidate(
 def _build_script_line_filter_clause(
     *,
     organization_id: str,
+    project_id: int | None,
     language: str,
     query: str,
     path: str,
@@ -3505,6 +4311,9 @@ def _build_script_line_filter_clause(
 ) -> tuple[str, list[Any]]:
     where = ["sl.organization_id = ?"]
     values: list[Any] = [organization_id]
+    if project_id is not None:
+        where.append("sl.project_id = ?")
+        values.append(project_id)
     if query:
         like = f"%{query}%"
         where.append(
@@ -3611,6 +4420,7 @@ def _build_script_line_filter_clause(
 def list_script_lines(
     db_path: Path,
     organization_id: str,
+    project_id: int | None = None,
     language: str = "en",
     query: str = "",
     path: str = "",
@@ -3623,8 +4433,12 @@ def list_script_lines(
     limit: int = 50,
     offset: int = 0,
 ) -> dict[str, Any]:
+    with connect(db_path) as connection:
+        if project_id is None:
+            project_id = _get_or_create_default_project_id(connection, organization_id)
     where_sql, values = _build_script_line_filter_clause(
         organization_id=organization_id,
+        project_id=project_id,
         language=language,
         query=query,
         path=path,
@@ -3647,6 +4461,7 @@ def list_script_lines(
             f"""
             SELECT sl.id,
                    sl.organization_id,
+                   sl.project_id,
                    sl.line_id,
                    sl.script_index,
                    sl.source_text,
@@ -3731,6 +4546,7 @@ def list_script_lines(
 def list_script_line_ids(
     db_path: Path,
     organization_id: str,
+    project_id: int | None = None,
     language: str = "en",
     query: str = "",
     path: str = "",
@@ -3742,8 +4558,12 @@ def list_script_line_ids(
     failed_tts: bool = False,
     limit: int = 5000,
 ) -> list[int]:
+    with connect(db_path) as connection:
+        if project_id is None:
+            project_id = _get_or_create_default_project_id(connection, organization_id)
     where_sql, values = _build_script_line_filter_clause(
         organization_id=organization_id,
+        project_id=project_id,
         language=language,
         query=query,
         path=path,
@@ -3828,9 +4648,12 @@ def get_script_line_detail(
     db_path: Path,
     organization_id: str,
     line_id: int,
+    project_id: int | None = None,
 ) -> dict[str, Any] | None:
     with connect(db_path) as connection:
-        line = _get_script_line_row(connection, organization_id, line_id)
+        if project_id is None:
+            project_id = _get_or_create_default_project_id(connection, organization_id)
+        line = _get_script_line_row(connection, organization_id, line_id, project_id)
         if line is None:
             return None
         translations = connection.execute(
@@ -3891,19 +4714,23 @@ def get_script_line_detail(
 def list_script_path_options(
     db_path: Path,
     organization_id: str,
+    project_id: int | None = None,
     limit: int = 500,
 ) -> list[str]:
     with connect(db_path) as connection:
+        if project_id is None:
+            project_id = _get_or_create_default_project_id(connection, organization_id)
         rows = connection.execute(
             """
             SELECT DISTINCT path_text
             FROM script_lines
             WHERE organization_id = ?
+              AND project_id = ?
               AND path_text != ''
             ORDER BY path_text ASC
             LIMIT ?
             """,
-            (organization_id, limit),
+            (organization_id, project_id, limit),
         ).fetchall()
     return [str(row["path_text"]) for row in rows]
 
@@ -3916,9 +4743,12 @@ def update_script_translation(
     text: str,
     review_status: str,
     notes: str = "",
+    project_id: int | None = None,
 ) -> dict[str, Any] | None:
     with connect(db_path) as connection:
-        line = _get_script_line_row(connection, organization_id, line_id)
+        if project_id is None:
+            project_id = _get_or_create_default_project_id(connection, organization_id)
+        line = _get_script_line_row(connection, organization_id, line_id, project_id)
         if line is None:
             return None
         connection.execute(
@@ -3972,9 +4802,12 @@ def update_script_translation_review(
     language: str,
     review_status: str,
     notes: str = "",
+    project_id: int | None = None,
 ) -> dict[str, Any] | None:
     with connect(db_path) as connection:
-        line = _get_script_line_row(connection, organization_id, line_id)
+        if project_id is None:
+            project_id = _get_or_create_default_project_id(connection, organization_id)
+        line = _get_script_line_row(connection, organization_id, line_id, project_id)
         if line is None:
             return None
         connection.execute(
@@ -4017,9 +4850,12 @@ def update_script_audio_candidate(
     review_status: str,
     notes: str = "",
     selected: bool | None = None,
+    project_id: int | None = None,
 ) -> dict[str, Any] | None:
     with connect(db_path) as connection:
-        candidate = _get_audio_candidate_row(connection, organization_id, candidate_id)
+        if project_id is None:
+            project_id = _get_or_create_default_project_id(connection, organization_id)
+        candidate = _get_audio_candidate_row(connection, organization_id, candidate_id, project_id)
         if candidate is None:
             return None
         connection.execute(
@@ -4033,7 +4869,7 @@ def update_script_audio_candidate(
             """,
             (review_status, notes, int(selected) if selected is not None else None, candidate_id),
         )
-        row = _get_audio_candidate_row(connection, organization_id, candidate_id)
+        row = _get_audio_candidate_row(connection, organization_id, candidate_id, project_id)
     return _audio_candidate_from_row(row) if row else None
 
 
@@ -4041,9 +4877,12 @@ def delete_script_line(
     db_path: Path,
     organization_id: str,
     line_id: int,
+    project_id: int | None = None,
 ) -> bool:
     with connect(db_path) as connection:
-        line = _get_script_line_row(connection, organization_id, line_id)
+        if project_id is None:
+            project_id = _get_or_create_default_project_id(connection, organization_id)
+        line = _get_script_line_row(connection, organization_id, line_id, project_id)
         if line is None:
             return False
         connection.execute(
@@ -4070,8 +4909,9 @@ def delete_script_line(
             DELETE FROM script_lines
             WHERE id = ?
               AND organization_id = ?
+              AND project_id = ?
             """,
-            (line["id"], organization_id),
+            (line["id"], organization_id, project_id),
         )
     return True
 
@@ -4080,19 +4920,25 @@ def get_script_audio_candidate_by_id(
     db_path: Path,
     organization_id: str,
     candidate_id: int,
+    project_id: int | None = None,
 ) -> dict[str, Any] | None:
     with connect(db_path) as connection:
-        row = _get_audio_candidate_row(connection, organization_id, candidate_id)
+        if project_id is None:
+            project_id = _get_or_create_default_project_id(connection, organization_id)
+        row = _get_audio_candidate_row(connection, organization_id, candidate_id, project_id)
     return _audio_candidate_from_row(row) if row else None
 
 
-def list_game_variables(db_path: Path, organization_id: str) -> list[dict[str, Any]]:
+def list_game_variables(db_path: Path, organization_id: str, project_id: int | None = None) -> list[dict[str, Any]]:
     ensure_system_game_variables(db_path, organization_id)
     with connect(db_path) as connection:
+        if project_id is None:
+            project_id = _get_or_create_default_project_id(connection, organization_id)
         rows = connection.execute(
             """
             SELECT id,
                    organization_id,
+                   project_id,
                    name,
                    value_type,
                    default_value_json,
@@ -4101,9 +4947,10 @@ def list_game_variables(db_path: Path, organization_id: str) -> list[dict[str, A
                    updated_at
             FROM game_variables
             WHERE organization_id = ?
+              AND project_id = ?
             ORDER BY lower(name) ASC, id ASC
             """,
-            (organization_id,),
+            (organization_id, project_id),
         ).fetchall()
     return [_game_variable_from_row(row) for row in rows]
 
@@ -4112,56 +4959,83 @@ def get_game_variable_by_id(
     db_path: Path,
     organization_id: str,
     variable_id: int,
+    project_id: int | None = None,
 ) -> dict[str, Any] | None:
     with connect(db_path) as connection:
-        row = connection.execute(
-            """
-            SELECT id,
-                   organization_id,
-                   name,
-                   value_type,
-                   default_value_json,
-                   description,
-                   created_at,
-                   updated_at
-            FROM game_variables
-            WHERE id = ?
-              AND organization_id = ?
-            """,
-            (variable_id, organization_id),
-        ).fetchone()
+        if project_id is None:
+            row = connection.execute(
+                """
+                SELECT id,
+                       organization_id,
+                       project_id,
+                       name,
+                       value_type,
+                       default_value_json,
+                       description,
+                       created_at,
+                       updated_at
+                FROM game_variables
+                WHERE id = ?
+                  AND organization_id = ?
+                """,
+                (variable_id, organization_id),
+            ).fetchone()
+        else:
+            row = connection.execute(
+                """
+                SELECT id,
+                       organization_id,
+                       project_id,
+                       name,
+                       value_type,
+                       default_value_json,
+                       description,
+                       created_at,
+                       updated_at
+                FROM game_variables
+                WHERE id = ?
+                  AND organization_id = ?
+                  AND project_id = ?
+                """,
+                (variable_id, organization_id, project_id),
+            ).fetchone()
     return _game_variable_from_row(row) if row else None
 
 
 def create_game_variable(
     db_path: Path,
     organization_id: str,
+    project_id: int | None,
     name: str,
     value_type: str,
     default_value: Any,
     description: str = "",
 ) -> dict[str, Any]:
     with connect(db_path) as connection:
+        if project_id is None:
+            project_id = _get_or_create_default_project_id(connection, organization_id)
         cursor = connection.execute(
             """
             INSERT INTO game_variables (
                 organization_id,
+                project_id,
                 name,
                 value_type,
                 default_value_json,
                 description
             )
-            VALUES (?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?)
             """,
             (
                 organization_id,
+                project_id,
                 name.strip(),
                 value_type,
                 json.dumps(default_value, separators=(",", ":")),
                 description.strip(),
             ),
         )
-    created = get_game_variable_by_id(db_path, organization_id, int(cursor.lastrowid))
+    created = get_game_variable_by_id(db_path, organization_id, int(cursor.lastrowid), project_id)
     if created is None:
         raise RuntimeError("Created variable could not be loaded")
     return created
@@ -4175,8 +5049,11 @@ def update_game_variable(
     value_type: str,
     default_value: Any,
     description: str = "",
+    project_id: int | None = None,
 ) -> dict[str, Any] | None:
     with connect(db_path) as connection:
+        if project_id is None:
+            project_id = _get_or_create_default_project_id(connection, organization_id)
         cursor = connection.execute(
             """
             UPDATE game_variables
@@ -4187,6 +5064,7 @@ def update_game_variable(
                 updated_at = CURRENT_TIMESTAMP
             WHERE id = ?
               AND organization_id = ?
+              AND project_id = ?
             """,
             (
                 name.strip(),
@@ -4195,26 +5073,31 @@ def update_game_variable(
                 description.strip(),
                 variable_id,
                 organization_id,
+                project_id,
             ),
         )
     if cursor.rowcount == 0:
         return None
-    return get_game_variable_by_id(db_path, organization_id, variable_id)
+    return get_game_variable_by_id(db_path, organization_id, variable_id, project_id)
 
 
 def delete_game_variable(
     db_path: Path,
     organization_id: str,
     variable_id: int,
+    project_id: int | None = None,
 ) -> None:
     with connect(db_path) as connection:
+        if project_id is None:
+            project_id = _get_or_create_default_project_id(connection, organization_id)
         connection.execute(
             """
             DELETE FROM game_variables
             WHERE id = ?
               AND organization_id = ?
+              AND project_id = ?
             """,
-            (variable_id, organization_id),
+            (variable_id, organization_id, project_id),
         )
 
 
@@ -4705,19 +5588,22 @@ def list_script_line_references(
 def create_upload_batch(
     db_path: Path,
     organization_id: str,
+    project_id: int | None,
     created_by_user_id: int,
 ) -> dict[str, Any]:
     with connect(db_path) as connection:
+        if project_id is None:
+            project_id = _get_or_create_default_project_id(connection, organization_id)
         cursor = connection.execute(
             """
-            INSERT INTO upload_batches (organization_id, created_by_user_id)
-            VALUES (?, ?)
+            INSERT INTO upload_batches (organization_id, project_id, created_by_user_id)
+            VALUES (?, ?, ?)
             """,
-            (organization_id, created_by_user_id),
+            (organization_id, project_id, created_by_user_id),
         )
         row = connection.execute(
             """
-            SELECT id, organization_id, created_by_user_id, status, file_count, total_bytes, created_at
+            SELECT id, organization_id, project_id, created_by_user_id, status, file_count, total_bytes, created_at
             FROM upload_batches
             WHERE id = ?
             """,
@@ -4731,6 +5617,7 @@ def add_uploaded_file(
     db_path: Path,
     batch_id: int,
     organization_id: str,
+    project_id: int | None,
     uploaded_by_user_id: int,
     original_filename: str,
     stored_filename: str,
@@ -4739,11 +5626,14 @@ def add_uploaded_file(
     file_size: int,
 ) -> dict[str, Any]:
     with connect(db_path) as connection:
+        if project_id is None:
+            project_id = _get_or_create_default_project_id(connection, organization_id)
         cursor = connection.execute(
             """
             INSERT INTO uploaded_files (
                 batch_id,
                 organization_id,
+                project_id,
                 uploaded_by_user_id,
                 original_filename,
                 stored_filename,
@@ -4751,11 +5641,12 @@ def add_uploaded_file(
                 content_type,
                 file_size
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 batch_id,
                 organization_id,
+                project_id,
                 uploaded_by_user_id,
                 original_filename,
                 stored_filename,
@@ -4778,6 +5669,7 @@ def add_uploaded_file(
             SELECT id,
                    batch_id,
                    organization_id,
+                   project_id,
                    uploaded_by_user_id,
                    original_filename,
                    stored_filename,
@@ -4799,7 +5691,7 @@ def get_upload_batch(db_path: Path, batch_id: int) -> dict[str, Any] | None:
     with connect(db_path) as connection:
         batch = connection.execute(
             """
-            SELECT id, organization_id, created_by_user_id, status, file_count, total_bytes, created_at
+            SELECT id, organization_id, project_id, created_by_user_id, status, file_count, total_bytes, created_at
             FROM upload_batches
             WHERE id = ?
             """,
@@ -4812,6 +5704,7 @@ def get_upload_batch(db_path: Path, batch_id: int) -> dict[str, Any] | None:
             SELECT id,
                    batch_id,
                    organization_id,
+                   project_id,
                    uploaded_by_user_id,
                    original_filename,
                    stored_filename,
@@ -4834,13 +5727,17 @@ def get_uploaded_file_by_id(
     db_path: Path,
     uploaded_file_id: int,
     organization_id: str,
+    project_id: int | None = None,
 ) -> dict[str, Any] | None:
     with connect(db_path) as connection:
+        if project_id is None:
+            project_id = _get_or_create_default_project_id(connection, organization_id)
         row = connection.execute(
             """
             SELECT id,
                    batch_id,
                    organization_id,
+                   project_id,
                    uploaded_by_user_id,
                    original_filename,
                    stored_filename,
@@ -4852,8 +5749,9 @@ def get_uploaded_file_by_id(
             FROM uploaded_files
             WHERE id = ?
               AND organization_id = ?
+              AND project_id = ?
             """,
-            (uploaded_file_id, organization_id),
+            (uploaded_file_id, organization_id, project_id),
         ).fetchone()
 
     return dict(row) if row else None
@@ -4862,18 +5760,22 @@ def get_uploaded_file_by_id(
 def list_upload_batches(
     db_path: Path,
     organization_id: str,
+    project_id: int | None = None,
     limit: int = 10,
 ) -> list[dict[str, Any]]:
     with connect(db_path) as connection:
+        if project_id is None:
+            project_id = _get_or_create_default_project_id(connection, organization_id)
         rows = connection.execute(
             """
-            SELECT id, organization_id, created_by_user_id, status, file_count, total_bytes, created_at
+            SELECT id, organization_id, project_id, created_by_user_id, status, file_count, total_bytes, created_at
             FROM upload_batches
             WHERE organization_id = ?
+              AND project_id = ?
             ORDER BY id DESC
             LIMIT ?
             """,
-            (organization_id, limit),
+            (organization_id, project_id, limit),
         ).fetchall()
 
     return [dict(row) for row in rows]
@@ -4883,13 +5785,17 @@ def list_uploaded_image_files_for_batch(
     db_path: Path,
     batch_id: int,
     organization_id: str,
+    project_id: int | None = None,
 ) -> list[dict[str, Any]]:
     with connect(db_path) as connection:
+        if project_id is None:
+            project_id = _get_or_create_default_project_id(connection, organization_id)
         rows = connection.execute(
             """
             SELECT id,
                    batch_id,
                    organization_id,
+                   project_id,
                    uploaded_by_user_id,
                    original_filename,
                    stored_filename,
@@ -4901,6 +5807,7 @@ def list_uploaded_image_files_for_batch(
             FROM uploaded_files
             WHERE batch_id = ?
               AND organization_id = ?
+              AND project_id = ?
               AND (
                 content_type LIKE 'image/%'
                 OR lower(original_filename) GLOB '*.jpg'
@@ -4910,7 +5817,7 @@ def list_uploaded_image_files_for_batch(
               )
             ORDER BY id ASC
             """,
-            (batch_id, organization_id),
+            (batch_id, organization_id, project_id),
         ).fetchall()
 
     return sorted(
@@ -4922,8 +5829,11 @@ def list_uploaded_image_files_for_batch(
 def list_scene_image_hashes(
     db_path: Path,
     organization_id: str,
+    project_id: int | None = None,
 ) -> list[dict[str, Any]]:
     with connect(db_path) as connection:
+        if project_id is None:
+            project_id = _get_or_create_default_project_id(connection, organization_id)
         rows = connection.execute(
             """
             SELECT scene_images.scene_id,
@@ -4934,8 +5844,9 @@ def list_scene_image_hashes(
             FROM scene_images
             JOIN scenes ON scenes.id = scene_images.scene_id
             WHERE scenes.organization_id = ?
+              AND scenes.project_id = ?
             """,
-            (organization_id,),
+            (organization_id, project_id),
         ).fetchall()
 
     return [dict(row) for row in rows]
@@ -4944,6 +5855,7 @@ def list_scene_image_hashes(
 def create_scene(
     db_path: Path,
     organization_id: str,
+    project_id: int | None,
     created_by_user_id: int,
     representative_uploaded_file_id: int | None,
     representative_hash: str | None,
@@ -4952,18 +5864,22 @@ def create_scene(
     presentation_mode: str = "base",
 ) -> dict[str, Any]:
     with connect(db_path) as connection:
+        if project_id is None:
+            project_id = _get_or_create_default_project_id(connection, organization_id)
         next_sort_order = connection.execute(
             """
             SELECT COALESCE(MAX(sort_order), -1) + 1 AS next_sort_order
             FROM scenes
             WHERE organization_id = ?
+              AND project_id = ?
             """,
-            (organization_id,),
+            (organization_id, project_id),
         ).fetchone()["next_sort_order"]
         cursor = connection.execute(
             """
             INSERT INTO scenes (
                 organization_id,
+                project_id,
                 title,
                 description,
                 presentation_mode,
@@ -4973,10 +5889,11 @@ def create_scene(
                 created_by_user_id,
                 sort_order
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 organization_id,
+                project_id,
                 title,
                 description,
                 presentation_mode,
@@ -4991,6 +5908,7 @@ def create_scene(
             """
             SELECT id,
                    organization_id,
+                   project_id,
                    title,
                    description,
                    presentation_mode,
@@ -5016,12 +5934,14 @@ def create_empty_scene(
     organization_id: str,
     created_by_user_id: int,
     title: str,
+    project_id: int | None = None,
     description: str = "",
     presentation_mode: str = "base",
 ) -> dict[str, Any]:
     return create_scene(
         db_path,
         organization_id=organization_id,
+        project_id=project_id,
         created_by_user_id=created_by_user_id,
         representative_uploaded_file_id=None,
         representative_hash=None,
@@ -5083,13 +6003,17 @@ def add_scene_image(
 def list_uploaded_image_files(
     db_path: Path,
     organization_id: str,
+    project_id: int | None = None,
 ) -> list[dict[str, Any]]:
     with connect(db_path) as connection:
+        if project_id is None:
+            project_id = _get_or_create_default_project_id(connection, organization_id)
         rows = connection.execute(
             """
             SELECT uploaded_files.id AS uploaded_file_id,
                    uploaded_files.batch_id,
                    uploaded_files.organization_id,
+                   uploaded_files.project_id,
                    uploaded_files.uploaded_by_user_id,
                    uploaded_files.original_filename,
                    uploaded_files.stored_filename,
@@ -5112,10 +6036,12 @@ def list_uploaded_image_files(
             LEFT JOIN scenes
               ON scenes.id = scene_images.scene_id
              AND scenes.organization_id = uploaded_files.organization_id
+             AND scenes.project_id = uploaded_files.project_id
             LEFT JOIN scene_objects AS pickup_objects
               ON pickup_objects.pickup_uploaded_file_id = uploaded_files.id
              AND pickup_objects.scene_id = scene_images.scene_id
             WHERE uploaded_files.organization_id = ?
+              AND uploaded_files.project_id = ?
               AND (
                 uploaded_files.content_type LIKE 'image/%'
                 OR lower(uploaded_files.original_filename) GLOB '*.jpg'
@@ -5127,7 +6053,7 @@ def list_uploaded_image_files(
                      COALESCE(scene_images.sort_order, 2147483647) ASC,
                      uploaded_files.id ASC
             """,
-            (organization_id,),
+            (organization_id, project_id),
         ).fetchall()
 
     return [dict(row) for row in rows]
@@ -5296,6 +6222,7 @@ def get_scene_with_images(db_path: Path, scene_id: int) -> dict[str, Any] | None
             """
             SELECT id,
                    organization_id,
+                   project_id,
                    title,
                    description,
                    presentation_mode,
@@ -5422,38 +6349,78 @@ def get_scene_with_images(db_path: Path, scene_id: int) -> dict[str, Any] | None
     }
 
 
-def list_scenes(db_path: Path, organization_id: str, limit: int = 20) -> list[dict[str, Any]]:
+def list_scenes(
+    db_path: Path,
+    organization_id: str,
+    project_id: int | None = None,
+    limit: int = 20,
+) -> list[dict[str, Any]]:
     with connect(db_path) as connection:
-        rows = connection.execute(
-            """
-            SELECT scenes.id,
-                   scenes.organization_id,
-                   scenes.title,
-                   scenes.description,
-                   scenes.presentation_mode,
-                   scenes.status,
-                   scenes.background_frame_index,
-                   scenes.sort_order,
-                   scenes.representative_uploaded_file_id,
-                   scenes.representative_hash,
-                   scenes.created_by_user_id,
-                   scenes.created_at,
-                   scenes.updated_at,
-                   COUNT(DISTINCT scene_images.id) AS image_count,
-                   COUNT(DISTINCT scene_objects.id) AS object_count,
-                   COUNT(DISTINCT object_masks.id) AS object_mask_count
-            FROM scenes
-            LEFT JOIN scene_images ON scene_images.scene_id = scenes.id
-            LEFT JOIN scene_objects ON scene_objects.scene_id = scenes.id
-            LEFT JOIN object_masks ON object_masks.scene_object_id = scene_objects.id
-            WHERE scenes.organization_id = ?
-              AND scenes.presentation_mode != 'character'
-            GROUP BY scenes.id
-            ORDER BY scenes.sort_order ASC, scenes.id ASC
-            LIMIT ?
-            """,
-            (organization_id, limit),
-        ).fetchall()
+        if project_id is None:
+            rows = connection.execute(
+                """
+                SELECT scenes.id,
+                       scenes.organization_id,
+                       scenes.project_id,
+                       scenes.title,
+                       scenes.description,
+                       scenes.presentation_mode,
+                       scenes.status,
+                       scenes.background_frame_index,
+                       scenes.sort_order,
+                       scenes.representative_uploaded_file_id,
+                       scenes.representative_hash,
+                       scenes.created_by_user_id,
+                       scenes.created_at,
+                       scenes.updated_at,
+                       COUNT(DISTINCT scene_images.id) AS image_count,
+                       COUNT(DISTINCT scene_objects.id) AS object_count,
+                       COUNT(DISTINCT object_masks.id) AS object_mask_count
+                FROM scenes
+                LEFT JOIN scene_images ON scene_images.scene_id = scenes.id
+                LEFT JOIN scene_objects ON scene_objects.scene_id = scenes.id
+                LEFT JOIN object_masks ON object_masks.scene_object_id = scene_objects.id
+                WHERE scenes.organization_id = ?
+                  AND scenes.presentation_mode != 'character'
+                GROUP BY scenes.id
+                ORDER BY scenes.sort_order ASC, scenes.id ASC
+                LIMIT ?
+                """,
+                (organization_id, limit),
+            ).fetchall()
+        else:
+            rows = connection.execute(
+                """
+                SELECT scenes.id,
+                       scenes.organization_id,
+                       scenes.project_id,
+                       scenes.title,
+                       scenes.description,
+                       scenes.presentation_mode,
+                       scenes.status,
+                       scenes.background_frame_index,
+                       scenes.sort_order,
+                       scenes.representative_uploaded_file_id,
+                       scenes.representative_hash,
+                       scenes.created_by_user_id,
+                       scenes.created_at,
+                       scenes.updated_at,
+                       COUNT(DISTINCT scene_images.id) AS image_count,
+                       COUNT(DISTINCT scene_objects.id) AS object_count,
+                       COUNT(DISTINCT object_masks.id) AS object_mask_count
+                FROM scenes
+                LEFT JOIN scene_images ON scene_images.scene_id = scenes.id
+                LEFT JOIN scene_objects ON scene_objects.scene_id = scenes.id
+                LEFT JOIN object_masks ON object_masks.scene_object_id = scene_objects.id
+                WHERE scenes.organization_id = ?
+                  AND scenes.project_id = ?
+                  AND scenes.presentation_mode != 'character'
+                GROUP BY scenes.id
+                ORDER BY scenes.sort_order ASC, scenes.id ASC
+                LIMIT ?
+                """,
+                (organization_id, project_id, limit),
+            ).fetchall()
 
     return [dict(row) for row in rows]
 
@@ -5462,6 +6429,7 @@ def move_scene_sort_order(
     db_path: Path,
     *,
     organization_id: str,
+    project_id: int,
     scene_id: int,
     direction: str,
 ) -> list[dict[str, Any]]:
@@ -5474,9 +6442,10 @@ def move_scene_sort_order(
             SELECT id, sort_order
             FROM scenes
             WHERE organization_id = ?
+              AND project_id = ?
             ORDER BY sort_order ASC, id ASC
             """,
-            (organization_id,),
+            (organization_id, project_id),
         ).fetchall()
         ordered_scenes = [dict(row) for row in rows]
         index = next((idx for idx, row in enumerate(ordered_scenes) if int(row["id"]) == scene_id), -1)
@@ -5484,7 +6453,7 @@ def move_scene_sort_order(
             return []
         swap_index = index - 1 if normalized_direction == "up" else index + 1
         if swap_index < 0 or swap_index >= len(ordered_scenes):
-            return list_scenes(db_path, organization_id, limit=max(20, len(ordered_scenes)))
+            return list_scenes(db_path, organization_id, project_id, limit=max(20, len(ordered_scenes)))
         current_scene = ordered_scenes[index]
         target_scene = ordered_scenes[swap_index]
         connection.execute(
@@ -5503,12 +6472,13 @@ def move_scene_sort_order(
             """,
             (int(current_scene["sort_order"]), int(target_scene["id"])),
         )
-    return list_scenes(db_path, organization_id, limit=max(20, len(ordered_scenes)))
+    return list_scenes(db_path, organization_id, project_id, limit=max(20, len(ordered_scenes)))
 
 
 def get_workspace_summary(
     db_path: Path,
     organization_id: str,
+    project_id: int | None = None,
     languages: list[str] | tuple[str, ...] = (),
 ) -> dict[str, int]:
     normalized_languages = [
@@ -5517,14 +6487,17 @@ def get_workspace_summary(
         if str(language).strip()
     ]
     with connect(db_path) as connection:
+        if project_id is None:
+            project_id = _get_or_create_default_project_id(connection, organization_id)
         scenes_count = int(connection.execute(
             """
             SELECT COUNT(*) AS count
             FROM scenes
             WHERE organization_id = ?
+              AND project_id = ?
               AND presentation_mode != 'character'
             """,
-            (organization_id,),
+            (organization_id, project_id),
         ).fetchone()["count"] or 0)
 
         missing_masks = int(connection.execute(
@@ -5533,6 +6506,7 @@ def get_workspace_summary(
             FROM scene_objects so
             JOIN scenes s ON s.id = so.scene_id
             WHERE s.organization_id = ?
+              AND s.project_id = ?
               AND s.presentation_mode != 'character'
               AND NOT EXISTS (
                 SELECT 1
@@ -5540,7 +6514,7 @@ def get_workspace_summary(
                 WHERE om.scene_object_id = so.id
               )
             """,
-            (organization_id,),
+            (organization_id, project_id),
         ).fetchone()["count"] or 0)
 
         missing_inventory_art = int(connection.execute(
@@ -5549,11 +6523,12 @@ def get_workspace_summary(
             FROM scene_objects so
             JOIN scenes s ON s.id = so.scene_id
             WHERE s.organization_id = ?
+              AND s.project_id = ?
               AND s.presentation_mode != 'character'
               AND so.keyboard_target_enabled = 1
               AND TRIM(COALESCE(so.inventory_image_relative_path, '')) = ''
             """,
-            (organization_id,),
+            (organization_id, project_id),
         ).fetchone()["count"] or 0)
 
         failed_jobs = int(connection.execute(
@@ -5561,9 +6536,10 @@ def get_workspace_summary(
             SELECT COUNT(*) AS count
             FROM processing_jobs
             WHERE organization_id = ?
+              AND project_id = ?
               AND status = 'failed'
             """,
-            (organization_id,),
+            (organization_id, project_id),
         ).fetchone()["count"] or 0)
 
         missing_translations = 0
@@ -5576,8 +6552,9 @@ def get_workspace_summary(
                 SELECT id
                 FROM script_lines
                 WHERE organization_id = ?
+                  AND project_id = ?
                 """,
-                (organization_id,),
+                (organization_id, project_id),
             ).fetchall()
             line_ids = [int(row["id"]) for row in line_rows]
             for line_id in line_ids:
@@ -5619,9 +6596,10 @@ def get_workspace_summary(
                 FROM scene_interactions si
                 JOIN scenes s ON s.id = si.scene_id
                 WHERE s.organization_id = ?
+                  AND s.project_id = ?
                   AND si.enabled = 1
                 """,
-                (organization_id,),
+                (organization_id, project_id),
             ).fetchall()
             referenced_line_ids: set[int] = set()
             for row in interaction_rows:
@@ -7085,17 +8063,30 @@ def scene_belongs_to_organization(
     db_path: Path,
     scene_id: int,
     organization_id: str,
+    project_id: int | None = None,
 ) -> bool:
     with connect(db_path) as connection:
-        row = connection.execute(
-            """
-            SELECT 1
-            FROM scenes
-            WHERE id = ?
-              AND organization_id = ?
-            """,
-            (scene_id, organization_id),
-        ).fetchone()
+        if project_id is None:
+            row = connection.execute(
+                """
+                SELECT 1
+                FROM scenes
+                WHERE id = ?
+                  AND organization_id = ?
+                """,
+                (scene_id, organization_id),
+            ).fetchone()
+        else:
+            row = connection.execute(
+                """
+                SELECT 1
+                FROM scenes
+                WHERE id = ?
+                  AND organization_id = ?
+                  AND project_id = ?
+                """,
+                (scene_id, organization_id, project_id),
+            ).fetchone()
 
     return row is not None
 
@@ -7232,6 +8223,176 @@ def link_identity(
         )
 
 
+def list_projects(db_path: Path, organization_id: str) -> list[dict[str, Any]]:
+    with connect(db_path) as connection:
+        rows = connection.execute(
+            """
+            SELECT id,
+                   organization_id,
+                   name,
+                   sort_order,
+                   created_at,
+                   updated_at
+            FROM projects
+            WHERE organization_id = ?
+            ORDER BY sort_order ASC, id ASC
+            """,
+            (organization_id,),
+        ).fetchall()
+    return [dict(row) for row in rows]
+
+
+def get_project_by_id(db_path: Path, organization_id: str, project_id: int) -> dict[str, Any] | None:
+    with connect(db_path) as connection:
+        row = connection.execute(
+            """
+            SELECT id,
+                   organization_id,
+                   name,
+                   sort_order,
+                   created_at,
+                   updated_at
+            FROM projects
+            WHERE organization_id = ?
+              AND id = ?
+            """,
+            (organization_id, project_id),
+        ).fetchone()
+    return dict(row) if row else None
+
+
+def create_project(db_path: Path, organization_id: str, name: str) -> dict[str, Any]:
+    normalized_name = name.strip()
+    if not normalized_name:
+        raise ValueError("Project name is required.")
+    with connect(db_path) as connection:
+        next_sort_order = int(connection.execute(
+            """
+            SELECT COALESCE(MAX(sort_order), -1) + 1 AS next_sort_order
+            FROM projects
+            WHERE organization_id = ?
+            """,
+            (organization_id,),
+        ).fetchone()["next_sort_order"] or 0)
+        cursor = connection.execute(
+            """
+            INSERT INTO projects (organization_id, name, sort_order)
+            VALUES (?, ?, ?)
+            """,
+            (organization_id, normalized_name, next_sort_order),
+        )
+        row = connection.execute(
+            """
+            SELECT id,
+                   organization_id,
+                   name,
+                   sort_order,
+                   created_at,
+                   updated_at
+            FROM projects
+            WHERE id = ?
+            """,
+            (cursor.lastrowid,),
+        ).fetchone()
+    return dict(row)
+
+
+def update_project(
+    db_path: Path,
+    *,
+    organization_id: str,
+    project_id: int,
+    name: str | None = None,
+) -> dict[str, Any] | None:
+    assignments: list[str] = []
+    values: list[Any] = []
+    if name is not None:
+        normalized_name = name.strip()
+        if not normalized_name:
+            raise ValueError("Project name is required.")
+        assignments.append("name = ?")
+        values.append(normalized_name)
+    if not assignments:
+        return get_project_by_id(db_path, organization_id, project_id)
+    assignments.append("updated_at = CURRENT_TIMESTAMP")
+    values.extend([organization_id, project_id])
+    with connect(db_path) as connection:
+        connection.execute(
+            f"""
+            UPDATE projects
+            SET {", ".join(assignments)}
+            WHERE organization_id = ?
+              AND id = ?
+            """,
+            values,
+        )
+        row = connection.execute(
+            """
+            SELECT id,
+                   organization_id,
+                   name,
+                   sort_order,
+                   created_at,
+                   updated_at
+            FROM projects
+            WHERE organization_id = ?
+              AND id = ?
+            """,
+            (organization_id, project_id),
+        ).fetchone()
+    return dict(row) if row else None
+
+
+def get_default_project_for_organization(db_path: Path, organization_id: str) -> dict[str, Any]:
+    with connect(db_path) as connection:
+        project_id = _get_or_create_default_project_id(connection, organization_id)
+        row = connection.execute(
+            """
+            SELECT id,
+                   organization_id,
+                   name,
+                   sort_order,
+                   created_at,
+                   updated_at
+            FROM projects
+            WHERE id = ?
+            """,
+            (project_id,),
+        ).fetchone()
+    if row is None:
+        raise RuntimeError("Default project could not be loaded")
+    return dict(row)
+
+
+def set_session_active_project(db_path: Path, token: str, project_id: int) -> dict[str, Any] | None:
+    token_hash = hash_token(token)
+    with connect(db_path) as connection:
+        session_row = connection.execute(
+            """
+            SELECT sessions.id AS session_id,
+                   users.organization_id
+            FROM sessions
+            JOIN users ON users.id = sessions.user_id
+            JOIN projects ON projects.id = ?
+            WHERE sessions.token_hash = ?
+              AND sessions.expires_at > ?
+              AND projects.organization_id = users.organization_id
+            """,
+            (project_id, token_hash, utc_iso(now_utc())),
+        ).fetchone()
+        if session_row is None:
+            return None
+        connection.execute(
+            """
+            UPDATE sessions
+            SET active_project_id = ?
+            WHERE id = ?
+            """,
+            (project_id, int(session_row["session_id"])),
+        )
+    return get_session_by_token(db_path, token)
+
+
 def create_session(
     db_path: Path,
     user_id: int,
@@ -7241,12 +8402,23 @@ def create_session(
     created_at = now_utc()
     expires_at = created_at + timedelta(days=expires_in_days)
     with connect(db_path) as connection:
+        user_row = connection.execute(
+            """
+            SELECT organization_id
+            FROM users
+            WHERE id = ?
+            """,
+            (user_id,),
+        ).fetchone()
+        if user_row is None:
+            raise RuntimeError("User for session creation was not found")
+        active_project_id = _get_or_create_default_project_id(connection, str(user_row["organization_id"]))
         connection.execute(
             """
-            INSERT INTO sessions (user_id, token_hash, created_at, expires_at)
-            VALUES (?, ?, ?, ?)
+            INSERT INTO sessions (user_id, token_hash, active_project_id, created_at, expires_at)
+            VALUES (?, ?, ?, ?, ?)
             """,
-            (user_id, hash_token(token), utc_iso(created_at), utc_iso(expires_at)),
+            (user_id, hash_token(token), active_project_id, utc_iso(created_at), utc_iso(expires_at)),
         )
 
     session = get_session_by_token(db_path, token)
@@ -7262,16 +8434,19 @@ def get_session_by_token(db_path: Path, token: str) -> dict[str, Any] | None:
             """
             SELECT sessions.id AS session_id,
                    sessions.expires_at,
+                   sessions.active_project_id,
                    users.id,
                    users.organization_id,
                    users.email,
                    users.display_name,
                    users.avatar_url,
                    users.role,
+                   projects.name AS active_project_name,
                    users.created_at,
                    users.updated_at
             FROM sessions
             JOIN users ON users.id = sessions.user_id
+            LEFT JOIN projects ON projects.id = sessions.active_project_id
             WHERE sessions.token_hash = ?
               AND sessions.expires_at > ?
             """,
@@ -7402,11 +8577,32 @@ def _get_script_line_row(
     connection: sqlite3.Connection,
     organization_id: str,
     line_id: int,
+    project_id: int | None = None,
 ) -> sqlite3.Row | None:
+    if project_id is None:
+        return connection.execute(
+            """
+            SELECT id,
+                   organization_id,
+                   project_id,
+                   line_id,
+                   script_index,
+                   source_text,
+                   path_json,
+                   path_text,
+                   created_at,
+                   updated_at
+            FROM script_lines
+            WHERE organization_id = ?
+              AND line_id = ?
+            """,
+            (organization_id, line_id),
+        ).fetchone()
     return connection.execute(
         """
         SELECT id,
                organization_id,
+               project_id,
                line_id,
                script_index,
                source_text,
@@ -7416,9 +8612,10 @@ def _get_script_line_row(
                updated_at
         FROM script_lines
         WHERE organization_id = ?
+          AND project_id = ?
           AND line_id = ?
         """,
-        (organization_id, line_id),
+        (organization_id, project_id, line_id),
     ).fetchone()
 
 
@@ -7426,7 +8623,19 @@ def _get_audio_candidate_row(
     connection: sqlite3.Connection,
     organization_id: str,
     candidate_id: int,
+    project_id: int | None = None,
 ) -> sqlite3.Row | None:
+    if project_id is None:
+        return connection.execute(
+            """
+            SELECT sac.*
+            FROM script_audio_candidates sac
+            JOIN script_lines sl ON sl.id = sac.script_line_id
+            WHERE sac.id = ?
+              AND sl.organization_id = ?
+            """,
+            (candidate_id, organization_id),
+        ).fetchone()
     return connection.execute(
         """
         SELECT sac.*
@@ -7434,8 +8643,9 @@ def _get_audio_candidate_row(
         JOIN script_lines sl ON sl.id = sac.script_line_id
         WHERE sac.id = ?
           AND sl.organization_id = ?
+          AND sl.project_id = ?
         """,
-        (candidate_id, organization_id),
+        (candidate_id, organization_id, project_id),
     ).fetchone()
 
 

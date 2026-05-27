@@ -217,6 +217,34 @@
             <p class="eyebrow">Admin</p>
             <h2>Workspace controls</h2>
           </div>
+          <div class="danger-zone">
+            <div>
+              <p class="eyebrow">Projects</p>
+              <strong>Switch active project</strong>
+              <p>Choose which project this browser session is editing. Other pages will use the selected project.</p>
+            </div>
+            <div class="tool-links">
+              <div>
+                <strong>Current project:</strong>
+                <span>{{activeProjectName}}</span>
+              </div>
+              <button class="button secondary" type="button" data-action="create-project">New project</button>
+            </div>
+            <div class="tool-links">
+              {{#each projects as project}}
+                <button
+                  class="button {{#if project.isActiveProject}}primary{{else}}secondary{{/if}}"
+                  type="button"
+                  data-action="switch-project"
+                  data-project-id="{{project.id}}"
+                  {{#if project.isActiveProject}}disabled{{/if}}
+                >
+                  {{project.switchLabel}}
+                </button>
+              {{/each}}
+            </div>
+            <p class="form-status" data-project-switch-status aria-live="polite"></p>
+          </div>
           <div>
             <p class="eyebrow">Invites</p>
             <h2 id="invites-title">Invite team members</h2>

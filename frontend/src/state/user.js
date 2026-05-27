@@ -4,6 +4,8 @@ const user = {
   session: null,
   current: null,
   organizationId: 'wonky-studio',
+  activeProjectId: null,
+  activeProjectName: '',
   authProviders: [],
   loaded: false,
 
@@ -54,6 +56,8 @@ function setUser(session) {
     user.current.display_name = user.current.email;
   }
   user.organizationId = session?.organization_id ?? 'wonky-studio';
+  user.activeProjectId = Number.isFinite(Number(session?.active_project_id)) ? Number(session.active_project_id) : null;
+  user.activeProjectName = String(session?.active_project_name ?? '');
   user.authProviders = session?.auth_providers ?? [];
   user.loaded = true;
 }

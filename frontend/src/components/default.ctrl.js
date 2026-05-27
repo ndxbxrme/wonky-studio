@@ -1,7 +1,7 @@
 import {apiFetch, apiUrl} from '../api.js';
 import {applyStatus} from '../status.js';
 import {hydrateSceneDetails, loadSceneSummaries, scenes} from '../state/scenes.js';
-import {logoutUser, user} from '../state/user.js';
+import {loadUser, logoutUser, user} from '../state/user.js';
 
 const DefaultCtrl = app => async () => {
   const controller = {
@@ -9,6 +9,10 @@ const DefaultCtrl = app => async () => {
     user: user.current,
     isAdmin: user.isAdmin,
     organizationId: user.organizationId,
+    activeProjectId: user.activeProjectId,
+    activeProjectName: user.activeProjectName,
+    projects: [],
+    hasProjects: false,
     uploadBatches: [],
     hasUploadBatches: false,
     scenes,
@@ -115,6 +119,18 @@ const DefaultCtrl = app => async () => {
       const removeSceneButton = event.target.closest('[data-action="remove-scene"]');
       if (removeSceneButton) {
         await this.removeScene(removeSceneButton);
+        return;
+      }
+
+      const createProjectButton = event.target.closest('[data-action="create-project"]');
+      if (createProjectButton) {
+        await this.createProject(createProjectButton);
+        return;
+      }
+
+      const switchProjectButton = event.target.closest('[data-action="switch-project"]');
+      if (switchProjectButton) {
+        await this.switchProject(switchProjectButton.dataset.projectId);
       }
     },
 
@@ -141,6 +157,7 @@ const DefaultCtrl = app => async () => {
       if (event.target.matches('[data-import-project-input]')) {
         await this.importProject(event.target.files?.[0] ?? null);
         event.target.value = '';
+        return;
       }
     },
 
@@ -257,6 +274,89 @@ const DefaultCtrl = app => async () => {
       applyStatus(document.querySelector('[data-upload-status]'), this.uploadStatus);
       const sceneCreateStatus = document.querySelector('[data-scene-create-form] .form-status');
       applyStatus(sceneCreateStatus, this.sceneCreateStatus);
+    },
+
+    async loadProjects() {
+      if (!this.isAdmin) {
+        this.projects = [];
+        this.hasProjects = false;
+        return;
+      }
+      try {
+        const projects = await apiFetch('/api/projects');
+        this.projects = projects.map(project => ({
+          ...project,
+          isActiveProject: Number(project.id) === Number(this.activeProjectId),
+          switchLabel: Number(project.id) === Number(this.activeProjectId)
+            ? `${project.name} (Current)`
+            : `Switch to ${project.name}`
+        }));
+        this.hasProjects = this.projects.length > 0;
+      } catch {
+        this.projects = [];
+        this.hasProjects = false;
+      }
+    },
+
+    async createProject(button) {
+      const name = window.prompt('Project name', '').trim();
+      if (!name) return;
+      const status = document.querySelector('[data-project-switch-status]');
+      button.disabled = true;
+      applyStatus(status, `Creating ${name}...`);
+      try {
+        const project = await apiFetch('/api/projects', {
+          method: 'POST',
+          body: JSON.stringify({name})
+        });
+        await this.loadProjects();
+        applyStatus(status, `Created ${project.name}. Switching project...`);
+        await apiFetch('/api/session/active-project', {
+          method: 'POST',
+          body: JSON.stringify({project_id: project.id})
+        });
+        await loadUser();
+        this.user = user.current;
+        this.isAdmin = user.isAdmin;
+        this.organizationId = user.organizationId;
+        this.activeProjectId = user.activeProjectId;
+        this.activeProjectName = user.activeProjectName;
+        await this.loadProjects();
+        await this.reloadScenes();
+        await this.reloadWorkspaceSummary();
+        applyStatus(status, `Created and switched to ${project.name}.`);
+        app.refresh();
+      } catch (error) {
+        applyStatus(status, error?.message || 'Could not create project.');
+      } finally {
+        button.disabled = false;
+      }
+    },
+
+    async switchProject(projectIdValue) {
+      const projectId = Number(projectIdValue || 0);
+      if (!projectId || projectId === this.activeProjectId) return;
+      const status = document.querySelector('[data-project-switch-status]');
+      applyStatus(status, 'Switching project...');
+      try {
+        await apiFetch('/api/session/active-project', {
+          method: 'POST',
+          body: JSON.stringify({project_id: projectId})
+        });
+        await loadUser();
+        this.user = user.current;
+        this.isAdmin = user.isAdmin;
+        this.organizationId = user.organizationId;
+        this.activeProjectId = user.activeProjectId;
+        this.activeProjectName = user.activeProjectName;
+        await this.loadProjects();
+        await this.reloadScenes();
+        await this.reloadWorkspaceSummary();
+        applyStatus(status, `Now viewing ${this.activeProjectName || 'the selected project'}.`);
+        app.refresh();
+      } catch (error) {
+        applyStatus(status, error?.message || 'Could not switch project.');
+      }
     },
 
     exportProject(button) {
@@ -559,6 +659,7 @@ const DefaultCtrl = app => async () => {
 
   controller.uploadBatches = await loadUploadBatches();
   controller.hasUploadBatches = controller.uploadBatches.length > 0;
+  await controller.loadProjects();
   await controller.reloadScenes();
   await controller.reloadWorkspaceSummary();
   return controller;
